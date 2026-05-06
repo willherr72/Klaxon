@@ -37,6 +37,30 @@ const MIGRATIONS: &[&str] = &[
         last_push_at  INTEGER NOT NULL
     );
     "#,
+    // 002 — sync foundation: peers + tombstones
+    r#"
+    DROP TABLE IF EXISTS sync_state;
+
+    CREATE TABLE peers (
+        id              TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        url             TEXT NOT NULL,
+        shared_secret   TEXT NOT NULL,
+        last_pull_at    INTEGER NOT NULL DEFAULT 0,
+        last_push_at    INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        last_seen_at    INTEGER
+    );
+
+    CREATE TABLE tombstones (
+        id              TEXT PRIMARY KEY,
+        deleted_at      INTEGER NOT NULL,
+        dirty           INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX idx_reminders_dirty ON reminders(updated_at) WHERE dirty = 1;
+    CREATE INDEX idx_tombstones_dirty ON tombstones(deleted_at) WHERE dirty = 1;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

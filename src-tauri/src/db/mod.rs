@@ -1,6 +1,8 @@
 pub mod migrations;
+pub mod peers;
 pub mod reminders;
 pub mod settings;
+pub mod tombstones;
 
 use std::path::Path;
 

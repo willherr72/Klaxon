@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::alerts;
-use crate::db::{reminders as repo, settings as cfg};
-use crate::error::AppResult;
-use crate::models::{Reminder, ReminderCreate, ReminderState, ReminderUpdate};
+use crate::db::{peers as peer_repo, reminders as repo, settings as cfg};
+use crate::error::{AppError, AppResult};
+use crate::models::{now_ms, Reminder, ReminderCreate, ReminderState, ReminderUpdate};
 use crate::scheduler::SchedulerMsg;
+use crate::sync;
+use crate::sync::client::SyncClient;
+use crate::sync::types::PingResponse;
 use crate::AppState;
 
 #[tauri::command]
@@ -155,4 +159,140 @@ pub fn set_global_hotkey(
         cfg::set(&conn, "global_hotkey_new", &combo)?;
     }
     crate::install_global_hotkey(&app, &state.current_hotkey, &combo)
+}
+
+// ── Sync ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub device_name: String,
+    pub sync_enabled: bool,
+    pub sync_port: u16,
+    pub sync_url_hint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PeerView {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub last_pull_at: i64,
+    pub last_push_at: i64,
+    pub last_seen_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AddPeerInput {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub shared_secret: String,
+}
+
+#[tauri::command]
+pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
+    let conn = state.db.lock();
+    let peers = peer_repo::list_all(&conn)?;
+    Ok(peers
+        .into_iter()
+        .map(|p| PeerView {
+            id: p.id,
+            name: p.name,
+            url: p.url,
+            last_pull_at: p.last_pull_at,
+            last_push_at: p.last_push_at,
+            last_seen_at: p.last_seen_at,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<PeerView> {
+    if input.id.trim().is_empty() {
+        return Err(AppError::Invalid("peer id required".into()));
+    }
+    if input.url.trim().is_empty() {
+        return Err(AppError::Invalid("peer url required".into()));
+    }
+    if input.shared_secret.trim().is_empty() {
+        return Err(AppError::Invalid("shared secret required".into()));
+    }
+    let peer = peer_repo::Peer {
+        id: input.id.trim().to_string(),
+        name: input.name.trim().to_string(),
+        url: input.url.trim().to_string(),
+        shared_secret: input.shared_secret.trim().to_string(),
+        last_pull_at: 0,
+        last_push_at: 0,
+        created_at: now_ms(),
+        last_seen_at: None,
+    };
+    {
+        let conn = state.db.lock();
+        peer_repo::upsert(&conn, &peer)?;
+    }
+    Ok(PeerView {
+        id: peer.id,
+        name: peer.name,
+        url: peer.url,
+        last_pull_at: peer.last_pull_at,
+        last_push_at: peer.last_push_at,
+        last_seen_at: peer.last_seen_at,
+    })
+}
+
+#[tauri::command]
+pub fn remove_peer(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    let conn = state.db.lock();
+    peer_repo::delete(&conn, &id)
+}
+
+#[tauri::command]
+pub async fn ping_peer(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<PingResponse> {
+    let (url, secret) = {
+        let conn = state.db.lock();
+        let peers = peer_repo::list_all(&conn)?;
+        let p = peers
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("peer {id}")))?;
+        (p.url, p.shared_secret)
+    };
+    let client = SyncClient::new(url, secret)?;
+    client.ping().await
+}
+
+#[tauri::command]
+pub fn device_identity(state: State<'_, AppState>) -> AppResult<DeviceInfo> {
+    let conn = state.db.lock();
+    let identity = sync::read_identity(&state.db);
+    let port = sync::read_port(&state.db);
+    let enabled = sync::read_enabled(&state.db);
+    let url_hint = format!("http://<this-device-ip>:{port}");
+    let _ = conn; // hold the lock for consistency, drop at end of scope
+    Ok(DeviceInfo {
+        device_id: identity.device_id,
+        device_name: identity.device_name,
+        sync_enabled: enabled,
+        sync_port: port,
+        sync_url_hint: url_hint,
+    })
+}
+
+#[tauri::command]
+pub fn generate_secret() -> AppResult<String> {
+    Ok(sync::generate_secret())
+}
+
+#[tauri::command]
+pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
+    let conn = state.db.lock();
+    cfg::set(&conn, "sync_enabled", if enabled { "true" } else { "false" })?;
+    // Note: starting/stopping the actual server requires a restart in v0.2 first slice.
+    // The sync TASK respects the flag immediately on its next tick.
+    Ok(())
 }

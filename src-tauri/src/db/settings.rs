@@ -18,7 +18,21 @@ pub fn ensure_defaults(conn: &Connection) -> AppResult<()> {
         ("autostart_enabled", "false"),
         ("theme", "industrial"),
         ("global_hotkey_new", "Ctrl+Alt+KeyN"),
+        ("sync_enabled", "false"),
+        ("sync_port", "7124"),
     ];
+
+    // Generate a stable device id on first run.
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES ('device_id', ?1)",
+        params![uuid::Uuid::new_v4().to_string()],
+    )?;
+    // Default device name = OS hostname, falling back to "Klaxon".
+    let hostname = hostname_or_default();
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES ('device_name', ?1)",
+        params![hostname],
+    )?;
 
     for (k, v) in defaults {
         conn.execute(
@@ -27,6 +41,14 @@ pub fn ensure_defaults(conn: &Connection) -> AppResult<()> {
         )?;
     }
     Ok(())
+}
+
+fn hostname_or_default() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Klaxon".to_string())
 }
 
 pub fn get(conn: &Connection, key: &str) -> AppResult<Option<String>> {

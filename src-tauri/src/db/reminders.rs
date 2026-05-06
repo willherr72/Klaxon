@@ -1,9 +1,10 @@
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
     now_ms, Priority, Reminder, ReminderCreate, ReminderState, ReminderUpdate, RepeatRule,
 };
+use crate::sync::types::RemoteReminder;
 
 fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
@@ -159,7 +160,92 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     if n == 0 {
         return Err(AppError::NotFound(format!("reminder {id}")));
     }
+    super::tombstones::create(conn, id, now_ms())?;
     Ok(())
+}
+
+/// Reminders updated after `since_ms`. Used by sync push to find changes to send.
+pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty
+         FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
+    )?;
+    let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Apply a reminder received from a peer using last-write-wins on `updated_at`.
+/// Skips when a local row or tombstone is at least as recent.
+pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
+    let local_updated: Option<i64> = conn
+        .query_row(
+            "SELECT updated_at FROM reminders WHERE id = ?1",
+            params![r.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(local) = local_updated {
+        if local >= r.updated_at {
+            return Ok(false);
+        }
+    }
+
+    let tomb_at: Option<i64> = conn
+        .query_row(
+            "SELECT deleted_at FROM tombstones WHERE id = ?1",
+            params![r.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(tomb_at) = tomb_at {
+        if tomb_at >= r.updated_at {
+            return Ok(false);
+        }
+    }
+
+    let repeat_json = match &r.repeat_rule {
+        Some(rule) => Some(serde_json::to_string(rule)?),
+        None => None,
+    };
+
+    conn.execute(
+        "INSERT INTO reminders
+         (id, title, description, due_at, priority, sound_path, repeat_rule, state,
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           description = excluded.description,
+           due_at = excluded.due_at,
+           priority = excluded.priority,
+           sound_path = excluded.sound_path,
+           repeat_rule = excluded.repeat_rule,
+           state = excluded.state,
+           snooze_until = excluded.snooze_until,
+           updated_at = excluded.updated_at,
+           last_synced_at = excluded.last_synced_at,
+           dirty = 0",
+        params![
+            r.id,
+            r.title,
+            r.description,
+            r.due_at,
+            r.priority.as_int(),
+            r.sound_path,
+            repeat_json,
+            r.state.as_str(),
+            r.snooze_until,
+            r.created_at,
+            r.updated_at,
+            now_ms(),
+        ],
+    )?;
+    Ok(true)
 }
 
 pub fn set_state(

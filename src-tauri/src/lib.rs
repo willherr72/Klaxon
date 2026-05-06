@@ -6,6 +6,7 @@ mod error;
 mod models;
 mod recurrence;
 mod scheduler;
+mod sync;
 mod tray;
 
 use std::collections::HashMap;
@@ -80,6 +81,27 @@ pub fn run() {
                 scheduler::run(scheduler_db, scheduler_handle, rx).await;
             });
 
+            // Sync server + task: started unconditionally; sync task no-ops while
+            // sync_enabled is false. Server respects the same flag at startup.
+            let sync_db = db.clone();
+            tauri::async_runtime::spawn(async move {
+                sync::task::run(sync_db).await;
+            });
+
+            if sync::read_enabled(&db) {
+                let identity = sync::read_identity(&db);
+                let port = sync::read_port(&db);
+                let server_state = sync::server::ServerState {
+                    db: db.clone(),
+                    identity,
+                };
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = sync::server::run(server_state, port).await {
+                        log::error!("sync server exited: {e}");
+                    }
+                });
+            }
+
             // Install global hotkey from persisted setting (or default if none).
             let stored = {
                 let conn = db.lock();
@@ -119,15 +141,19 @@ pub fn run() {
             commands::list_settings,
             commands::data_dir,
             commands::set_global_hotkey,
+            commands::list_peers,
+            commands::add_peer,
+            commands::remove_peer,
+            commands::ping_peer,
+            commands::device_identity,
+            commands::generate_secret,
+            commands::set_sync_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
 
 /// Replace the currently-registered global hotkey with one parsed from `combo`.
-/// Empty combo unregisters without registering a replacement (disabled state).
-/// Errors are returned for invalid syntax / OS register failure; callers may
-/// choose to ignore at startup or surface to the user via a command.
 pub fn install_global_hotkey(
     app: &AppHandle,
     current: &Mutex<Option<Shortcut>>,
@@ -164,4 +190,3 @@ pub fn install_global_hotkey(
     *guard = Some(shortcut);
     Ok(())
 }
-
