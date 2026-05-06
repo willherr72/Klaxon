@@ -37,6 +37,8 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rand = "0.8"
 hex = "0.4"
+local-ip-address = "0.6"
+mdns-sd = "0.13"
 
 [features]
 default = ["custom-protocol"]

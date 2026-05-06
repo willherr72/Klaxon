@@ -346,6 +346,17 @@ fn fire(r: &Reminder) {
 - Each integration is a `source` value; reminders carry `external_id` for two-way mapping
 - Start with one-way (calendar → reminder) before attempting bidirectional sync
 
+### v0.5 — Shared Groups (opt-in)
+
+- Reminders can belong to a `group_id`. Default is the personal (private) group.
+- Joining a group is an explicit invitation/accept flow — never automatic, never bulk.
+- Sync only sends a reminder to peers who are members of its group.
+- Each group has its own symmetric key; reminder payloads in shared groups are encrypted at rest and on the wire so peers outside the group cannot read them even if they intercept traffic.
+- Leaving a group rotates the key for remaining members.
+- UI clearly distinguishes shared vs private reminders (badge, color) so users know what they're sharing.
+
+This needs careful threat-model work before implementation — it's the highest-leakage-risk feature in the roadmap. Likely a separate design doc when it lands.
+
 ### v1.0 — Mobile
 
 - Tauri 2 mobile (iOS + Android)

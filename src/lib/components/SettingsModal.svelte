@@ -7,6 +7,7 @@
   } from "@tauri-apps/plugin-autostart";
   import { openPath } from "@tauri-apps/plugin-opener";
   import SignalLight from "./SignalLight.svelte";
+  import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
   import { keyEventToCombo, prettyShortcut } from "../shortcut";
 
@@ -298,6 +299,8 @@
             </span>
           </label>
         </section>
+
+        <SyncSection />
 
         <section class="section">
           <div class="section-head">

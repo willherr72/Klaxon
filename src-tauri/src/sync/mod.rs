@@ -7,6 +7,7 @@
 //! v0.2 first slice: manual peer config (no mDNS, no pairing UX).
 
 pub mod client;
+pub mod discovery;
 pub mod server;
 pub mod task;
 pub mod types;

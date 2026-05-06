@@ -268,12 +268,13 @@ pub async fn ping_peer(
 
 #[tauri::command]
 pub fn device_identity(state: State<'_, AppState>) -> AppResult<DeviceInfo> {
-    let conn = state.db.lock();
     let identity = sync::read_identity(&state.db);
     let port = sync::read_port(&state.db);
     let enabled = sync::read_enabled(&state.db);
-    let url_hint = format!("http://<this-device-ip>:{port}");
-    let _ = conn; // hold the lock for consistency, drop at end of scope
+    let url_hint = match local_ip_address::local_ip() {
+        Ok(ip) => format!("http://{ip}:{port}"),
+        Err(_) => format!("http://<this-device-ip>:{port}"),
+    };
     Ok(DeviceInfo {
         device_id: identity.device_id,
         device_name: identity.device_name,
@@ -292,7 +293,19 @@ pub fn generate_secret() -> AppResult<String> {
 pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
     let conn = state.db.lock();
     cfg::set(&conn, "sync_enabled", if enabled { "true" } else { "false" })?;
-    // Note: starting/stopping the actual server requires a restart in v0.2 first slice.
+    // Note: starting/stopping the actual server + mDNS requires a restart.
     // The sync TASK respects the flag immediately on its next tick.
     Ok(())
+}
+
+#[tauri::command]
+pub fn list_discovered_peers(
+    state: State<'_, AppState>,
+) -> AppResult<Vec<crate::sync::discovery::DiscoveredPeer>> {
+    let guard = state.discovery.lock();
+    let Some(handle) = guard.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let peers = handle.peers.lock();
+    Ok(peers.values().cloned().collect())
 }

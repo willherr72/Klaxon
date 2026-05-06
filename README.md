@@ -123,6 +123,7 @@ Open **System Config** (gear icon at the bottom of the sidebar) to tune:
 - **v0.2** — LAN sync between paired devices (mDNS discovery, pairing, last-write-wins delta sync)
 - **v0.3** — Remote sync via [iroh](https://www.iroh.computer/) — peer-to-peer with NAT traversal, no central server
 - **v0.4** — Microsoft Graph (Outlook/Teams), Google Calendar, CalDAV integrations
+- **v0.5** — Shared groups (opt-in). Reminders can belong to a group; devices that have explicitly joined the group sync those records. Each group gets its own encryption key so paired peers outside the group can't read its contents. *Default behavior unchanged — reminders are private until you actively share them.*
 - **v1.0** — iOS + Android via Tauri 2 mobile, sharing the Rust scheduler core
 
 ---

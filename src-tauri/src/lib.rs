@@ -27,6 +27,7 @@ pub struct AppState {
     pub audio_tx: std::sync::mpsc::Sender<audio::AudioCmd>,
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
 }
 
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
@@ -88,18 +89,25 @@ pub fn run() {
                 sync::task::run(sync_db).await;
             });
 
+            let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
+                Arc::new(Mutex::new(None));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
                 let port = sync::read_port(&db);
                 let server_state = sync::server::ServerState {
                     db: db.clone(),
-                    identity,
+                    identity: identity.clone(),
                 };
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = sync::server::run(server_state, port).await {
                         log::error!("sync server exited: {e}");
                     }
                 });
+
+                match sync::discovery::start(identity, port) {
+                    Ok(h) => *discovery_handle.lock() = Some(h),
+                    Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
+                }
             }
 
             // Install global hotkey from persisted setting (or default if none).
@@ -120,6 +128,7 @@ pub fn run() {
                 audio_tx,
                 active_alerts: Arc::new(Mutex::new(HashMap::new())),
                 current_hotkey,
+                discovery: discovery_handle,
             });
 
             tray::setup(app)?;
@@ -148,6 +157,7 @@ pub fn run() {
             commands::device_identity,
             commands::generate_secret,
             commands::set_sync_enabled,
+            commands::list_discovered_peers,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
