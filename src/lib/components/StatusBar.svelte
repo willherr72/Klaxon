@@ -38,7 +38,7 @@
   </div>
   <div class="spacer"></div>
   <div class="cell tail">
-    <span class="mono-caps-faint">Klaxon · v0.1</span>
+    <span class="mono-caps-faint">Klaxon · v0.2.0-dev</span>
   </div>
 </footer>
 

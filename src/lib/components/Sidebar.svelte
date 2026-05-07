@@ -63,7 +63,7 @@
       <span class="gear">⚙</span>
       <span class="settings-text">System Config</span>
     </button>
-    <div class="version mono-caps-faint">v0.1 · Industrial</div>
+    <div class="version mono-caps-faint">v0.2.0-dev · Industrial</div>
   </div>
 </nav>
 

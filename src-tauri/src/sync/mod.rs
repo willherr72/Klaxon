@@ -65,3 +65,35 @@ pub fn generate_secret() -> String {
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
+
+/// Six-digit Short Authentication String shown on both devices during the
+/// tap-to-pair flow. Both sides compute it identically. LAN-trusted: not
+/// MITM-resistant on hostile networks (would need DH+SAS for that).
+pub fn confirmation_code(
+    request_id: &str,
+    ephemeral_token: &str,
+    initiator_id: &str,
+    responder_id: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(request_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(ephemeral_token.as_bytes());
+    hasher.update(b"|");
+    hasher.update(initiator_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(responder_id.as_bytes());
+    let hash = hasher.finalize();
+    let bytes: [u8; 4] = hash[..4].try_into().unwrap_or([0; 4]);
+    let n = u32::from_be_bytes(bytes) % 1_000_000;
+    format!("{:03}-{:03}", n / 1000, n % 1000)
+}
+
+/// Best-effort URL we'd advertise to a peer — `http://<lan-ip>:<port>`.
+pub fn local_url(port: u16) -> String {
+    match local_ip_address::local_ip() {
+        Ok(ip) => format!("http://{ip}:{port}"),
+        Err(_) => format!("http://127.0.0.1:{port}"),
+    }
+}

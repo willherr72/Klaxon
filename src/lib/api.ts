@@ -43,7 +43,34 @@ export const api = {
   pingPeer: (id: string) => invoke<PingResponse>("ping_peer", { id }),
   listDiscoveredPeers: () =>
     invoke<DiscoveredPeer[]>("list_discovered_peers"),
+  startPairWith: (peerUrl: string, peerId: string, peerName: string) =>
+    invoke<PairOutcome>("start_pair_with", { peerUrl, peerId, peerName }),
+  approvePairRequest: (requestId: string) =>
+    invoke<void>("approve_pair_request", { requestId }),
+  declinePairRequest: (requestId: string) =>
+    invoke<void>("decline_pair_request", { requestId }),
 };
+
+export interface PairOutcome {
+  peer_id: string;
+  peer_name: string;
+  confirmation_code: string;
+}
+
+export interface PairProgress {
+  request_id: string;
+  peer_id: string;
+  peer_name: string;
+  confirmation_code: string;
+}
+
+export interface PendingPairEvent {
+  request_id: string;
+  initiator_id: string;
+  initiator_name: string;
+  initiator_url: string;
+  confirmation_code: string;
+}
 
 export interface DiscoveredPeer {
   device_id: string;

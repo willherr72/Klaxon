@@ -48,6 +48,50 @@ pub struct PushResponse {
     pub accepted_tombstones: usize,
 }
 
+// ── Tap-to-pair handshake ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairRequest {
+    pub request_id: String,
+    pub initiator_id: String,
+    pub initiator_name: String,
+    pub initiator_url: String,
+    pub ephemeral_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairResponse {
+    pub responder_id: String,
+    pub responder_name: String,
+    pub responder_url: String,
+    pub shared_secret: String,
+}
+
+/// What the responder's frontend gets via Tauri event when an incoming
+/// pair request arrives.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPairEvent {
+    pub request_id: String,
+    pub initiator_id: String,
+    pub initiator_name: String,
+    pub initiator_url: String,
+    pub confirmation_code: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PairDecision {
+    Approve,
+    Decline,
+}
+
+/// What the initiator's frontend gets back after a successful tap-to-pair.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairOutcome {
+    pub peer_id: String,
+    pub peer_name: String,
+    pub confirmation_code: String,
+}
+
 impl From<&crate::models::Reminder> for RemoteReminder {
     fn from(r: &crate::models::Reminder) -> Self {
         Self {

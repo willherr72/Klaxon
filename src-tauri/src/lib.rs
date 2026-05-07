@@ -28,6 +28,7 @@ pub struct AppState {
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
+    pub pending_pairs: sync::server::PendingPairs,
 }
 
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
@@ -91,12 +92,16 @@ pub fn run() {
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));
+            let pending_pairs: sync::server::PendingPairs =
+                Arc::new(Mutex::new(HashMap::new()));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
                 let port = sync::read_port(&db);
                 let server_state = sync::server::ServerState {
                     db: db.clone(),
                     identity: identity.clone(),
+                    pending_pairs: pending_pairs.clone(),
+                    app: app.handle().clone(),
                 };
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = sync::server::run(server_state, port).await {
@@ -129,6 +134,7 @@ pub fn run() {
                 active_alerts: Arc::new(Mutex::new(HashMap::new())),
                 current_hotkey,
                 discovery: discovery_handle,
+                pending_pairs,
             });
 
             tray::setup(app)?;
@@ -158,6 +164,9 @@ pub fn run() {
             commands::generate_secret,
             commands::set_sync_enabled,
             commands::list_discovered_peers,
+            commands::start_pair_with,
+            commands::approve_pair_request,
+            commands::decline_pair_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

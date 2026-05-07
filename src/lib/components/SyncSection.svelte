@@ -1,6 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { api, type DeviceInfo, type DiscoveredPeer, type PeerView } from "../api";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import {
+    api,
+    type DeviceInfo,
+    type DiscoveredPeer,
+    type PairProgress,
+    type PeerView,
+  } from "../api";
 
   let device = $state<DeviceInfo | null>(null);
   let deviceName = $state("");
@@ -23,14 +30,36 @@
   let pingStatus = $state<Record<string, "ok" | "fail" | "pending" | undefined>>({});
   let copyFlash = $state<string | null>(null);
 
-  onMount(() => {
+  // Tap-to-pair progress
+  type TapPairState =
+    | { kind: "starting"; peerName: string }
+    | { kind: "awaiting"; code: string; peerName: string }
+    | { kind: "success"; peerName: string }
+    | { kind: "error"; message: string };
+  let tapPair = $state<TapPairState | null>(null);
+  let tapPairBusy = $state(false);
+  let unlistenProgress: UnlistenFn | null = null;
+
+  onMount(async () => {
     refresh();
     refreshDiscovery();
     discoveryTimer = window.setInterval(refreshDiscovery, 3000);
+    unlistenProgress = await listen<PairProgress>(
+      "klaxon://pair-progress",
+      (event) => {
+        if (!tapPair) return;
+        tapPair = {
+          kind: "awaiting",
+          code: event.payload.confirmation_code,
+          peerName: event.payload.peer_name,
+        };
+      },
+    );
   });
 
   onDestroy(() => {
     if (discoveryTimer !== null) clearInterval(discoveryTimer);
+    if (unlistenProgress) unlistenProgress();
   });
 
   async function refresh() {
@@ -58,13 +87,28 @@
     }
   }
 
-  function pairDiscovered(d: DiscoveredPeer) {
-    pairId = d.device_id;
-    pairName = d.device_name;
-    pairUrl = d.url;
-    pairSecret = "";
-    pairError = null;
-    pairOpen = true;
+  async function pairDiscovered(d: DiscoveredPeer) {
+    if (tapPairBusy) return;
+    tapPairBusy = true;
+    tapPair = { kind: "starting", peerName: d.device_name };
+    try {
+      const outcome = await api.startPairWith(d.url, d.device_id, d.device_name);
+      tapPair = { kind: "success", peerName: outcome.peer_name };
+      await refresh();
+      await refreshDiscovery();
+      setTimeout(() => {
+        if (tapPair?.kind === "success") tapPair = null;
+        tapPairBusy = false;
+      }, 1600);
+    } catch (e) {
+      tapPair = { kind: "error", message: String(e) };
+      tapPairBusy = false;
+    }
+  }
+
+  function dismissTapPair() {
+    tapPair = null;
+    tapPairBusy = false;
   }
 
   async function toggleSync() {
@@ -319,6 +363,51 @@
     </div>
   {/if}
 </section>
+
+{#if tapPair}
+  <div class="overlay" onclick={(e) => {
+      if (e.target !== e.currentTarget) return;
+      if (tapPair?.kind === "error" || tapPair?.kind === "success") dismissTapPair();
+    }}
+    onkeydown={(e) => {
+      if (e.key !== "Escape") return;
+      if (tapPair?.kind === "error" || tapPair?.kind === "success") dismissTapPair();
+    }}
+    role="alertdialog" aria-modal="true" tabindex="-1">
+    <div class="tap-modal">
+      <div class="sweep-bar"><div class="sweep"></div></div>
+      <header class="tap-head">
+        <span class="lamp"></span>
+        <h3 class="display tap-title">
+          {#if tapPair.kind === "starting"}CONNECTING{:else if tapPair.kind === "awaiting"}VERIFY CODE{:else if tapPair.kind === "success"}PAIRED{:else}FAILED{/if}
+        </h3>
+      </header>
+      <div class="tap-body">
+        {#if tapPair.kind === "starting"}
+          <div class="tap-peer mono-caps-faint">Reaching {tapPair.peerName}…</div>
+          <div class="spinner"></div>
+        {:else if tapPair.kind === "awaiting"}
+          <div class="tap-peer mono-caps-faint">{tapPair.peerName}</div>
+          <div class="code-frame">
+            <div class="code-label mono-caps-faint">Confirmation Code</div>
+            <div class="code-value">{tapPair.code}</div>
+            <div class="code-hint mono-caps-faint">
+              Verify it matches and tap Approve on the other device.
+            </div>
+          </div>
+        {:else if tapPair.kind === "success"}
+          <div class="tap-success">
+            <div class="ok-mark">✓</div>
+            <div class="tap-success-text">Paired with {tapPair.peerName}</div>
+          </div>
+        {:else}
+          <div class="tap-error mono-caps">{tapPair.message}</div>
+          <button class="primary-btn" onclick={dismissTapPair}>Close</button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if pairOpen}
   <div class="pair-overlay" onclick={(e) => { if (e.target === e.currentTarget) pairOpen = false; }}
@@ -716,6 +805,119 @@
     padding: 0;
     font-size: 10px;
     color: var(--text-muted);
+  }
+
+  /* Tap-to-pair progress modal */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 250;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 160ms var(--ease);
+  }
+  .tap-modal {
+    width: min(440px, 90vw);
+    background: var(--bg-elev);
+    border: 1px solid var(--klaxon-dim);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.7),
+      0 0 0 1px var(--klaxon-glow);
+    display: flex; flex-direction: column;
+    animation: rise 200ms var(--ease);
+  }
+  .tap-head {
+    display: flex; align-items: center; gap: 14px;
+    padding: 18px 22px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tap-title {
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+  }
+  .tap-body {
+    padding: 24px 22px 26px;
+    display: flex; flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .tap-peer {
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-2);
+  }
+  .spinner {
+    width: 28px; height: 28px;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--klaxon);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .code-frame {
+    border: 1px solid var(--border-strong);
+    background: var(--bg);
+    padding: 22px 18px 14px;
+    display: flex; flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .code-label {
+    font-size: 9px;
+    letter-spacing: 0.32em;
+  }
+  .code-value {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 52px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--klaxon);
+    text-shadow: 0 0 24px var(--klaxon-glow-strong);
+    line-height: 1;
+  }
+  .code-hint {
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    text-align: center;
+    color: var(--text-muted);
+    max-width: 32ch;
+  }
+  .tap-success {
+    display: flex; flex-direction: column;
+    align-items: center; gap: 14px;
+    padding: 20px 0;
+  }
+  .ok-mark {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    border: 2px solid var(--ok);
+    color: var(--ok);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    box-shadow: 0 0 18px var(--ok-glow);
+  }
+  .tap-success-text {
+    font-size: 13px;
+    color: var(--text);
+  }
+  .tap-error {
+    color: var(--signal-high);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-align: center;
+    border: 1px solid var(--signal-high);
+    background: rgba(255, 59, 48, 0.06);
+    padding: 12px 16px;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   /* Pair modal */

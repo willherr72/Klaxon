@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -9,29 +11,46 @@ use axum::{Json, Router};
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::Deserialize;
+use tauri::{AppHandle, Emitter};
+use tokio::sync::oneshot;
 
 use crate::db::{peers, reminders as repo, tombstones};
 use crate::models::now_ms;
 use crate::sync::types::{
-    ChangeSet, PingResponse, PushResponse, RemoteReminder, RemoteTombstone,
+    ChangeSet, PairDecision, PairRequest, PairResponse, PendingPairEvent, PingResponse,
+    PushResponse, RemoteReminder, RemoteTombstone,
 };
 use crate::sync::DeviceIdentity;
+
+pub type PendingPairs =
+    Arc<Mutex<HashMap<String, oneshot::Sender<PairDecision>>>>;
 
 #[derive(Clone)]
 pub struct ServerState {
     pub db: Arc<Mutex<Connection>>,
     pub identity: DeviceIdentity,
+    pub pending_pairs: PendingPairs,
+    pub app: AppHandle,
 }
 
 pub async fn run(state: ServerState, port: u16) -> std::io::Result<()> {
     let auth_state = state.clone();
-    let api = Router::new()
+
+    let authed = Router::new()
         .route("/ping", get(handle_ping))
         .route("/sync/pull", get(handle_pull))
         .route("/sync/push", post(handle_push))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware));
 
-    let app = Router::new().nest("/klaxon/v1", api).with_state(state);
+    // Pair handshake endpoint is intentionally unauthenticated — it IS the
+    // pre-auth handshake. Defended by the explicit user-confirmation step.
+    let app = Router::new()
+        .route(
+            "/klaxon/v1/pair/initiate",
+            post(handle_pair_initiate),
+        )
+        .nest("/klaxon/v1", authed)
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
     log::info!("sync server listening on 0.0.0.0:{port}");
@@ -148,5 +167,84 @@ async fn handle_push(
         server_time_ms: now_ms(),
         accepted_reminders,
         accepted_tombstones,
+    }))
+}
+
+/// Handle an incoming pair handshake. The flow:
+/// 1. Compute SAS (same on both ends), emit event so the local UI shows it
+/// 2. Block on a oneshot channel for up to 120s — the local user must hit
+///    Approve/Decline in the UI, which fires `approve_pair_request` /
+///    `decline_pair_request` to flip the channel
+/// 3. On Approve: generate a fresh shared secret, store the peer entry,
+///    return our identity + the secret to the initiator
+/// 4. On Decline / timeout: return 403 / 408 — initiator backs out
+async fn handle_pair_initiate(
+    State(s): State<ServerState>,
+    Json(req): Json<PairRequest>,
+) -> Result<Json<PairResponse>, StatusCode> {
+    let sas = crate::sync::confirmation_code(
+        &req.request_id,
+        &req.ephemeral_token,
+        &req.initiator_id,
+        &s.identity.device_id,
+    );
+
+    let (tx, rx) = oneshot::channel::<PairDecision>();
+    s.pending_pairs.lock().insert(req.request_id.clone(), tx);
+
+    let _ = s.app.emit(
+        "klaxon://pair-request",
+        PendingPairEvent {
+            request_id: req.request_id.clone(),
+            initiator_id: req.initiator_id.clone(),
+            initiator_name: req.initiator_name.clone(),
+            initiator_url: req.initiator_url.clone(),
+            confirmation_code: sas,
+        },
+    );
+
+    let decision = tokio::time::timeout(Duration::from_secs(120), rx).await;
+    s.pending_pairs.lock().remove(&req.request_id);
+
+    let approved = matches!(decision, Ok(Ok(PairDecision::Approve)));
+    if !approved {
+        return Err(match decision {
+            Ok(Ok(PairDecision::Decline)) => StatusCode::FORBIDDEN,
+            Err(_) => StatusCode::REQUEST_TIMEOUT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        });
+    }
+
+    let secret = crate::sync::generate_secret();
+    let port = crate::sync::read_port(&s.db);
+    let our_url = crate::sync::local_url(port);
+
+    let conn = s.db.lock();
+    let peer = peers::Peer {
+        id: req.initiator_id.clone(),
+        name: if req.initiator_name.is_empty() {
+            "Klaxon Device".to_string()
+        } else {
+            req.initiator_name.clone()
+        },
+        url: req.initiator_url.clone(),
+        shared_secret: secret.clone(),
+        last_pull_at: 0,
+        last_push_at: 0,
+        created_at: now_ms(),
+        last_seen_at: Some(now_ms()),
+    };
+    if let Err(e) = peers::upsert(&conn, &peer) {
+        log::error!("store peer after pair: {e}");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let _ = s.app.emit("klaxon://peer-paired", peer.id.clone());
+
+    Ok(Json(PairResponse {
+        responder_id: s.identity.device_id.clone(),
+        responder_name: s.identity.device_name.clone(),
+        responder_url: our_url,
+        shared_secret: secret,
     }))
 }

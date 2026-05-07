@@ -317,7 +317,7 @@
               </button>
             </div>
             <span class="mono-caps-faint">Version</span>
-            <span class="meta-value">v0.1 · industrial</span>
+            <span class="meta-value">v0.2.0-dev · industrial</span>
           </div>
         </section>
       </div>

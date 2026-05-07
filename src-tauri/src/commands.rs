@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::alerts;
 use crate::db::{peers as peer_repo, reminders as repo, settings as cfg};
@@ -308,4 +308,141 @@ pub fn list_discovered_peers(
     };
     let peers = handle.peers.lock();
     Ok(peers.values().cloned().collect())
+}
+
+// ── Tap-to-pair (initiator side) ──────────────────────────────────────
+
+#[tauri::command]
+pub async fn start_pair_with(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    peer_url: String,
+    peer_id: String,
+    peer_name: String,
+) -> AppResult<crate::sync::types::PairOutcome> {
+    use std::time::Duration;
+
+    use crate::sync::types::{PairOutcome, PairRequest, PairResponse};
+
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let ephemeral = sync::generate_secret();
+
+    let our = sync::read_identity(&state.db);
+    let port = sync::read_port(&state.db);
+    let our_url = sync::local_url(port);
+
+    let sas = sync::confirmation_code(&request_id, &ephemeral, &our.device_id, &peer_id);
+
+    // Tell our own UI what code to show while we wait.
+    let _ = app.emit(
+        "klaxon://pair-progress",
+        serde_json::json!({
+            "request_id": request_id,
+            "peer_id": peer_id,
+            "peer_name": peer_name,
+            "confirmation_code": sas,
+        }),
+    );
+
+    let req = PairRequest {
+        request_id: request_id.clone(),
+        initiator_id: our.device_id.clone(),
+        initiator_name: our.device_name.clone(),
+        initiator_url: our_url,
+        ephemeral_token: ephemeral,
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(150))
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Invalid(format!("http client: {e}")))?;
+
+    let url = format!(
+        "{}/klaxon/v1/pair/initiate",
+        peer_url.trim_end_matches('/')
+    );
+    let resp = client
+        .post(&url)
+        .json(&req)
+        .send()
+        .await
+        .map_err(|e| AppError::Invalid(format!("pair request failed: {e}")))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(AppError::Invalid(match status.as_u16() {
+            403 => "peer declined the pairing".to_string(),
+            408 => "peer did not respond in time".to_string(),
+            other => format!("peer returned HTTP {other}"),
+        }));
+    }
+
+    let body: PairResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Invalid(format!("parse pair response: {e}")))?;
+
+    {
+        let conn = state.db.lock();
+        let peer = peer_repo::Peer {
+            id: body.responder_id.clone(),
+            name: if peer_name.trim().is_empty() {
+                body.responder_name.clone()
+            } else {
+                peer_name.clone()
+            },
+            url: body.responder_url,
+            shared_secret: body.shared_secret,
+            last_pull_at: 0,
+            last_push_at: 0,
+            created_at: now_ms(),
+            last_seen_at: Some(now_ms()),
+        };
+        peer_repo::upsert(&conn, &peer)?;
+    }
+
+    let _ = app.emit("klaxon://peer-paired", body.responder_id.clone());
+
+    Ok(PairOutcome {
+        peer_id: body.responder_id,
+        peer_name: body.responder_name,
+        confirmation_code: sas,
+    })
+}
+
+// ── Tap-to-pair (responder side) ──────────────────────────────────────
+
+use crate::sync::types::PairDecision;
+
+#[tauri::command]
+pub fn approve_pair_request(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> AppResult<()> {
+    let mut guard = state.pending_pairs.lock();
+    if let Some(tx) = guard.remove(&request_id) {
+        let _ = tx.send(PairDecision::Approve);
+        Ok(())
+    } else {
+        Err(AppError::NotFound(format!(
+            "pair request {request_id} expired or unknown"
+        )))
+    }
+}
+
+#[tauri::command]
+pub fn decline_pair_request(
+    state: State<'_, AppState>,
+    request_id: String,
+) -> AppResult<()> {
+    let mut guard = state.pending_pairs.lock();
+    if let Some(tx) = guard.remove(&request_id) {
+        let _ = tx.send(PairDecision::Decline);
+        Ok(())
+    } else {
+        Err(AppError::NotFound(format!(
+            "pair request {request_id} expired or unknown"
+        )))
+    }
 }

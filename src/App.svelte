@@ -10,6 +10,7 @@
   import ReminderEditor from "./lib/components/ReminderEditor.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import SettingsModal from "./lib/components/SettingsModal.svelte";
+  import IncomingPairModal from "./lib/components/IncomingPairModal.svelte";
 
   let allReminders = $state<Reminder[]>([]);
   let currentFilter = $state<FilterKey>("all");
@@ -240,6 +241,7 @@
     open={settingsOpen}
     onClose={() => (settingsOpen = false)}
   />
+  <IncomingPairModal />
 </div>
 
 <style>
