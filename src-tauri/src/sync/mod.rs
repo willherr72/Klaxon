@@ -10,6 +10,7 @@ pub mod client;
 pub mod discovery;
 pub mod server;
 pub mod task;
+pub mod tls;
 pub mod types;
 
 use std::sync::Arc;
@@ -90,10 +91,11 @@ pub fn confirmation_code(
     format!("{:03}-{:03}", n / 1000, n % 1000)
 }
 
-/// Best-effort URL we'd advertise to a peer — `http://<lan-ip>:<port>`.
+/// Best-effort URL we'd advertise to a peer — `https://<lan-ip>:<port>`.
+/// Sync runs over TLS with self-signed certs pinned per peer.
 pub fn local_url(port: u16) -> String {
     match local_ip_address::local_ip() {
-        Ok(ip) => format!("http://{ip}:{port}"),
-        Err(_) => format!("http://127.0.0.1:{port}"),
+        Ok(ip) => format!("https://{ip}:{port}"),
+        Err(_) => format!("https://127.0.0.1:{port}"),
     }
 }

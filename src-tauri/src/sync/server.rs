@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde::Deserialize;
@@ -16,6 +18,7 @@ use tokio::sync::oneshot;
 
 use crate::db::{peers, reminders as repo, tombstones};
 use crate::models::now_ms;
+use crate::sync::tls::LocalCert;
 use crate::sync::types::{
     ChangeSet, PairDecision, PairRequest, PairResponse, PendingPairEvent, PingResponse,
     PushResponse, RemoteReminder, RemoteTombstone,
@@ -31,10 +34,14 @@ pub struct ServerState {
     pub identity: DeviceIdentity,
     pub pending_pairs: PendingPairs,
     pub app: AppHandle,
+    pub local_cert: LocalCert,
 }
 
 pub async fn run(state: ServerState, port: u16) -> std::io::Result<()> {
     let auth_state = state.clone();
+    let cert_pem = state.local_cert.cert_pem.clone();
+    let key_pem = state.local_cert.key_pem.clone();
+    let fp = state.local_cert.fingerprint.clone();
 
     let authed = Router::new()
         .route("/ping", get(handle_ping))
@@ -52,9 +59,19 @@ pub async fn run(state: ServerState, port: u16) -> std::io::Result<()> {
         .nest("/klaxon/v1", authed)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    log::info!("sync server listening on 0.0.0.0:{port}");
-    axum::serve(listener, app).await
+    let tls_config = RustlsConfig::from_pem(cert_pem.into_bytes(), key_pem.into_bytes())
+        .await
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    log::info!(
+        "sync server listening on https://0.0.0.0:{port} (fp {})",
+        crate::sync::tls::short(&fp)
+    );
+
+    axum_server::bind_rustls(addr, tls_config)
+        .serve(app.into_make_service())
+        .await
 }
 
 async fn auth_middleware(
@@ -144,23 +161,43 @@ async fn handle_push(
     State(s): State<ServerState>,
     Json(set): Json<ChangeSet>,
 ) -> Result<Json<PushResponse>, StatusCode> {
-    let conn = s.db.lock();
     let mut accepted_reminders = 0usize;
     let mut accepted_tombstones = 0usize;
+    let mut to_cancel: Vec<String> = Vec::new();
 
-    for r in &set.reminders {
-        match repo::apply_remote(&conn, r) {
-            Ok(true) => accepted_reminders += 1,
-            Ok(false) => {}
-            Err(e) => log::warn!("apply remote reminder {}: {e}", r.id),
+    {
+        let conn = s.db.lock();
+        for r in &set.reminders {
+            match repo::apply_remote(&conn, r) {
+                Ok(true) => {
+                    accepted_reminders += 1;
+                    if matches!(
+                        r.state,
+                        crate::models::ReminderState::Dismissed
+                            | crate::models::ReminderState::Snoozed
+                            | crate::models::ReminderState::Completed
+                    ) {
+                        to_cancel.push(r.id.clone());
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => log::warn!("apply remote reminder {}: {e}", r.id),
+            }
+        }
+
+        for t in &set.tombstones {
+            match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
+                Ok(()) => {
+                    accepted_tombstones += 1;
+                    to_cancel.push(t.id.clone());
+                }
+                Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
+            }
         }
     }
 
-    for t in &set.tombstones {
-        match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
-            Ok(()) => accepted_tombstones += 1,
-            Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
-        }
+    for id in to_cancel {
+        crate::alerts::cancel_alert(&s.app, &id);
     }
 
     Ok(Json(PushResponse {
@@ -233,6 +270,7 @@ async fn handle_pair_initiate(
         last_push_at: 0,
         created_at: now_ms(),
         last_seen_at: Some(now_ms()),
+        cert_fingerprint: Some(req.initiator_cert_fingerprint.clone()),
     };
     if let Err(e) = peers::upsert(&conn, &peer) {
         log::error!("store peer after pair: {e}");
@@ -246,5 +284,6 @@ async fn handle_pair_initiate(
         responder_name: s.identity.device_name.clone(),
         responder_url: our_url,
         shared_secret: secret,
+        responder_cert_fingerprint: s.local_cert.fingerprint.clone(),
     }))
 }

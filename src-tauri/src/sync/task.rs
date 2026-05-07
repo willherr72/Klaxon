@@ -6,14 +6,17 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use tauri::AppHandle;
 
+use crate::alerts;
 use crate::db::{peers, reminders as repo, tombstones};
+use crate::models::ReminderState;
 use crate::sync::client::SyncClient;
 use crate::sync::types::{ChangeSet, RemoteReminder, RemoteTombstone};
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 
-pub async fn run(db: Arc<Mutex<Connection>>) {
+pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
     log::info!("sync task online");
     let mut tick = tokio::time::interval(SYNC_INTERVAL);
     tick.tick().await; // first tick fires immediately; skip
@@ -33,7 +36,7 @@ pub async fn run(db: Arc<Mutex<Connection>>) {
             }
         };
         for peer in peer_list {
-            if let Err(e) = sync_one(&db, &peer).await {
+            if let Err(e) = sync_one(&db, &app, &peer).await {
                 log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
             }
         }
@@ -42,23 +45,33 @@ pub async fn run(db: Arc<Mutex<Connection>>) {
 
 async fn sync_one(
     db: &Arc<Mutex<Connection>>,
+    app: &AppHandle,
     peer: &crate::db::peers::Peer,
 ) -> crate::error::AppResult<()> {
-    let client = SyncClient::new(peer.url.clone(), peer.shared_secret.clone())?;
+    let fp = peer.cert_fingerprint.as_deref().unwrap_or("");
+    let client = SyncClient::new(peer.url.clone(), peer.shared_secret.clone(), fp)?;
 
     // Pull
     let pulled = client.pull(peer.last_pull_at).await?;
     let mut max_pulled = peer.last_pull_at;
+    let mut to_cancel: Vec<String> = Vec::new();
     {
         let conn = db.lock();
         for r in &pulled.reminders {
-            let _ = repo::apply_remote(&conn, r);
+            if matches!(repo::apply_remote(&conn, r), Ok(true))
+                && silences_alert(r.state)
+            {
+                to_cancel.push(r.id.clone());
+            }
             if r.updated_at > max_pulled {
                 max_pulled = r.updated_at;
             }
         }
         for t in &pulled.tombstones {
             let _ = tombstones::apply_remote(&conn, &t.id, t.deleted_at);
+            // Tombstones unconditionally cancel — the reminder is gone, no
+            // reason to keep ringing about it.
+            to_cancel.push(t.id.clone());
             if t.deleted_at > max_pulled {
                 max_pulled = t.deleted_at;
             }
@@ -66,6 +79,10 @@ async fn sync_one(
         // Trust the peer's clock for the watermark.
         let watermark = pulled.server_time_ms.max(max_pulled);
         peers::mark_pulled(&conn, &peer.id, watermark)?;
+    }
+    // Cancel local alerts after dropping the DB lock.
+    for id in to_cancel {
+        alerts::cancel_alert(app, &id);
     }
 
     // Push
@@ -107,4 +124,12 @@ async fn sync_one(
         resp.accepted_tombstones,
     );
     Ok(())
+}
+
+/// Reminders in these states should silence any local alert that's still ringing.
+fn silences_alert(state: ReminderState) -> bool {
+    matches!(
+        state,
+        ReminderState::Dismissed | ReminderState::Snoozed | ReminderState::Completed
+    )
 }

@@ -89,10 +89,22 @@
 
   async function pairDiscovered(d: DiscoveredPeer) {
     if (tapPairBusy) return;
+    if (!d.cert_fingerprint) {
+      tapPair = {
+        kind: "error",
+        message: "Peer is not advertising a TLS fingerprint — try restarting it.",
+      };
+      return;
+    }
     tapPairBusy = true;
     tapPair = { kind: "starting", peerName: d.device_name };
     try {
-      const outcome = await api.startPairWith(d.url, d.device_id, d.device_name);
+      const outcome = await api.startPairWith(
+        d.url,
+        d.device_id,
+        d.device_name,
+        d.cert_fingerprint,
+      );
       tapPair = { kind: "success", peerName: outcome.peer_name };
       await refresh();
       await refreshDiscovery();

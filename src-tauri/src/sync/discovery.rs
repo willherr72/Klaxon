@@ -23,6 +23,7 @@ pub struct DiscoveredPeer {
     pub device_name: String,
     pub url: String,
     pub last_seen_ms: i64,
+    pub cert_fingerprint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -31,7 +32,11 @@ pub struct DiscoveryHandle {
     _daemon: Arc<ServiceDaemon>,
 }
 
-pub fn start(identity: DeviceIdentity, port: u16) -> AppResult<DiscoveryHandle> {
+pub fn start(
+    identity: DeviceIdentity,
+    port: u16,
+    cert_fingerprint: String,
+) -> AppResult<DiscoveryHandle> {
     let daemon =
         ServiceDaemon::new().map_err(|e| AppError::Invalid(format!("mDNS daemon: {e}")))?;
 
@@ -55,6 +60,8 @@ pub fn start(identity: DeviceIdentity, port: u16) -> AppResult<DiscoveryHandle> 
         "version".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     );
+    // mDNS TXT records are limited to 255 bytes per pair; SHA-256 hex (64 chars) fits.
+    props.insert("fp".to_string(), cert_fingerprint.clone());
 
     let info = ServiceInfo::new(
         SERVICE_TYPE,
@@ -101,6 +108,10 @@ pub fn start(identity: DeviceIdentity, port: u16) -> AppResult<DiscoveryHandle> 
                             .get_property_val_str("device_name")
                             .unwrap_or("")
                             .to_string();
+                        let fingerprint = props
+                            .get_property_val_str("fp")
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
                         let port = info.get_port();
                         let chosen = info
                             .get_addresses()
@@ -109,7 +120,7 @@ pub fn start(identity: DeviceIdentity, port: u16) -> AppResult<DiscoveryHandle> 
                             .copied()
                             .or_else(|| info.get_addresses().iter().next().copied());
                         let Some(addr) = chosen else { continue };
-                        let url = format!("http://{addr}:{port}");
+                        let url = format!("https://{addr}:{port}");
 
                         let peer = DiscoveredPeer {
                             device_id: device_id.clone(),
@@ -120,6 +131,7 @@ pub fn start(identity: DeviceIdentity, port: u16) -> AppResult<DiscoveryHandle> 
                             },
                             url,
                             last_seen_ms: now_ms(),
+                            cert_fingerprint: fingerprint,
                         };
                         log::info!(
                             "mDNS discovered: {} ({}) → {}",

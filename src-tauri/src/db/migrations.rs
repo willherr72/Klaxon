@@ -61,6 +61,10 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_reminders_dirty ON reminders(updated_at) WHERE dirty = 1;
     CREATE INDEX idx_tombstones_dirty ON tombstones(deleted_at) WHERE dirty = 1;
     "#,
+    // 003 — TLS: pinned cert fingerprint per peer
+    r#"
+    ALTER TABLE peers ADD COLUMN cert_fingerprint TEXT;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

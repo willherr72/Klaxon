@@ -43,8 +43,18 @@ export const api = {
   pingPeer: (id: string) => invoke<PingResponse>("ping_peer", { id }),
   listDiscoveredPeers: () =>
     invoke<DiscoveredPeer[]>("list_discovered_peers"),
-  startPairWith: (peerUrl: string, peerId: string, peerName: string) =>
-    invoke<PairOutcome>("start_pair_with", { peerUrl, peerId, peerName }),
+  startPairWith: (
+    peerUrl: string,
+    peerId: string,
+    peerName: string,
+    peerCertFingerprint: string,
+  ) =>
+    invoke<PairOutcome>("start_pair_with", {
+      peerUrl,
+      peerId,
+      peerName,
+      peerCertFingerprint,
+    }),
   approvePairRequest: (requestId: string) =>
     invoke<void>("approve_pair_request", { requestId }),
   declinePairRequest: (requestId: string) =>
@@ -77,6 +87,7 @@ export interface DiscoveredPeer {
   device_name: string;
   url: string;
   last_seen_ms: number;
+  cert_fingerprint: string | null;
 }
 
 export interface DeviceInfo {

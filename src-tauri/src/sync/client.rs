@@ -10,10 +10,20 @@ pub struct SyncClient {
 }
 
 impl SyncClient {
-    pub fn new(base_url: String, secret: String) -> AppResult<Self> {
+    /// Build a sync client that pins the peer's cert fingerprint. Without
+    /// a fingerprint we refuse to construct one — peers must complete the
+    /// pairing handshake first.
+    pub fn new(base_url: String, secret: String, cert_fingerprint: &str) -> AppResult<Self> {
+        if cert_fingerprint.trim().is_empty() {
+            return Err(AppError::Invalid(
+                "peer has no pinned cert fingerprint — re-pair the device".into(),
+            ));
+        }
+        let tls_config = crate::sync::tls::pinned_client_config(cert_fingerprint);
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
             .connect_timeout(Duration::from_secs(5))
+            .use_preconfigured_tls((*tls_config).clone())
             .build()
             .map_err(|e| AppError::Invalid(format!("build http client: {e}")))?;
         Ok(Self {

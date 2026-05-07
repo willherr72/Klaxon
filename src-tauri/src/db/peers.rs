@@ -14,11 +14,13 @@ pub struct Peer {
     pub last_push_at: i64,
     pub created_at: i64,
     pub last_seen_at: Option<i64>,
+    pub cert_fingerprint: Option<String>,
 }
 
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Peer>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, url, shared_secret, last_pull_at, last_push_at, created_at, last_seen_at
+        "SELECT id, name, url, shared_secret, last_pull_at, last_push_at, created_at,
+                last_seen_at, cert_fingerprint
          FROM peers ORDER BY name ASC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -31,6 +33,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Peer>> {
             last_push_at: r.get(5)?,
             created_at: r.get(6)?,
             last_seen_at: r.get(7)?,
+            cert_fingerprint: r.get(8)?,
         })
     })?;
     let mut out = Vec::new();
@@ -42,12 +45,14 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Peer>> {
 
 pub fn upsert(conn: &Connection, peer: &Peer) -> AppResult<()> {
     conn.execute(
-        "INSERT INTO peers (id, name, url, shared_secret, last_pull_at, last_push_at, created_at, last_seen_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO peers (id, name, url, shared_secret, last_pull_at, last_push_at,
+                            created_at, last_seen_at, cert_fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             url = excluded.url,
-            shared_secret = excluded.shared_secret",
+            shared_secret = excluded.shared_secret,
+            cert_fingerprint = excluded.cert_fingerprint",
         params![
             peer.id,
             peer.name,
@@ -57,6 +62,7 @@ pub fn upsert(conn: &Connection, peer: &Peer) -> AppResult<()> {
             peer.last_push_at,
             peer.created_at,
             peer.last_seen_at,
+            peer.cert_fingerprint,
         ],
     )?;
     Ok(())

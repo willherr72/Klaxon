@@ -188,6 +188,8 @@ pub struct AddPeerInput {
     pub name: String,
     pub url: String,
     pub shared_secret: String,
+    #[serde(default)]
+    pub cert_fingerprint: Option<String>,
 }
 
 #[tauri::command]
@@ -227,6 +229,11 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_push_at: 0,
         created_at: now_ms(),
         last_seen_at: None,
+        cert_fingerprint: input
+            .cert_fingerprint
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
     };
     {
         let conn = state.db.lock();
@@ -253,16 +260,16 @@ pub async fn ping_peer(
     state: State<'_, AppState>,
     id: String,
 ) -> AppResult<PingResponse> {
-    let (url, secret) = {
+    let (url, secret, fp) = {
         let conn = state.db.lock();
         let peers = peer_repo::list_all(&conn)?;
         let p = peers
             .into_iter()
             .find(|p| p.id == id)
             .ok_or_else(|| AppError::NotFound(format!("peer {id}")))?;
-        (p.url, p.shared_secret)
+        (p.url, p.shared_secret, p.cert_fingerprint.unwrap_or_default())
     };
-    let client = SyncClient::new(url, secret)?;
+    let client = SyncClient::new(url, secret, &fp)?;
     client.ping().await
 }
 
@@ -319,10 +326,17 @@ pub async fn start_pair_with(
     peer_url: String,
     peer_id: String,
     peer_name: String,
+    peer_cert_fingerprint: String,
 ) -> AppResult<crate::sync::types::PairOutcome> {
     use std::time::Duration;
 
     use crate::sync::types::{PairOutcome, PairRequest, PairResponse};
+
+    if peer_cert_fingerprint.trim().is_empty() {
+        return Err(AppError::Invalid(
+            "peer must advertise a TLS fingerprint via mDNS to be paired".into(),
+        ));
+    }
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let ephemeral = sync::generate_secret();
@@ -330,10 +344,15 @@ pub async fn start_pair_with(
     let our = sync::read_identity(&state.db);
     let port = sync::read_port(&state.db);
     let our_url = sync::local_url(port);
+    let our_fp = state
+        .local_cert
+        .lock()
+        .as_ref()
+        .map(|c| c.fingerprint.clone())
+        .ok_or_else(|| AppError::Invalid("local cert not yet ready".into()))?;
 
     let sas = sync::confirmation_code(&request_id, &ephemeral, &our.device_id, &peer_id);
 
-    // Tell our own UI what code to show while we wait.
     let _ = app.emit(
         "klaxon://pair-progress",
         serde_json::json!({
@@ -350,11 +369,14 @@ pub async fn start_pair_with(
         initiator_name: our.device_name.clone(),
         initiator_url: our_url,
         ephemeral_token: ephemeral,
+        initiator_cert_fingerprint: our_fp,
     };
 
+    let tls_config = sync::tls::pinned_client_config(&peer_cert_fingerprint);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(150))
         .connect_timeout(Duration::from_secs(5))
+        .use_preconfigured_tls((*tls_config).clone())
         .build()
         .map_err(|e| AppError::Invalid(format!("http client: {e}")))?;
 
@@ -383,6 +405,15 @@ pub async fn start_pair_with(
         .await
         .map_err(|e| AppError::Invalid(format!("parse pair response: {e}")))?;
 
+    if !body
+        .responder_cert_fingerprint
+        .eq_ignore_ascii_case(&peer_cert_fingerprint)
+    {
+        return Err(AppError::Invalid(
+            "peer's reported fingerprint disagrees with mDNS — refusing to pair".into(),
+        ));
+    }
+
     {
         let conn = state.db.lock();
         let peer = peer_repo::Peer {
@@ -398,6 +429,7 @@ pub async fn start_pair_with(
             last_push_at: 0,
             created_at: now_ms(),
             last_seen_at: Some(now_ms()),
+            cert_fingerprint: Some(body.responder_cert_fingerprint.clone()),
         };
         peer_repo::upsert(&conn, &peer)?;
     }

@@ -29,6 +29,7 @@ pub struct AppState {
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::server::PendingPairs,
+    pub local_cert: Arc<Mutex<Option<sync::tls::LocalCert>>>,
 }
 
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
@@ -36,6 +37,9 @@ const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    // rustls 0.23 requires an explicit crypto provider before any TLS use.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -86,22 +90,38 @@ pub fn run() {
             // Sync server + task: started unconditionally; sync task no-ops while
             // sync_enabled is false. Server respects the same flag at startup.
             let sync_db = db.clone();
+            let sync_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                sync::task::run(sync_db).await;
+                sync::task::run(sync_db, sync_app).await;
             });
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));
             let pending_pairs: sync::server::PendingPairs =
                 Arc::new(Mutex::new(HashMap::new()));
+            let local_cert_state: Arc<Mutex<Option<sync::tls::LocalCert>>> =
+                Arc::new(Mutex::new(None));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
                 let port = sync::read_port(&db);
+                let cert = match sync::tls::load_or_generate(&app_dir) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!("could not provision TLS cert: {e}");
+                        return Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        )) as Box<dyn std::error::Error>);
+                    }
+                };
+                *local_cert_state.lock() = Some(cert.clone());
+
                 let server_state = sync::server::ServerState {
                     db: db.clone(),
                     identity: identity.clone(),
                     pending_pairs: pending_pairs.clone(),
                     app: app.handle().clone(),
+                    local_cert: cert.clone(),
                 };
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = sync::server::run(server_state, port).await {
@@ -109,7 +129,7 @@ pub fn run() {
                     }
                 });
 
-                match sync::discovery::start(identity, port) {
+                match sync::discovery::start(identity, port, cert.fingerprint.clone()) {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
                 }
@@ -135,6 +155,7 @@ pub fn run() {
                 current_hotkey,
                 discovery: discovery_handle,
                 pending_pairs,
+                local_cert: local_cert_state,
             });
 
             tray::setup(app)?;

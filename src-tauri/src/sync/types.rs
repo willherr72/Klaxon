@@ -57,6 +57,7 @@ pub struct PairRequest {
     pub initiator_name: String,
     pub initiator_url: String,
     pub ephemeral_token: String,
+    pub initiator_cert_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +66,7 @@ pub struct PairResponse {
     pub responder_name: String,
     pub responder_url: String,
     pub shared_secret: String,
+    pub responder_cert_fingerprint: String,
 }
 
 /// What the responder's frontend gets via Tauri event when an incoming
