@@ -1,27 +1,37 @@
 <script lang="ts">
   import { countdown } from "../time";
-  import type { FilterKey, Reminder } from "../types";
+  import type { Reminder, TimeFilter, ViewMode } from "../types";
 
   let {
-    filter,
+    view,
+    timeFilter,
+    onTimeFilterChange,
     nextReminder,
     now,
   }: {
-    filter: FilterKey;
+    view: ViewMode;
+    timeFilter: TimeFilter;
+    onTimeFilterChange: (t: TimeFilter) => void;
     nextReminder: Reminder | null;
     now: number;
   } = $props();
 
-  const titles: Record<FilterKey, string> = {
-    all: "ALL REMINDERS",
-    today: "TODAY",
-    upcoming: "UPCOMING",
+  const titles: Record<ViewMode, string> = {
+    reminders: "REMINDERS",
     tasks: "TASKS",
-    recurring: "RECURRING",
+    calendar: "CALENDAR",
     completed: "COMPLETED",
   };
 
-  let label = $derived(titles[filter]);
+  const filterChips: { key: TimeFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "today", label: "Today" },
+    { key: "upcoming", label: "Upcoming" },
+    { key: "recurring", label: "Recurring" },
+  ];
+
+  let showChips = $derived(view === "reminders" || view === "tasks");
+  let label = $derived(titles[view]);
   let nextTarget = $derived(
     nextReminder ? (nextReminder.snooze_until ?? nextReminder.due_at) : null,
   );
@@ -36,6 +46,21 @@
     <div class="dot"></div>
     <h1 class="display title">{label}</h1>
   </div>
+
+  {#if showChips}
+    <div class="chips">
+      {#each filterChips as chip (chip.key)}
+        <button
+          class="chip"
+          class:active={timeFilter === chip.key}
+          onclick={() => onTimeFilterChange(chip.key)}
+        >
+          {chip.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="right">
     <span class="mono-caps-faint">Next In</span>
     <span class="countdown" class:active={!!nextTarget}>
@@ -51,7 +76,7 @@
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 24px;
     padding: 0 24px;
     position: relative;
   }
@@ -74,6 +99,7 @@
     display: flex;
     align-items: center;
     gap: 14px;
+    flex-shrink: 0;
   }
   .dot {
     width: 8px;
@@ -89,10 +115,42 @@
     line-height: 1;
   }
 
+  .chips {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+  }
+  .chip {
+    padding: 6px 12px;
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    background: transparent;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .chip:hover {
+    color: var(--text-2);
+    border-color: var(--border-bright);
+  }
+  .chip.active {
+    color: var(--klaxon);
+    border-color: var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.05);
+    box-shadow: inset 0 0 12px rgba(255, 157, 0, 0.08);
+  }
+
   .right {
     display: flex;
     align-items: center;
     gap: 14px;
+    flex-shrink: 0;
+    margin-left: auto;
   }
   .countdown {
     font-family: var(--font-mono);

@@ -20,6 +20,7 @@ pub fn ensure_defaults(conn: &Connection) -> AppResult<()> {
         ("global_hotkey_new", "Ctrl+Alt+KeyN"),
         ("sync_enabled", "false"),
         ("sync_port", "7124"),
+        ("list_sort_order", "date_asc"),
     ];
 
     // Generate a stable device id on first run.

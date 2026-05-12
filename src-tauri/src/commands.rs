@@ -89,11 +89,23 @@ pub fn dismiss_reminder(
     app: AppHandle,
     id: String,
 ) -> AppResult<Reminder> {
+    // "Dismiss" stops the active alarm but does not transition the reminder
+    // to a terminal state. For one-shots the scheduler already set state to
+    // Fired; for recurring the scheduler already rescheduled to the next
+    // occurrence (state=Pending). In both cases we leave that alone so the
+    // user can come back to the item later. If state is currently Pending
+    // (e.g. dismiss invoked outside the alarm window), bump to Dismissed
+    // so it visibly differentiates from never-rang reminders.
+    alerts::cancel_alert(&app, &id);
     let r = {
         let conn = state.db.lock();
-        repo::set_state(&conn, &id, ReminderState::Dismissed, None)?
+        let existing = repo::get_by_id(&conn, &id)?;
+        if existing.state == ReminderState::Pending && existing.repeat_rule.is_none() {
+            repo::set_state(&conn, &id, ReminderState::Dismissed, None)?
+        } else {
+            existing
+        }
     };
-    alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
     Ok(r)
 }

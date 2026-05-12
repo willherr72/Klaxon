@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { shortTime } from "../time";
+  import { effectiveDueAt, shortTime } from "../time";
   import type { Reminder } from "../types";
   import SignalLight from "./SignalLight.svelte";
 
@@ -20,6 +20,10 @@
   let isHigh = $derived(reminder.priority === "high");
   let isCompleted = $derived(reminder.state === "completed");
   let isSilent = $derived(reminder.silent);
+  let isSnoozed = $derived(reminder.state === "snoozed");
+  let isRang = $derived(
+    reminder.state === "fired" || reminder.state === "dismissed",
+  );
 </script>
 
 <div
@@ -54,13 +58,19 @@
   </div>
 
   <div class="meta">
+    {#if isSnoozed}
+      <span class="badge mono-caps-faint snoozed-badge">⏱ snoozed</span>
+    {/if}
+    {#if isRang}
+      <span class="badge mono-caps-faint rang-badge">● rang</span>
+    {/if}
     {#if isSilent}
       <span class="badge mono-caps-faint task-badge">Task</span>
     {/if}
     {#if reminder.repeat_rule}
       <span class="badge mono-caps-faint">↻ {reminder.repeat_rule.kind}</span>
     {/if}
-    <span class="time">{shortTime(reminder.due_at)}</span>
+    <span class="time">{shortTime(effectiveDueAt(reminder))}</span>
   </div>
 
   <div class="actions">
@@ -141,6 +151,16 @@
   .task-badge {
     color: var(--text-2);
     border-color: var(--border-bright);
+  }
+  .snoozed-badge {
+    color: var(--klaxon);
+    border-color: var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.06);
+  }
+  .rang-badge {
+    color: var(--text-muted);
+    border-color: var(--border-strong);
+    background: rgba(255, 255, 255, 0.02);
   }
 
   .body { min-width: 0; }

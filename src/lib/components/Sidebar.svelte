@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { FilterKey } from "../types";
+  import type { ViewMode } from "../types";
 
   let {
     current,
@@ -8,19 +8,17 @@
     onNew,
     onOpenSettings,
   }: {
-    current: FilterKey;
-    counts: Record<FilterKey, number>;
-    onSelect: (k: FilterKey) => void;
+    current: ViewMode;
+    counts: Record<ViewMode, number>;
+    onSelect: (k: ViewMode) => void;
     onNew: () => void;
     onOpenSettings: () => void;
   } = $props();
 
-  const items: { key: FilterKey; label: string }[] = [
-    { key: "all", label: "All" },
-    { key: "today", label: "Today" },
-    { key: "upcoming", label: "Upcoming" },
+  const items: { key: ViewMode; label: string }[] = [
+    { key: "reminders", label: "Reminders" },
     { key: "tasks", label: "Tasks" },
-    { key: "recurring", label: "Recurring" },
+    { key: "calendar", label: "Calendar" },
     { key: "completed", label: "Completed" },
   ];
 </script>

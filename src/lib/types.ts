@@ -52,10 +52,5 @@ export interface ReminderUpdate {
   silent?: boolean;
 }
 
-export type FilterKey =
-  | "all"
-  | "today"
-  | "upcoming"
-  | "tasks"
-  | "recurring"
-  | "completed";
+export type ViewMode = "reminders" | "tasks" | "calendar" | "completed";
+export type TimeFilter = "all" | "today" | "upcoming" | "recurring";

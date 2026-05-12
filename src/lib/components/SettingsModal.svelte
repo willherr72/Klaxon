@@ -22,6 +22,7 @@
   let dataDirPath = $state("");
   let globalHotkey = $state("Ctrl+Alt+KeyN");
   let recordingHotkey = $state(false);
+  let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let busy = $state(false);
   let error = $state<string | null>(null);
   let savedFlash = $state(false);
@@ -53,6 +54,7 @@
       };
       globalHotkey = settings["global_hotkey_new"] ?? "Ctrl+Alt+KeyN";
       recordingHotkey = false;
+      sortOrder = settings["list_sort_order"] === "date_desc" ? "date_desc" : "date_asc";
       try {
         autostart = await autostartIsEnabled();
       } catch (e) {
@@ -82,6 +84,7 @@
         api.setSetting("repeat_interval_secs_normal", String(normalCfg.intervalSecs)),
         api.setSetting("repeat_count_high", String(highCfg.count)),
         api.setSetting("repeat_interval_secs_high", String(highCfg.intervalSecs)),
+        api.setSetting("list_sort_order", sortOrder),
       ]);
       try {
         if (autostart) await enableAutostart();
@@ -120,6 +123,7 @@
     highCfg = { count: 30, intervalSecs: 4 };
     globalHotkey = "Ctrl+Alt+KeyN";
     recordingHotkey = false;
+    sortOrder = "date_asc";
   }
 
   function captureHotkey(e: KeyboardEvent) {
@@ -244,6 +248,35 @@
               </div>
             </div>
           {/each}
+        </section>
+
+        <section class="section">
+          <div class="section-head">
+            <span class="section-tick"></span>
+            <h3 class="mono-caps section-title">Display</h3>
+            <span class="section-line"></span>
+          </div>
+          <div class="sort-row">
+            <span class="sort-label mono-caps-faint">Sort Order</span>
+            <div class="sort-options">
+              <button
+                class="sort-btn"
+                class:active={sortOrder === "date_asc"}
+                onclick={() => (sortOrder = "date_asc")}
+                type="button"
+              >
+                Oldest → Newest
+              </button>
+              <button
+                class="sort-btn"
+                class:active={sortOrder === "date_desc"}
+                onclick={() => (sortOrder = "date_desc")}
+                type="button"
+              >
+                Newest → Oldest
+              </button>
+            </div>
+          </div>
         </section>
 
         <section class="section">
@@ -751,4 +784,44 @@
     border-color: var(--signal-high);
   }
   .hotkey-clear:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Sort order */
+  .sort-row {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    align-items: center;
+    gap: 12px;
+  }
+  .sort-label {
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    color: var(--text-2);
+  }
+  .sort-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+  }
+  .sort-btn {
+    padding: 10px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .sort-btn:hover { color: var(--text-2); }
+  .sort-btn.active {
+    background: var(--bg-active);
+    color: var(--klaxon);
+    box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
+  }
+  .sort-btn + .sort-btn { border-left: 1px solid var(--border); }
 </style>

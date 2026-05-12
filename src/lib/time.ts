@@ -1,4 +1,13 @@
+import type { Reminder } from "./types";
+
 const WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+/** When a reminder is snoozed, `snooze_until` is its next-fire time and what
+ * the UI should sort/group/display by. Otherwise fall back to `due_at`. */
+export function effectiveDueAt(r: Reminder): number {
+  if (r.state === "snoozed" && r.snooze_until != null) return r.snooze_until;
+  return r.due_at;
+}
 const MONTHS = [
   "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
