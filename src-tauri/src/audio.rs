@@ -2,7 +2,9 @@
 //! must outlive every `Sink` it owns. Communicates via a `mpsc::Sender`.
 //!
 //! Each `Play` builds a fresh `Sink` keyed by reminder id and queues a
-//! priority-specific tone pattern. `Stop` aborts that sink.
+//! tone-pattern burst. `Stop` aborts that sink. The caller picks the tone
+//! pattern (which sound to play) — priority only affects the repeat count
+//! and interval, not the audio itself.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -11,12 +13,40 @@ use std::time::Duration;
 
 use rodio::source::{SineWave, Source};
 use rodio::{OutputStream, Sink};
+use serde::{Deserialize, Serialize};
 
-use crate::models::Priority;
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TonePattern {
+    Klaxon,
+    Chime,
+    Siren,
+    Pulse,
+}
+
+impl TonePattern {
+    pub fn from_str_or_default(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "chime" => Self::Chime,
+            "siren" => Self::Siren,
+            "pulse" => Self::Pulse,
+            _ => Self::Klaxon,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Klaxon => "klaxon",
+            Self::Chime => "chime",
+            Self::Siren => "siren",
+            Self::Pulse => "pulse",
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum AudioCmd {
-    Play { id: String, priority: Priority },
+    Play { id: String, tone: TonePattern },
     Stop { id: String },
     Shutdown,
 }
@@ -35,7 +65,6 @@ fn engine_loop(rx: Receiver<AudioCmd>) {
         Ok(s) => s,
         Err(e) => {
             log::warn!("audio output unavailable: {e} — alerts will be silent");
-            // Drain commands silently so the channel doesn't back up.
             while let Ok(cmd) = rx.recv() {
                 if matches!(cmd, AudioCmd::Shutdown) {
                     break;
@@ -49,7 +78,7 @@ fn engine_loop(rx: Receiver<AudioCmd>) {
 
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            AudioCmd::Play { id, priority } => {
+            AudioCmd::Play { id, tone } => {
                 if let Some(old) = sinks.remove(&id) {
                     old.stop();
                 }
@@ -60,7 +89,7 @@ fn engine_loop(rx: Receiver<AudioCmd>) {
                         continue;
                     }
                 };
-                append_pattern(&sink, priority);
+                append_pattern(&sink, tone);
                 sinks.insert(id, sink);
             }
             AudioCmd::Stop { id } => {
@@ -71,38 +100,54 @@ fn engine_loop(rx: Receiver<AudioCmd>) {
             AudioCmd::Shutdown => break,
         }
 
-        // Cull finished sinks so the map doesn't grow unbounded.
         sinks.retain(|_, s| !s.empty());
     }
 }
 
-/// Append a priority-tuned alarm burst to the sink. Shape of the burst:
-///   Low    → one soft two-tone chime, ~0.4 s
-///   Normal → klaxon: low/high alternation, ~0.9 s
-///   High   → urgent siren: tighter, faster, brighter, ~1.0 s
-fn append_pattern(sink: &Sink, priority: Priority) {
-    match priority {
-        Priority::Low => {
-            sink.append(tone(880.0, 180, 0.22));
-            sink.append(tone(660.0, 220, 0.18));
-        }
-        Priority::Normal => {
+/// Queue one burst of the chosen tone into the sink.
+fn append_pattern(sink: &Sink, tone: TonePattern) {
+    match tone {
+        TonePattern::Klaxon => {
+            // Two-tone industrial alarm. Two cycles, ~0.9s total.
             for _ in 0..2 {
-                sink.append(tone(540.0, 220, 0.32));
-                sink.append(tone(880.0, 220, 0.32));
+                sink.append(beep(540.0, 220, 0.32));
+                sink.append(beep(880.0, 220, 0.32));
             }
         }
-        Priority::High => {
+        TonePattern::Chime => {
+            // Soft descending two-tone, ~0.4s total. Calm, low-impact.
+            sink.append(beep(880.0, 180, 0.22));
+            sink.append(beep(660.0, 220, 0.18));
+        }
+        TonePattern::Siren => {
+            // Tight high alternation, ~1s, urgent.
             for _ in 0..4 {
-                sink.append(tone(880.0, 120, 0.42));
-                sink.append(tone(1100.0, 120, 0.42));
+                sink.append(beep(880.0, 120, 0.42));
+                sink.append(beep(1100.0, 120, 0.42));
+            }
+        }
+        TonePattern::Pulse => {
+            // Sharp single-pitch beep with short gaps. Crisp and insistent.
+            for i in 0..5 {
+                sink.append(beep(880.0, 80, 0.42));
+                if i < 4 {
+                    sink.append(silence(70));
+                }
             }
         }
     }
 }
 
-fn tone(freq: f32, ms: u64, amp: f32) -> impl Source<Item = f32> + Send + 'static {
+fn beep(freq: f32, ms: u64, amp: f32) -> impl Source<Item = f32> + Send + 'static {
     SineWave::new(freq)
         .take_duration(Duration::from_millis(ms))
         .amplify(amp)
+}
+
+fn silence(ms: u64) -> impl Source<Item = f32> + Send + 'static {
+    // rodio doesn't have a zero-source taking a duration that's trivial to
+    // type; we use an amplitude-0 sine wave instead.
+    SineWave::new(1.0)
+        .take_duration(Duration::from_millis(ms))
+        .amplify(0.0)
 }

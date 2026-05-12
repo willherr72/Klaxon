@@ -173,6 +173,17 @@ pub fn set_global_hotkey(
     crate::install_global_hotkey(&app, &state.current_hotkey, &combo)
 }
 
+#[tauri::command]
+pub fn preview_tone(state: State<'_, AppState>, tone: String) -> AppResult<()> {
+    let parsed = crate::audio::TonePattern::from_str_or_default(&tone);
+    let id = format!("preview-{}", uuid::Uuid::new_v4());
+    state
+        .audio_tx
+        .send(crate::audio::AudioCmd::Play { id, tone: parsed })
+        .map_err(|e| AppError::Invalid(format!("audio: {e}")))?;
+    Ok(())
+}
+
 // ── Sync ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

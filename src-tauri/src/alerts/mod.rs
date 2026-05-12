@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
-use crate::audio::AudioCmd;
+use crate::audio::{AudioCmd, TonePattern};
 use crate::db::settings as cfg;
 use crate::models::{Priority, Reminder};
 use crate::AppState;
@@ -40,8 +40,9 @@ pub fn label_for(id: &str) -> String {
     format!("alert-{id}")
 }
 
-/// Start a tokio task that plays the priority pattern, waits the configured
-/// interval, replays — until `repeat_count` is hit or the cancel flag flips.
+/// Start a tokio task that plays the user-chosen tone for this priority,
+/// waits the configured interval, replays — until `repeat_count` is hit or
+/// the cancel flag flips.
 pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
     let state = app.state::<AppState>();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -54,6 +55,7 @@ pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
 
     tauri::async_runtime::spawn(async move {
         let (count, interval_ms) = read_repeat_settings(&db, priority);
+        let tone = read_tone(&db, priority);
 
         for i in 0..count {
             if cancel.load(Ordering::Relaxed) {
@@ -61,13 +63,12 @@ pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
             }
             let _ = audio_tx.send(AudioCmd::Play {
                 id: id.clone(),
-                priority,
+                tone,
             });
 
             if i + 1 >= count || interval_ms == 0 {
                 continue;
             }
-            // Sleep in 250ms slices so cancellation is responsive.
             let mut waited = 0u64;
             while waited < interval_ms {
                 if cancel.load(Ordering::Relaxed) {
@@ -78,6 +79,22 @@ pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
             }
         }
     });
+}
+
+/// Look up the user's chosen tone for a given priority, falling back to a
+/// sensible per-priority default.
+pub fn read_tone(db: &Arc<Mutex<Connection>>, priority: Priority) -> TonePattern {
+    let (key, default) = match priority {
+        Priority::Low => ("tone_low", TonePattern::Chime),
+        Priority::Normal => ("tone_normal", TonePattern::Klaxon),
+        Priority::High => ("tone_high", TonePattern::Siren),
+    };
+    let conn = db.lock();
+    cfg::get(&conn, key)
+        .ok()
+        .flatten()
+        .map(|s| TonePattern::from_str_or_default(&s))
+        .unwrap_or(default)
 }
 
 /// Stop audio + close the alert window for a given reminder. Safe to call

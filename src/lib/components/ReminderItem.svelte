@@ -34,7 +34,15 @@
   role="button"
   tabindex="0"
   onclick={() => onClick(reminder)}
-  onkeydown={(e) => (e.key === "Enter" || e.key === " ") && onClick(reminder)}
+  onkeydown={(e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick(reminder);
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      onDelete(reminder);
+    }
+  }}
 >
   {#if isHigh}
     <div class="hazard-rail hazard"></div>

@@ -9,6 +9,14 @@
     type PeerView,
   } from "../api";
 
+  let {
+    collapsed = false,
+    onToggle,
+  }: {
+    collapsed?: boolean;
+    onToggle?: () => void;
+  } = $props();
+
   let device = $state<DeviceInfo | null>(null);
   let deviceName = $state("");
   let peers = $state<PeerView[]>([]);
@@ -247,14 +255,22 @@
 </script>
 
 <section class="section">
-  <div class="section-head">
+  <button
+    class="section-head"
+    class:open={!collapsed}
+    onclick={() => onToggle?.()}
+    aria-expanded={!collapsed}
+    type="button"
+  >
+    <span class="chevron" class:open={!collapsed}>▸</span>
     <span class="section-tick"></span>
     <h3 class="mono-caps section-title">LAN Sync</h3>
     <span class="section-line"></span>
     <span class="status-pill" class:on={syncEnabled}>
       {syncEnabled ? "ON" : "OFF"}
     </span>
-  </div>
+  </button>
+  {#if !collapsed}
   <div class="section-help mono-caps-faint">
     Sync reminders between paired devices on your local network. Restart Klaxon after enabling so the sync server starts up.
   </div>
@@ -373,6 +389,7 @@
         </div>
       {/each}
     </div>
+  {/if}
   {/if}
 </section>
 
@@ -503,6 +520,31 @@
     border: 1px solid var(--border-strong);
     color: var(--text-muted);
   }
+  button.section-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 6px 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+  }
+  button.section-head:hover .section-title { color: var(--text); }
+  .chevron {
+    display: inline-block;
+    width: 12px;
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 160ms var(--ease), color 100ms var(--ease);
+    text-align: center;
+  }
+  .chevron.open {
+    transform: rotate(90deg);
+    color: var(--klaxon);
+  }
+  button.section-head:hover .chevron { color: var(--text); }
   .status-pill.on {
     color: var(--ok);
     border-color: var(--ok);

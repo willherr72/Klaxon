@@ -6,12 +6,16 @@
   let {
     open,
     reminder,
+    defaultDueAt = null,
+    defaultSilent = false,
     onClose,
     onSave,
     onDelete,
   }: {
     open: boolean;
     reminder: Reminder | null;
+    defaultDueAt?: number | null;
+    defaultSilent?: boolean;
     onClose: () => void;
     onSave: (input: ReminderCreate, id: string | null) => void;
     onDelete: (id: string) => void;
@@ -54,11 +58,11 @@
     } else {
       title = "";
       description = "";
-      dueLocal = msToLocalInput(Date.now() + 3600_000);
+      dueLocal = msToLocalInput(defaultDueAt ?? Date.now() + 3600_000);
       priority = "normal";
       repeatKind = "none";
       intervalSecs = 3600;
-      silent = false;
+      silent = defaultSilent;
     }
   });
 

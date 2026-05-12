@@ -23,6 +23,8 @@
   let searchOpen = $state(false);
   let searchQuery = $state("");
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
+  let editorDefaultDueAt = $state<number | null>(null);
+  let editorDefaultSilent = $state(false);
 
   reminders.subscribe((v) => (allReminders = v));
   editingId.subscribe((v) => (currentEditingId = v));
@@ -239,11 +241,24 @@
   }
 
   function openNew() {
+    editorDefaultDueAt = null;
+    editorDefaultSilent = false;
+    editingId.set(null);
+    editorOpen.set(true);
+  }
+
+  /** Open the editor for a brand-new reminder/task, pre-seeded to the given
+   * timestamp. Used by the calendar's right-click → context menu flow. */
+  function openNewForDate(ms: number, silent: boolean) {
+    editorDefaultDueAt = ms;
+    editorDefaultSilent = silent;
     editingId.set(null);
     editorOpen.set(true);
   }
 
   function openEdit(r: Reminder) {
+    editorDefaultDueAt = null;
+    editorDefaultSilent = false;
     editingId.set(r.id);
     editorOpen.set(true);
   }
@@ -251,6 +266,8 @@
   function closeEditor() {
     editorOpen.set(false);
     editingId.set(null);
+    editorDefaultDueAt = null;
+    editorDefaultSilent = false;
   }
 
   async function handleSave(input: ReminderCreate, id: string | null) {
@@ -320,7 +337,11 @@
     now={now}
   />
   {#if currentView === "calendar"}
-    <CalendarView reminders={filtered} onSelect={openEdit} />
+    <CalendarView
+      reminders={filtered}
+      onSelect={openEdit}
+      onCreateForDate={openNewForDate}
+    />
   {:else}
     <ReminderList
       reminders={filtered}
@@ -342,6 +363,8 @@
   <ReminderEditor
     open={isEditorOpen}
     reminder={editingReminder}
+    defaultDueAt={editorDefaultDueAt}
+    defaultSilent={editorDefaultSilent}
     onClose={closeEditor}
     onSave={handleSave}
     onDelete={handleDelete}

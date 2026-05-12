@@ -13,11 +13,26 @@
 
   let { open, onClose }: { open: boolean; onClose: () => void } = $props();
 
-  type PrioConfig = { count: number; intervalSecs: number };
+  type ToneKey = "klaxon" | "chime" | "siren" | "pulse";
+  type PrioConfig = { count: number; intervalSecs: number; tone: ToneKey };
 
-  let lowCfg = $state<PrioConfig>({ count: 1, intervalSecs: 0 });
-  let normalCfg = $state<PrioConfig>({ count: 5, intervalSecs: 8 });
-  let highCfg = $state<PrioConfig>({ count: 30, intervalSecs: 4 });
+  const TONE_LABELS: Record<ToneKey, string> = {
+    klaxon: "Klaxon",
+    chime: "Chime",
+    siren: "Siren",
+    pulse: "Pulse",
+  };
+  const TONE_OPTIONS: ToneKey[] = ["klaxon", "chime", "siren", "pulse"];
+  function parseTone(v: string | undefined, fallback: ToneKey): ToneKey {
+    const s = (v ?? "").toLowerCase();
+    return (TONE_OPTIONS as readonly string[]).includes(s)
+      ? (s as ToneKey)
+      : fallback;
+  }
+
+  let lowCfg = $state<PrioConfig>({ count: 1, intervalSecs: 0, tone: "chime" });
+  let normalCfg = $state<PrioConfig>({ count: 5, intervalSecs: 8, tone: "klaxon" });
+  let highCfg = $state<PrioConfig>({ count: 30, intervalSecs: 4, tone: "siren" });
   let autostart = $state(false);
   let dataDirPath = $state("");
   let globalHotkey = $state("Ctrl+Alt+KeyN");
@@ -26,6 +41,21 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let savedFlash = $state(false);
+
+  // Each panel section starts collapsed so the modal stays compact. Click a
+  // section header to expand the one you want to edit.
+  type SectionKey = "alerts" | "display" | "sync" | "hotkeys" | "startup" | "system";
+  let sectionOpen = $state<Record<SectionKey, boolean>>({
+    alerts: false,
+    display: false,
+    sync: false,
+    hotkeys: false,
+    startup: false,
+    system: false,
+  });
+  function toggleSection(key: SectionKey) {
+    sectionOpen[key] = !sectionOpen[key];
+  }
 
   $effect(() => {
     if (open) loadAll();
@@ -43,14 +73,17 @@
       lowCfg = {
         count: num("repeat_count_low", 1),
         intervalSecs: num("repeat_interval_secs_low", 0),
+        tone: parseTone(settings["tone_low"], "chime"),
       };
       normalCfg = {
         count: num("repeat_count_normal", 5),
         intervalSecs: num("repeat_interval_secs_normal", 8),
+        tone: parseTone(settings["tone_normal"], "klaxon"),
       };
       highCfg = {
         count: num("repeat_count_high", 30),
         intervalSecs: num("repeat_interval_secs_high", 4),
+        tone: parseTone(settings["tone_high"], "siren"),
       };
       globalHotkey = settings["global_hotkey_new"] ?? "Ctrl+Alt+KeyN";
       recordingHotkey = false;
@@ -80,10 +113,13 @@
       await Promise.all([
         api.setSetting("repeat_count_low", String(lowCfg.count)),
         api.setSetting("repeat_interval_secs_low", String(lowCfg.intervalSecs)),
+        api.setSetting("tone_low", lowCfg.tone),
         api.setSetting("repeat_count_normal", String(normalCfg.count)),
         api.setSetting("repeat_interval_secs_normal", String(normalCfg.intervalSecs)),
+        api.setSetting("tone_normal", normalCfg.tone),
         api.setSetting("repeat_count_high", String(highCfg.count)),
         api.setSetting("repeat_interval_secs_high", String(highCfg.intervalSecs)),
+        api.setSetting("tone_high", highCfg.tone),
         api.setSetting("list_sort_order", sortOrder),
       ]);
       try {
@@ -118,12 +154,20 @@
   }
 
   function reset() {
-    lowCfg = { count: 1, intervalSecs: 0 };
-    normalCfg = { count: 5, intervalSecs: 8 };
-    highCfg = { count: 30, intervalSecs: 4 };
+    lowCfg = { count: 1, intervalSecs: 0, tone: "chime" };
+    normalCfg = { count: 5, intervalSecs: 8, tone: "klaxon" };
+    highCfg = { count: 30, intervalSecs: 4, tone: "siren" };
     globalHotkey = "Ctrl+Alt+KeyN";
     recordingHotkey = false;
     sortOrder = "date_asc";
+  }
+
+  async function previewTone(tone: ToneKey) {
+    try {
+      await api.previewTone(tone);
+    } catch (e) {
+      console.warn("preview tone failed", e);
+    }
   }
 
   function captureHotkey(e: KeyboardEvent) {
@@ -194,11 +238,19 @@
         {/if}
 
         <section class="section">
-          <div class="section-head">
+          <button
+            class="section-head"
+            class:open={sectionOpen.alerts}
+            onclick={() => toggleSection("alerts")}
+            aria-expanded={sectionOpen.alerts}
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.alerts}>▸</span>
             <span class="section-tick"></span>
             <h3 class="mono-caps section-title">Alert Behavior</h3>
             <span class="section-line"></span>
-          </div>
+          </button>
+          {#if sectionOpen.alerts}
           <div class="section-help mono-caps-faint">
             How many times each priority replays its tone, and the gap between repeats.
           </div>
@@ -246,16 +298,50 @@
                   </div>
                 </label>
               </div>
+              <div class="tone-row">
+                <span class="mono-caps-faint field-label">Tone</span>
+                <select
+                  class="tone-select"
+                  value={cfg.tone}
+                  onchange={(e) => {
+                    const v = (e.target as HTMLSelectElement).value as ToneKey;
+                    if (key === "low") lowCfg = { ...lowCfg, tone: v };
+                    else if (key === "normal") normalCfg = { ...normalCfg, tone: v };
+                    else highCfg = { ...highCfg, tone: v };
+                  }}
+                >
+                  {#each TONE_OPTIONS as t (t)}
+                    <option value={t}>{TONE_LABELS[t]}</option>
+                  {/each}
+                </select>
+                <button
+                  class="tone-preview"
+                  type="button"
+                  onclick={() => previewTone(cfg.tone)}
+                  title="Play this tone now"
+                >
+                  ▶ Preview
+                </button>
+              </div>
             </div>
           {/each}
+          {/if}
         </section>
 
         <section class="section">
-          <div class="section-head">
+          <button
+            class="section-head"
+            class:open={sectionOpen.display}
+            onclick={() => toggleSection("display")}
+            aria-expanded={sectionOpen.display}
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.display}>▸</span>
             <span class="section-tick"></span>
             <h3 class="mono-caps section-title">Display</h3>
             <span class="section-line"></span>
-          </div>
+          </button>
+          {#if sectionOpen.display}
           <div class="sort-row">
             <span class="sort-label mono-caps-faint">Sort Order</span>
             <div class="sort-options">
@@ -277,47 +363,70 @@
               </button>
             </div>
           </div>
+          {/if}
         </section>
 
+        <SyncSection
+          collapsed={!sectionOpen.sync}
+          onToggle={() => toggleSection("sync")}
+        />
+
         <section class="section">
-          <div class="section-head">
+          <button
+            class="section-head"
+            class:open={sectionOpen.hotkeys}
+            onclick={() => toggleSection("hotkeys")}
+            aria-expanded={sectionOpen.hotkeys}
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.hotkeys}>▸</span>
             <span class="section-tick"></span>
             <h3 class="mono-caps section-title">Hotkeys</h3>
             <span class="section-line"></span>
-          </div>
-          <div class="section-help mono-caps-faint">
-            System-wide hotkey for opening a new reminder from anywhere.
-          </div>
-          <div class="hotkey-row">
-            <span class="hotkey-label-text">Global · New Reminder</span>
-            <button
-              class="hotkey-btn"
-              class:recording={recordingHotkey}
-              onclick={() => (recordingHotkey = !recordingHotkey)}
-            >
-              {#if recordingHotkey}
-                <span class="rec-dot"></span>
-                <span>Press combo… (Esc cancel · Del clear)</span>
-              {:else}
-                <span class="hotkey-value">{prettyShortcut(globalHotkey)}</span>
-              {/if}
-            </button>
-            <button
-              class="hotkey-clear"
-              onclick={() => { globalHotkey = ""; recordingHotkey = false; }}
-              disabled={!globalHotkey}
-            >
-              Clear
-            </button>
-          </div>
+          </button>
+          {#if sectionOpen.hotkeys}
+            <div class="section-help mono-caps-faint">
+              System-wide hotkey for opening a new reminder from anywhere.
+            </div>
+            <div class="hotkey-row">
+              <span class="hotkey-label-text">Global · New Reminder</span>
+              <button
+                class="hotkey-btn"
+                class:recording={recordingHotkey}
+                onclick={() => (recordingHotkey = !recordingHotkey)}
+              >
+                {#if recordingHotkey}
+                  <span class="rec-dot"></span>
+                  <span>Press combo… (Esc cancel · Del clear)</span>
+                {:else}
+                  <span class="hotkey-value">{prettyShortcut(globalHotkey)}</span>
+                {/if}
+              </button>
+              <button
+                class="hotkey-clear"
+                onclick={() => { globalHotkey = ""; recordingHotkey = false; }}
+                disabled={!globalHotkey}
+              >
+                Clear
+              </button>
+            </div>
+          {/if}
         </section>
 
         <section class="section">
-          <div class="section-head">
+          <button
+            class="section-head"
+            class:open={sectionOpen.startup}
+            onclick={() => toggleSection("startup")}
+            aria-expanded={sectionOpen.startup}
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.startup}>▸</span>
             <span class="section-tick"></span>
             <h3 class="mono-caps section-title">Startup</h3>
             <span class="section-line"></span>
-          </div>
+          </button>
+          {#if sectionOpen.startup}
 
           <label class="toggle-row">
             <input
@@ -331,27 +440,35 @@
               <span class="mono-caps-faint">Klaxon will run in the tray after login</span>
             </span>
           </label>
+          {/if}
         </section>
 
-        <SyncSection />
-
         <section class="section">
-          <div class="section-head">
+          <button
+            class="section-head"
+            class:open={sectionOpen.system}
+            onclick={() => toggleSection("system")}
+            aria-expanded={sectionOpen.system}
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.system}>▸</span>
             <span class="section-tick"></span>
             <h3 class="mono-caps section-title">System</h3>
             <span class="section-line"></span>
-          </div>
-          <div class="meta-grid">
-            <span class="mono-caps-faint">Database</span>
-            <div class="path-row">
-              <code class="path">{dataDirPath || "—"}</code>
-              <button class="open-btn" onclick={openDataDir} disabled={!dataDirPath || dataDirPath === "—"}>
-                Reveal
-              </button>
+          </button>
+          {#if sectionOpen.system}
+            <div class="meta-grid">
+              <span class="mono-caps-faint">Database</span>
+              <div class="path-row">
+                <code class="path">{dataDirPath || "—"}</code>
+                <button class="open-btn" onclick={openDataDir} disabled={!dataDirPath || dataDirPath === "—"}>
+                  Reveal
+                </button>
+              </div>
+              <span class="mono-caps-faint">Version</span>
+              <span class="meta-value">v0.2.0-dev · industrial</span>
             </div>
-            <span class="mono-caps-faint">Version</span>
-            <span class="meta-value">v0.2.0-dev · industrial</span>
-          </div>
+          {/if}
         </section>
       </div>
 
@@ -527,6 +644,16 @@
     grid-template-columns: 1fr 1fr;
     gap: 12px;
   }
+  .prio-row {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    align-items: start;
+    gap: 18px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .prio-row:last-of-type { border-bottom: none; }
+  .prio-row > .tone-row { grid-column: 2 / -1; }
 
   .field {
     display: flex;
@@ -720,6 +847,33 @@
     animation: fadeIn 200ms var(--ease);
   }
 
+  /* Collapsible section header */
+  button.section-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 6px 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+  }
+  button.section-head:hover .section-title { color: var(--text); }
+  .chevron {
+    display: inline-block;
+    width: 12px;
+    font-size: 10px;
+    color: var(--text-muted);
+    transition: transform 160ms var(--ease), color 100ms var(--ease);
+    text-align: center;
+  }
+  .chevron.open {
+    transform: rotate(90deg);
+    color: var(--klaxon);
+  }
+  button.section-head:hover .chevron { color: var(--text); }
+
   /* Hotkeys */
   .hotkey-row {
     display: grid;
@@ -824,4 +978,46 @@
     box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
   }
   .sort-btn + .sort-btn { border-left: 1px solid var(--border); }
+
+  /* Tone picker (sits under count/interval inside each priority row) */
+  .tone-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 80px 1fr auto;
+    align-items: center;
+    gap: 14px;
+    margin-top: 8px;
+  }
+  .tone-select {
+    appearance: none;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 7px 10px;
+    cursor: pointer;
+    transition: border-color 120ms var(--ease);
+  }
+  .tone-select:focus {
+    outline: none;
+    border-color: var(--klaxon);
+  }
+  .tone-preview {
+    padding: 7px 12px;
+    border: 1px solid var(--border-strong);
+    background: transparent;
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .tone-preview:hover {
+    color: var(--klaxon);
+    border-color: var(--klaxon);
+    box-shadow: 0 0 12px var(--klaxon-glow);
+  }
 </style>

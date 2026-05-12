@@ -177,6 +177,7 @@ pub fn run() {
             commands::list_settings,
             commands::data_dir,
             commands::set_global_hotkey,
+            commands::preview_tone,
             commands::list_peers,
             commands::add_peer,
             commands::remove_peer,

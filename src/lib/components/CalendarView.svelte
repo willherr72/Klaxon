@@ -6,10 +6,66 @@
   let {
     reminders,
     onSelect,
+    onCreateForDate,
   }: {
     reminders: Reminder[];
     onSelect: (r: Reminder) => void;
+    onCreateForDate?: (ms: number, silent: boolean) => void;
   } = $props();
+
+  // Right-click context menu state. Position is in viewport coords; we
+  // clamp to the window if the menu would overflow.
+  let menuOpen = $state(false);
+  let menuX = $state(0);
+  let menuY = $state(0);
+  let menuDate = $state<Date | null>(null);
+
+  /** Build a timestamp on the given calendar date that defaults to the
+   * current local time-of-day. Slightly more useful than always landing on
+   * midnight — most reminders want a sensible hour. */
+  function timestampForCell(cellDate: Date): number {
+    const now = new Date();
+    const target = new Date(cellDate);
+    target.setHours(now.getHours(), now.getMinutes(), 0, 0);
+    return target.getTime();
+  }
+
+  function handleCellContextMenu(cellDate: Date, e: MouseEvent) {
+    if (!onCreateForDate) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // Clamp so the menu (≈220×96 px) doesn't fall off-screen.
+    const menuW = 220;
+    const menuH = 96;
+    const pad = 8;
+    menuX = Math.min(e.clientX, window.innerWidth - menuW - pad);
+    menuY = Math.min(e.clientY, window.innerHeight - menuH - pad);
+    menuDate = cellDate;
+    menuOpen = true;
+  }
+
+  function closeMenu() {
+    menuOpen = false;
+    menuDate = null;
+  }
+
+  function chooseFromMenu(silent: boolean) {
+    if (!menuDate || !onCreateForDate) {
+      closeMenu();
+      return;
+    }
+    onCreateForDate(timestampForCell(menuDate), silent);
+    closeMenu();
+  }
+
+  function formatMenuHeader(d: Date | null): string {
+    if (!d) return "";
+    const months = [
+      "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+      "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
+    ];
+    return `${String(d.getDate()).padStart(2, "0")} ${months[d.getMonth()]} ${d.getFullYear()}`;
+  }
 
   let cursorDate = $state(startOfMonth(new Date()));
 
@@ -88,6 +144,18 @@
   function jumpToday() { cursorDate = startOfMonth(new Date()); }
 </script>
 
+<svelte:window
+  onclick={() => menuOpen && closeMenu()}
+  oncontextmenu={(e) => {
+    // Close on right-click anywhere outside a calendar cell.
+    if (menuOpen) {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest?.(".cell")) closeMenu();
+    }
+  }}
+  onkeydown={(e) => { if (menuOpen && e.key === "Escape") closeMenu(); }}
+/>
+
 <section class="cal">
   <header class="cal-head">
     <button class="nav-btn" onclick={prev} aria-label="Previous month">‹</button>
@@ -110,6 +178,9 @@
         class:out={!cell.inMonth}
         class:today={cell.isToday}
         class:past={cell.isPast && !cell.isToday}
+        role="gridcell"
+        tabindex="-1"
+        oncontextmenu={(e) => handleCellContextMenu(cell.date, e)}
       >
         <div class="day-num">{cell.date.getDate()}</div>
         <div class="day-items">
@@ -141,6 +212,28 @@
     {/each}
   </div>
 </section>
+
+{#if menuOpen && menuDate}
+  <div
+    class="ctx-menu"
+    style:left="{menuX}px"
+    style:top="{menuY}px"
+    onclick={(e) => e.stopPropagation()}
+    onkeydown={(e) => { if (e.key === "Escape") closeMenu(); }}
+    role="menu"
+    tabindex="-1"
+  >
+    <div class="ctx-header mono-caps-faint">{formatMenuHeader(menuDate)}</div>
+    <button class="ctx-item" onclick={() => chooseFromMenu(false)} role="menuitem">
+      <span class="ctx-glyph dot"></span>
+      <span class="ctx-label">Make Reminder</span>
+    </button>
+    <button class="ctx-item" onclick={() => chooseFromMenu(true)} role="menuitem">
+      <span class="ctx-glyph ring">○</span>
+      <span class="ctx-label">Make Task</span>
+    </button>
+  </div>
+{/if}
 
 <style>
   .cal {
@@ -308,6 +401,69 @@
   .item.silent .item-title {
     color: var(--text-2);
   }
+
+  /* Right-click context menu */
+  .ctx-menu {
+    position: fixed;
+    z-index: 200;
+    width: 220px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, 0.7),
+      0 0 0 1px rgba(255, 157, 0, 0.08);
+    display: flex;
+    flex-direction: column;
+    padding: 4px 0;
+    animation: ctxIn 110ms var(--ease);
+  }
+  @keyframes ctxIn {
+    from { opacity: 0; transform: translateY(-3px) scale(0.98); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .ctx-header {
+    padding: 8px 14px 6px;
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .ctx-item {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    background: transparent;
+    border: none;
+    color: var(--text-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-align: left;
+    cursor: pointer;
+    transition: all 100ms var(--ease);
+  }
+  .ctx-item:hover {
+    background: var(--bg-active);
+    color: var(--klaxon);
+  }
+  .ctx-glyph.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--klaxon);
+    box-shadow: 0 0 8px var(--klaxon-glow-strong);
+    justify-self: center;
+  }
+  .ctx-glyph.ring {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1;
+    text-align: center;
+  }
+  .ctx-item:hover .ctx-glyph.ring { color: var(--klaxon); }
   .more {
     font-size: 9px;
     letter-spacing: 0.16em;
