@@ -139,10 +139,24 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
     let silent = patch.silent.unwrap_or(existing.silent);
     let now = now_ms();
 
+    // If the user moved the due time, treat the edit as a manual reschedule:
+    // reset state to Pending and clear any stale snooze so the scheduler will
+    // ring it again at the new time. Without this, a reminder that's already
+    // Fired / Dismissed / Snoozed stays in that state and the scheduler's
+    // `next_pending` query (state IN pending|snoozed) ignores the new due_at.
+    // Title-only or priority-only edits leave state untouched.
+    let due_changed = patch.due_at.is_some() && due_at != existing.due_at;
+    let (new_state, new_snooze) = if due_changed {
+        (ReminderState::Pending, None::<i64>)
+    } else {
+        (existing.state, existing.snooze_until)
+    };
+
     conn.execute(
         "UPDATE reminders
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
-             sound_path = ?6, repeat_rule = ?7, updated_at = ?8, dirty = 1, silent = ?9
+             sound_path = ?6, repeat_rule = ?7, updated_at = ?8, dirty = 1,
+             silent = ?9, state = ?10, snooze_until = ?11
          WHERE id = ?1",
         params![
             id,
@@ -154,6 +168,8 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
             repeat_json,
             now,
             silent as i32,
+            new_state.as_str(),
+            new_snooze,
         ],
     )?;
 
