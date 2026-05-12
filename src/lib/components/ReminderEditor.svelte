@@ -23,6 +23,7 @@
   let priority = $state<Priority>("normal");
   let repeatKind = $state<"none" | "daily" | "weekly" | "interval" | "monthly">("none");
   let intervalSecs = $state(3600);
+  let silent = $state(false);
   let titleInput: HTMLInputElement | null = $state(null);
 
   $effect(() => {
@@ -34,6 +35,10 @@
   });
 
   $effect(() => {
+    // Re-seed every time the editor opens. Reading `open` makes the effect
+    // re-run on null → null transitions (e.g. opening "new" twice in a row)
+    // — without it, the previous title sticks around.
+    if (!open) return;
     if (reminder) {
       title = reminder.title;
       description = reminder.description ?? "";
@@ -42,7 +47,10 @@
       repeatKind = reminder.repeat_rule?.kind ?? "none";
       if (reminder.repeat_rule?.kind === "interval") {
         intervalSecs = reminder.repeat_rule.every_seconds;
+      } else {
+        intervalSecs = 3600;
       }
+      silent = reminder.silent;
     } else {
       title = "";
       description = "";
@@ -50,6 +58,7 @@
       priority = "normal";
       repeatKind = "none";
       intervalSecs = 3600;
+      silent = false;
     }
   });
 
@@ -71,7 +80,8 @@
       due_at: localInputToMs(dueLocal),
       priority,
       sound_path: null,
-      repeat_rule: buildRepeatRule(),
+      repeat_rule: silent ? null : buildRepeatRule(),
+      silent,
     };
     onSave(input, reminder?.id ?? null);
   }
@@ -105,6 +115,25 @@
   </header>
 
   <div class="form">
+    <div class="kind-toggle">
+      <button
+        class="kind-btn"
+        class:active={!silent}
+        onclick={() => (silent = false)}
+        type="button"
+      >
+        Reminder
+      </button>
+      <button
+        class="kind-btn"
+        class:active={silent}
+        onclick={() => (silent = true)}
+        type="button"
+      >
+        Task
+      </button>
+    </div>
+
     <label class="field">
       <span class="mono-caps-faint">Title</span>
       <input
@@ -135,43 +164,49 @@
       />
     </label>
 
-    <div class="field">
-      <span class="mono-caps-faint">Priority</span>
-      <div class="prio-row">
-        {#each ["low", "normal", "high"] as p (p)}
-          <button
-            class="prio"
-            class:active={priority === p}
-            onclick={() => (priority = p as Priority)}
-          >
-            <SignalLight priority={p as Priority} size={11} />
-            <span class="prio-label">{p}</span>
-          </button>
-        {/each}
+    {#if !silent}
+      <div class="field">
+        <span class="mono-caps-faint">Priority</span>
+        <div class="prio-row">
+          {#each ["low", "normal", "high"] as p (p)}
+            <button
+              class="prio"
+              class:active={priority === p}
+              onclick={() => (priority = p as Priority)}
+            >
+              <SignalLight priority={p as Priority} size={11} />
+              <span class="prio-label">{p}</span>
+            </button>
+          {/each}
+        </div>
       </div>
-    </div>
 
-    <label class="field">
-      <span class="mono-caps-faint">Repeat</span>
-      <select class="select" bind:value={repeatKind}>
-        <option value="none">— Once —</option>
-        <option value="daily">Daily</option>
-        <option value="weekly">Weekdays (Mon–Fri)</option>
-        <option value="interval">Every N seconds</option>
-        <option value="monthly">Monthly</option>
-      </select>
-    </label>
-
-    {#if repeatKind === "interval"}
       <label class="field">
-        <span class="mono-caps-faint">Interval (seconds)</span>
-        <input
-          class="dt-input"
-          type="number"
-          min="1"
-          bind:value={intervalSecs}
-        />
+        <span class="mono-caps-faint">Repeat</span>
+        <select class="select" bind:value={repeatKind}>
+          <option value="none">— Once —</option>
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekdays (Mon–Fri)</option>
+          <option value="interval">Every N seconds</option>
+          <option value="monthly">Monthly</option>
+        </select>
       </label>
+
+      {#if repeatKind === "interval"}
+        <label class="field">
+          <span class="mono-caps-faint">Interval (seconds)</span>
+          <input
+            class="dt-input"
+            type="number"
+            min="1"
+            bind:value={intervalSecs}
+          />
+        </label>
+      {/if}
+    {:else}
+      <div class="task-note mono-caps-faint">
+        Tasks appear in the list but do not trigger the alarm. Mark them done when you're finished.
+      </div>
     {/if}
   </div>
 
@@ -253,6 +288,43 @@
     display: flex;
     flex-direction: column;
     gap: 18px;
+  }
+
+  .kind-toggle {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-surface);
+  }
+  .kind-btn {
+    padding: 10px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .kind-btn:hover { color: var(--text-2); }
+  .kind-btn.active {
+    background: var(--bg-active);
+    color: var(--klaxon);
+    box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
+  }
+  .kind-btn + .kind-btn { border-left: 1px solid var(--border); }
+
+  .task-note {
+    border: 1px dashed var(--border-strong);
+    padding: 12px 14px;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--text-muted);
+    line-height: 1.55;
   }
 
   .field {

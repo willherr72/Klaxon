@@ -26,6 +26,8 @@ pub struct RemoteReminder {
     pub snooze_until: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(default)]
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +110,7 @@ impl From<&crate::models::Reminder> for RemoteReminder {
             snooze_until: r.snooze_until,
             created_at: r.created_at,
             updated_at: r.updated_at,
+            silent: r.silent,
         }
     }
 }

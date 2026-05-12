@@ -85,6 +85,9 @@ pub struct Reminder {
     pub external_id: Option<String>,
     pub last_synced_at: Option<i64>,
     pub dirty: bool,
+    /// When true the scheduler ignores this row entirely — no alarm. Used
+    /// for to-do style items that have a date but shouldn't ring.
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -95,6 +98,8 @@ pub struct ReminderCreate {
     pub priority: Priority,
     pub sound_path: Option<String>,
     pub repeat_rule: Option<RepeatRule>,
+    #[serde(default)]
+    pub silent: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,6 +110,7 @@ pub struct ReminderUpdate {
     pub priority: Option<Priority>,
     pub sound_path: Option<Option<String>>,
     pub repeat_rule: Option<Option<RepeatRule>>,
+    pub silent: Option<bool>,
 }
 
 pub fn now_ms() -> i64 {

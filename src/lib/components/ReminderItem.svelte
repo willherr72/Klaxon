@@ -19,6 +19,7 @@
 
   let isHigh = $derived(reminder.priority === "high");
   let isCompleted = $derived(reminder.state === "completed");
+  let isSilent = $derived(reminder.silent);
 </script>
 
 <div
@@ -38,7 +39,11 @@
   {/if}
 
   <div class="signal">
-    <SignalLight priority={reminder.priority} size={10} />
+    {#if isSilent}
+      <span class="task-mark" class:done={isCompleted}>{isCompleted ? "✓" : "○"}</span>
+    {:else}
+      <SignalLight priority={reminder.priority} size={10} />
+    {/if}
   </div>
 
   <div class="body">
@@ -49,6 +54,9 @@
   </div>
 
   <div class="meta">
+    {#if isSilent}
+      <span class="badge mono-caps-faint task-badge">Task</span>
+    {/if}
     {#if reminder.repeat_rule}
       <span class="badge mono-caps-faint">↻ {reminder.repeat_rule.kind}</span>
     {/if}
@@ -111,7 +119,29 @@
     grid-template-columns: 6px 24px 1fr auto auto;
   }
 
-  .signal { display: flex; }
+  .signal { display: flex; align-items: center; justify-content: center; }
+  .task-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1.5px solid var(--text-muted);
+    color: var(--text-muted);
+    font-size: 9px;
+    line-height: 1;
+    transition: all 120ms var(--ease);
+  }
+  .task-mark.done {
+    border-color: var(--ok);
+    color: var(--ok);
+    background: rgba(34, 197, 94, 0.08);
+  }
+  .task-badge {
+    color: var(--text-2);
+    border-color: var(--border-bright);
+  }
 
   .body { min-width: 0; }
   .title {

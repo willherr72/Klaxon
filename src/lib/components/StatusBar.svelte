@@ -80,11 +80,11 @@
     border-radius: 50%;
     background: var(--ok);
     box-shadow: 0 0 6px 1px var(--ok-glow);
-    animation: blink 2.4s var(--ease) infinite;
+    animation: blink 3s ease-in-out infinite;
   }
   @keyframes blink {
-    0%, 92%, 100% { opacity: 1; }
-    94% { opacity: 0.3; }
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
   }
   .num {
     font-family: var(--font-mono);

@@ -19,6 +19,7 @@
     { key: "all", label: "All" },
     { key: "today", label: "Today" },
     { key: "upcoming", label: "Upcoming" },
+    { key: "tasks", label: "Tasks" },
     { key: "recurring", label: "Recurring" },
     { key: "completed", label: "Completed" },
   ];
@@ -96,7 +97,7 @@
       0 0 0 2px var(--bg-elev),
       0 0 0 3px var(--klaxon-dim),
       0 0 16px var(--klaxon-glow-strong);
-    animation: flicker 5s var(--ease) infinite;
+    animation: flicker 4s ease-in-out infinite;
   }
   .brand-name {
     font-size: 36px;

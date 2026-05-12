@@ -65,6 +65,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE peers ADD COLUMN cert_fingerprint TEXT;
     "#,
+    // 004 — silent "task" reminders that don't trigger the alarm
+    r#"
+    ALTER TABLE reminders ADD COLUMN silent INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

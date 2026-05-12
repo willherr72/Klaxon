@@ -16,6 +16,7 @@
     all: "ALL REMINDERS",
     today: "TODAY",
     upcoming: "UPCOMING",
+    tasks: "TASKS",
     recurring: "RECURRING",
     completed: "COMPLETED",
   };

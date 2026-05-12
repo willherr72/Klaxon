@@ -29,6 +29,7 @@ export interface Reminder {
   external_id: string | null;
   last_synced_at: number | null;
   dirty: boolean;
+  silent: boolean;
 }
 
 export interface ReminderCreate {
@@ -38,6 +39,7 @@ export interface ReminderCreate {
   priority: Priority;
   sound_path: string | null;
   repeat_rule: RepeatRule | null;
+  silent: boolean;
 }
 
 export interface ReminderUpdate {
@@ -47,11 +49,13 @@ export interface ReminderUpdate {
   priority?: Priority;
   sound_path?: string | null;
   repeat_rule?: RepeatRule | null;
+  silent?: boolean;
 }
 
 export type FilterKey =
   | "all"
   | "today"
   | "upcoming"
+  | "tasks"
   | "recurring"
   | "completed";

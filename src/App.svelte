@@ -80,6 +80,10 @@
         return allReminders.filter(
           (r) => r.state !== "completed" && r.due_at >= tomorrow,
         );
+      case "tasks":
+        return allReminders.filter(
+          (r) => r.silent && r.state !== "completed",
+        );
       case "recurring":
         return allReminders.filter(
           (r) => r.state !== "completed" && r.repeat_rule != null,
@@ -123,6 +127,9 @@
       upcoming: allReminders.filter(
         (r) => r.state !== "completed" && r.due_at >= tomorrow,
       ).length,
+      tasks: allReminders.filter(
+        (r) => r.silent && r.state !== "completed",
+      ).length,
       recurring: allReminders.filter(
         (r) => r.state !== "completed" && r.repeat_rule != null,
       ).length,
@@ -165,6 +172,7 @@
           priority: input.priority,
           sound_path: input.sound_path,
           repeat_rule: input.repeat_rule,
+          silent: input.silent,
         });
       } else {
         await api.createReminder(input);
