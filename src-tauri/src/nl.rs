@@ -25,6 +25,9 @@ pub struct Parsed {
     pub title: String,
     pub matched_date: Option<String>,
     pub matched_time: Option<String>,
+    /// Inline `#tag` tokens pulled out of the input, normalized to lowercase
+    /// and deduplicated. The `#` is stripped.
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +46,30 @@ pub fn parse(input: &str, now: DateTime<Local>) -> Result<Parsed, ParseError> {
 
     // Treat each token slot as Some(word) until it's consumed by a match.
     let mut tokens: Vec<Option<String>> = raw.into_iter().map(Some).collect();
+
+    // --- Inline #tags ------------------------------------------------------
+    // Pull these out first so they don't trip up the date/time scanners and
+    // don't end up in the title body.
+    let mut tags: Vec<String> = Vec::new();
+    let mut seen_tags = std::collections::HashSet::new();
+    for slot in tokens.iter_mut() {
+        let Some(tok) = slot.as_ref() else { continue };
+        if !tok.starts_with('#') || tok.len() <= 1 {
+            continue;
+        }
+        let cleaned = tok[1..]
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .collect::<String>()
+            .to_lowercase();
+        if cleaned.is_empty() {
+            continue;
+        }
+        if seen_tags.insert(cleaned.clone()) {
+            tags.push(cleaned);
+        }
+        *slot = None;
+    }
 
     let mut hour: Option<u32> = None;
     let mut minute: u32 = 0;
@@ -222,6 +249,7 @@ pub fn parse(input: &str, now: DateTime<Local>) -> Result<Parsed, ParseError> {
         title,
         matched_date: date_phrase,
         matched_time: time_phrase,
+        tags,
     })
 }
 
@@ -409,6 +437,38 @@ mod tests {
         assert_eq!(p.title, "Dentist");
         assert_eq!(dt.day(), 21);
         assert_eq!(dt.hour(), 10);
+    }
+
+    #[test]
+    fn inline_tags() {
+        let now = local(2026, 5, 18, 10, 0);
+        let p = parse("tomorrow 9am gym #fitness #morning", now).unwrap();
+        assert_eq!(p.title, "Gym");
+        assert_eq!(p.tags, vec!["fitness".to_string(), "morning".to_string()]);
+    }
+
+    #[test]
+    fn inline_tags_are_deduped_and_lowercased() {
+        let now = local(2026, 5, 18, 10, 0);
+        let p = parse("#Work fix bug #work tomorrow", now).unwrap();
+        assert_eq!(p.title, "Fix bug");
+        assert_eq!(p.tags, vec!["work".to_string()]);
+    }
+
+    #[test]
+    fn no_tags_means_empty_vec() {
+        let now = local(2026, 5, 18, 10, 0);
+        let p = parse("tomorrow 9am gym", now).unwrap();
+        assert!(p.tags.is_empty());
+    }
+
+    #[test]
+    fn bare_hash_is_not_a_tag() {
+        let now = local(2026, 5, 18, 10, 0);
+        let p = parse("buy # signs tomorrow", now).unwrap();
+        // "#" alone (length 1) is left in the title; not parsed as a tag.
+        assert!(p.tags.is_empty());
+        assert!(p.title.contains('#') || p.title.to_lowercase().contains("signs"));
     }
 
     #[test]

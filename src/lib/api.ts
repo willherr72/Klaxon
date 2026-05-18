@@ -91,6 +91,7 @@ export interface NlParsed {
   title: string;
   matched_date: string | null;
   matched_time: string | null;
+  tags: string[];
 }
 
 export interface DiscoveredPeer {

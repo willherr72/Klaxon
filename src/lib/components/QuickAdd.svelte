@@ -99,7 +99,7 @@
       sound_path: null,
       repeat_rule: null,
       silent: false,
-      tags: [],
+      tags: parsed.tags,
     };
     try {
       await onCreate(reminder);
@@ -148,7 +148,7 @@
           bind:this={inputEl}
           bind:value={input}
           onkeydown={onKey}
-          placeholder='try: "tomorrow 9am gym" · "in 30 min call back"'
+          placeholder='try: "tomorrow 9am gym #fitness" · "in 30 min call back"'
           class="nl-input"
           type="text"
           autocomplete="off"
@@ -166,6 +166,13 @@
           <div class="preview-title">{parsed.title}</div>
           <div class="preview-when mono">{fmt.dateLine}</div>
           <div class="preview-rel mono-caps-faint">{fmt.relLine}</div>
+          {#if parsed.tags.length > 0}
+            <div class="preview-tags">
+              {#each parsed.tags as t (t)}
+                <span class="tag-token">#{t}</span>
+              {/each}
+            </div>
+          {/if}
           {#if parsed.matched_date || parsed.matched_time}
             <div class="preview-tokens mono-caps-faint">
               matched
@@ -344,6 +351,22 @@
     text-transform: none;
     letter-spacing: 0.06em;
     font-size: 10px;
+  }
+
+  .preview-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .tag-token {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border: 1px solid var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.08);
+    color: var(--klaxon);
   }
   .preview-error {
     color: var(--signal-high);
