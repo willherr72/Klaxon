@@ -6,13 +6,20 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::alerts;
 use crate::db::{peers, reminders as repo, tombstones};
 use crate::models::ReminderState;
 use crate::sync::client::SyncClient;
 use crate::sync::types::{ChangeSet, RemoteReminder, RemoteTombstone};
+
+/// Emit a "something changed about the reminders table" event so the
+/// frontend re-fetches. Called from anywhere the backend mutates reminders
+/// without a user-initiated command (sync push/pull, scheduler fire).
+pub fn emit_reminders_changed(app: &AppHandle) {
+    let _ = app.emit("klaxon://reminders-changed", ());
+}
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 
@@ -83,6 +90,9 @@ async fn sync_one(
     // Cancel local alerts after dropping the DB lock.
     for id in to_cancel {
         alerts::cancel_alert(app, &id);
+    }
+    if !pulled.reminders.is_empty() || !pulled.tombstones.is_empty() {
+        emit_reminders_changed(app);
     }
 
     // Push

@@ -72,6 +72,7 @@
   }
 
   let unlistenNew: UnlistenFn | null = null;
+  let unlistenChanged: UnlistenFn | null = null;
 
   function onKeydown(e: KeyboardEvent) {
     // Ctrl+N → open new reminder
@@ -119,11 +120,18 @@
     unlistenNew = await listen("klaxon://open-new-reminder", () => {
       openNew();
     });
+    // Backend signals this whenever it mutates reminders without a user
+    // command — sync push/pull applying remote changes, scheduler firing
+    // a reminder, scheduler rescheduling a recurring item. We just re-fetch.
+    unlistenChanged = await listen("klaxon://reminders-changed", () => {
+      refresh();
+    });
     window.addEventListener("keydown", onKeydown);
   });
 
   onDestroy(() => {
     if (unlistenNew) unlistenNew();
+    if (unlistenChanged) unlistenChanged();
     window.removeEventListener("keydown", onKeydown);
   });
 

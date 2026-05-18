@@ -75,22 +75,28 @@ pub async fn run(
 fn on_fire(db: &Arc<Mutex<Connection>>, app: &AppHandle, r: Reminder) {
     alerts::dispatch(app, &r);
 
-    let conn = db.lock();
-    if let Some(rule) = &r.repeat_rule {
-        match recurrence::next_after(rule, r.due_at, now_ms()) {
-            Some(next_due) => {
-                if let Err(e) = repo::reschedule(&conn, &r.id, next_due) {
-                    log::error!("reschedule failed for {}: {e}", r.id);
+    {
+        let conn = db.lock();
+        if let Some(rule) = &r.repeat_rule {
+            match recurrence::next_after(rule, r.due_at, now_ms()) {
+                Some(next_due) => {
+                    if let Err(e) = repo::reschedule(&conn, &r.id, next_due) {
+                        log::error!("reschedule failed for {}: {e}", r.id);
+                    }
+                }
+                None => {
+                    log::info!("recurrence exhausted for {}", r.id);
+                    let _ = repo::set_state(&conn, &r.id, ReminderState::Fired, None);
                 }
             }
-            None => {
-                log::info!("recurrence exhausted for {}", r.id);
-                let _ = repo::set_state(&conn, &r.id, ReminderState::Fired, None);
-            }
+        } else {
+            let _ = repo::set_state(&conn, &r.id, ReminderState::Fired, None);
         }
-    } else {
-        let _ = repo::set_state(&conn, &r.id, ReminderState::Fired, None);
     }
+
+    // Tell the frontend to re-fetch so the list / countdown reflect the
+    // state change (Fired) or the rescheduled due_at for a recurring item.
+    crate::sync::task::emit_reminders_changed(app);
 }
 
 fn target_ms_for(r: &Reminder) -> i64 {

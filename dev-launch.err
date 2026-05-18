@@ -1,0 +1,14 @@
+     Running BeforeDevCommand (`npm run dev`)
+     Running DevCommand (`cargo  run --no-default-features --color always --`)
+        Info Watching C:\Users\WilliamHerr\Desktop\Code\Klaxon\src-tauri for changes...
+[1m[92m   Compiling[0m klaxon v0.2.0-dev (C:\Users\WilliamHerr\Desktop\Code\Klaxon\src-tauri)
+[1m[96m    Building[0m [=======================> ] 540/542: klaxon  [1m[96m    Building[0m [=======================> ] 541/542: klaxon(…                                                            [1m[92m    Finished[0m ]8;;https://doc.rust-lang.org/cargo/reference/profiles.html#default-profiles\`dev` profile [unoptimized + debuginfo]]8;;\ target(s) in 1m 03s
+[1m[92m     Running[0m `target\debug\klaxon.exe`
+[2026-05-18T21:02:33Z INFO  klaxon_lib] opening db at C:\Users\WilliamHerr\AppData\Roaming\com.klaxon.app\klaxon.db
+[2026-05-18T21:02:33Z INFO  klaxon_lib::scheduler] scheduler online
+[2026-05-18T21:02:33Z INFO  klaxon_lib::sync::task] sync task online
+[2026-05-18T21:02:33Z INFO  klaxon_lib::sync::server] sync server listening on https://0.0.0.0:7124 (fp 049FABA0613B)
+[2026-05-18T21:02:33Z INFO  klaxon_lib::sync::discovery] mDNS announce: WILLFRAMEWORK on port 7124 (12 addrs)
+[2026-05-18T21:02:33Z INFO  klaxon_lib] global hotkey installed: Ctrl+Alt+KeyN
+[2026-05-18T21:02:34Z INFO  klaxon_lib::sync::discovery] mDNS discovered: WILLLAPTOP (57f90ec8-b5a6-4c14-9438-dd1789705617) → https://192.168.100.127:7124
+[0518/160335.601:ERROR:ui\gfx\win\window_impl.cc:172] Failed to unregister class Chrome_WidgetWin_0. Error = 1412

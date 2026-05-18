@@ -199,6 +199,9 @@ async fn handle_push(
     for id in to_cancel {
         crate::alerts::cancel_alert(&s.app, &id);
     }
+    if accepted_reminders > 0 || accepted_tombstones > 0 {
+        crate::sync::task::emit_reminders_changed(&s.app);
+    }
 
     Ok(Json(PushResponse {
         server_time_ms: now_ms(),
