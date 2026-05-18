@@ -9,12 +9,14 @@
     onClick,
     onComplete,
     onDelete,
+    onTagClick,
   }: {
     reminder: Reminder;
     selected?: boolean;
     onClick: (r: Reminder) => void;
     onComplete: (r: Reminder) => void;
     onDelete: (r: Reminder) => void;
+    onTagClick?: (tag: string) => void;
   } = $props();
 
   let isHigh = $derived(reminder.priority === "high");
@@ -66,6 +68,16 @@
   </div>
 
   <div class="meta">
+    {#each reminder.tags as t (t)}
+      <button
+        class="tag-pill"
+        type="button"
+        title="Filter by #{t}"
+        onclick={(e) => { e.stopPropagation(); onTagClick?.(t); }}
+      >
+        #{t}
+      </button>
+    {/each}
     {#if isSnoozed}
       <span class="badge mono-caps-faint snoozed-badge">⏱ snoozed</span>
     {/if}
@@ -169,6 +181,21 @@
     color: var(--text-muted);
     border-color: var(--border-strong);
     background: rgba(255, 255, 255, 0.02);
+  }
+  .tag-pill {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    padding: 2px 7px;
+    border: 1px solid var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.05);
+    color: var(--klaxon);
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .tag-pill:hover {
+    background: var(--klaxon);
+    color: var(--bg);
   }
 
   .body { min-width: 0; }

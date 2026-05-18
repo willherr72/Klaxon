@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { api } from "./lib/api";
   import { reminders, editingId, editorOpen, nowTick, setTickRate } from "./lib/stores";
+  import { comboMatches } from "./lib/shortcut";
   import type { Reminder, ReminderCreate, TimeFilter, ViewMode } from "./lib/types";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import TopBar from "./lib/components/TopBar.svelte";
@@ -12,6 +13,7 @@
   import SettingsModal from "./lib/components/SettingsModal.svelte";
   import IncomingPairModal from "./lib/components/IncomingPairModal.svelte";
   import CalendarView from "./lib/components/CalendarView.svelte";
+  import QuickAdd from "./lib/components/QuickAdd.svelte";
 
   let allReminders = $state<Reminder[]>([]);
   let currentView = $state<ViewMode>("reminders");
@@ -25,6 +27,9 @@
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let editorDefaultDueAt = $state<number | null>(null);
   let editorDefaultSilent = $state(false);
+  let tagFilter = $state<string | null>(null);
+  let quickAddOpen = $state(false);
+  let quickAddHotkey = $state("Ctrl+KeyK");
 
   reminders.subscribe((v) => (allReminders = v));
   editingId.subscribe((v) => (currentEditingId = v));
@@ -50,10 +55,20 @@
     }
   }
 
+  async function loadInappHotkeys() {
+    try {
+      const v = await api.getSetting("inapp_hotkey_quickadd");
+      quickAddHotkey = v?.trim() ? v : "Ctrl+KeyK";
+    } catch (e) {
+      console.warn("loadInappHotkeys failed", e);
+    }
+  }
+
   function handleSettingsClose() {
     settingsOpen = false;
-    // Sort setting may have changed — refresh.
+    // Sort + in-app hotkeys may have changed — refresh.
     loadSort();
+    loadInappHotkeys();
   }
 
   let unlistenNew: UnlistenFn | null = null;
@@ -81,6 +96,12 @@
       searchOpen = true;
       return;
     }
+    // Configurable Quick Add hotkey (default Ctrl+K)
+    if (comboMatches(quickAddHotkey, e)) {
+      e.preventDefault();
+      quickAddOpen = true;
+      return;
+    }
     // Esc → close search (if active and not currently inside a text field
     // — the search/editor inputs handle their own Esc)
     if (e.key === "Escape" && searchOpen) {
@@ -94,6 +115,7 @@
   onMount(async () => {
     refresh();
     loadSort();
+    loadInappHotkeys();
     unlistenNew = await listen("klaxon://open-new-reminder", () => {
       openNew();
     });
@@ -174,8 +196,14 @@
       result = result.filter((r) => {
         if (r.title.toLowerCase().includes(q)) return true;
         if (r.description && r.description.toLowerCase().includes(q)) return true;
+        if (r.tags.some((t) => t.toLowerCase().includes(q))) return true;
         return false;
       });
+    }
+
+    // Step 3b: tag filter (set by clicking a tag chip on a reminder).
+    if (tagFilter) {
+      result = result.filter((r) => r.tags.includes(tagFilter as string));
     }
 
     // Step 4: sort by effective time per user preference.
@@ -238,6 +266,14 @@
 
   function selectTimeFilter(t: TimeFilter) {
     currentTimeFilter = t;
+  }
+
+  function selectTag(t: string) {
+    tagFilter = t === tagFilter ? null : t;
+  }
+
+  function clearTagFilter() {
+    tagFilter = null;
   }
 
   function openNew() {
@@ -333,6 +369,8 @@
     view={currentView}
     timeFilter={currentTimeFilter}
     onTimeFilterChange={selectTimeFilter}
+    tagFilter={tagFilter}
+    onTagFilterClear={clearTagFilter}
     nextReminder={nextReminder}
     now={now}
   />
@@ -349,6 +387,7 @@
       onSelect={openEdit}
       onComplete={handleComplete}
       onDelete={handleListDelete}
+      onTagClick={selectTag}
       searchOpen={searchOpen}
       bind:searchQuery
       onSearchClose={() => { searchOpen = false; searchQuery = ""; }}
@@ -374,6 +413,18 @@
     onClose={handleSettingsClose}
   />
   <IncomingPairModal />
+  <QuickAdd
+    open={quickAddOpen}
+    onClose={() => (quickAddOpen = false)}
+    onCreate={async (input) => {
+      try {
+        await api.createReminder(input);
+        await refresh();
+      } catch (e) {
+        console.error("quick-add create failed", e);
+      }
+    }}
+  />
 </div>
 
 <style>

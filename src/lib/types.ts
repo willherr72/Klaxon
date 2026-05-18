@@ -30,6 +30,7 @@ export interface Reminder {
   last_synced_at: number | null;
   dirty: boolean;
   silent: boolean;
+  tags: string[];
 }
 
 export interface ReminderCreate {
@@ -40,6 +41,7 @@ export interface ReminderCreate {
   sound_path: string | null;
   repeat_rule: RepeatRule | null;
   silent: boolean;
+  tags: string[];
 }
 
 export interface ReminderUpdate {
@@ -50,6 +52,7 @@ export interface ReminderUpdate {
   sound_path?: string | null;
   repeat_rule?: RepeatRule | null;
   silent?: boolean;
+  tags?: string[];
 }
 
 export type ViewMode = "reminders" | "tasks" | "calendar" | "completed";

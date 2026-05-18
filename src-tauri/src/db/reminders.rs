@@ -2,7 +2,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    now_ms, Priority, Reminder, ReminderCreate, ReminderState, ReminderUpdate, RepeatRule,
+    normalize_tags, now_ms, Priority, Reminder, ReminderCreate, ReminderState, ReminderUpdate,
+    RepeatRule,
 };
 use crate::sync::types::RemoteReminder;
 
@@ -16,6 +17,8 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let priority_int: i32 = row.get("priority")?;
     let dirty_int: i32 = row.get("dirty")?;
     let silent_int: i32 = row.get("silent")?;
+    let tags_json: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
 
     Ok(Reminder {
         id: row.get("id")?,
@@ -34,13 +37,14 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         last_synced_at: row.get("last_synced_at")?,
         dirty: dirty_int != 0,
         silent: silent_int != 0,
+        tags,
     })
 }
 
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
          FROM reminders
          ORDER BY due_at ASC",
     )?;
@@ -55,7 +59,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
 pub fn next_pending(conn: &Connection) -> AppResult<Option<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
          FROM reminders
          WHERE state IN ('pending', 'snoozed') AND silent = 0
          ORDER BY COALESCE(snooze_until, due_at) ASC
@@ -77,11 +81,14 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
         None => None,
     };
 
+    let tags = normalize_tags(input.tags);
+    let tags_json = serde_json::to_string(&tags)?;
+
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, 1, ?9)",
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, 1, ?9, ?10)",
         params![
             id,
             input.title.trim(),
@@ -92,6 +99,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
             repeat_json,
             now,
             input.silent as i32,
+            tags_json,
         ],
     )?;
 
@@ -101,7 +109,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
 pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Reminder> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
          FROM reminders WHERE id = ?1",
     )?;
     let r = stmt
@@ -137,6 +145,11 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
         None => None,
     };
     let silent = patch.silent.unwrap_or(existing.silent);
+    let tags = match patch.tags {
+        Some(t) => normalize_tags(t),
+        None => existing.tags.clone(),
+    };
+    let tags_json = serde_json::to_string(&tags)?;
     let now = now_ms();
 
     // If the user moved the due time, treat the edit as a manual reschedule:
@@ -156,7 +169,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
         "UPDATE reminders
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
              sound_path = ?6, repeat_rule = ?7, updated_at = ?8, dirty = 1,
-             silent = ?9, state = ?10, snooze_until = ?11
+             silent = ?9, state = ?10, snooze_until = ?11, tags = ?12
          WHERE id = ?1",
         params![
             id,
@@ -170,6 +183,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
             silent as i32,
             new_state.as_str(),
             new_snooze,
+            tags_json,
         ],
     )?;
 
@@ -189,7 +203,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
          FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
@@ -233,12 +247,14 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
         Some(rule) => Some(serde_json::to_string(rule)?),
         None => None,
     };
+    let tags = normalize_tags(r.tags.clone());
+    let tags_json = serde_json::to_string(&tags)?;
 
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0, ?13)
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
@@ -251,7 +267,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
            updated_at = excluded.updated_at,
            last_synced_at = excluded.last_synced_at,
            dirty = 0,
-           silent = excluded.silent",
+           silent = excluded.silent,
+           tags = excluded.tags",
         params![
             r.id,
             r.title,
@@ -266,6 +283,7 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
             r.updated_at,
             now_ms(),
             r.silent as i32,
+            tags_json,
         ],
     )?;
     Ok(true)

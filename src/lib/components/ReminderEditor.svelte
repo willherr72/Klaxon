@@ -28,7 +28,29 @@
   let repeatKind = $state<"none" | "daily" | "weekly" | "interval" | "monthly">("none");
   let intervalSecs = $state(3600);
   let silent = $state(false);
+  let tags = $state<string[]>([]);
+  let tagDraft = $state("");
   let titleInput: HTMLInputElement | null = $state(null);
+
+  function normalizeTag(raw: string): string {
+    return raw.trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  function commitTagDraft() {
+    const t = normalizeTag(tagDraft);
+    if (!t) {
+      tagDraft = "";
+      return;
+    }
+    if (!tags.includes(t)) {
+      tags = [...tags, t];
+    }
+    tagDraft = "";
+  }
+
+  function removeTag(t: string) {
+    tags = tags.filter((x) => x !== t);
+  }
 
   $effect(() => {
     if (open && titleInput) {
@@ -55,6 +77,7 @@
         intervalSecs = 3600;
       }
       silent = reminder.silent;
+      tags = [...reminder.tags];
     } else {
       title = "";
       description = "";
@@ -63,7 +86,9 @@
       repeatKind = "none";
       intervalSecs = 3600;
       silent = defaultSilent;
+      tags = [];
     }
+    tagDraft = "";
   });
 
   function buildRepeatRule(): RepeatRule | null {
@@ -78,6 +103,9 @@
 
   function handleSave() {
     if (!title.trim()) return;
+    // Flush any unfinished tag draft so the user doesn't lose a tag they
+    // typed but didn't press Enter on.
+    if (tagDraft.trim()) commitTagDraft();
     const input: ReminderCreate = {
       title: title.trim(),
       description: description.trim() || null,
@@ -86,6 +114,7 @@
       sound_path: null,
       repeat_rule: silent ? null : buildRepeatRule(),
       silent,
+      tags,
     };
     onSave(input, reminder?.id ?? null);
   }
@@ -167,6 +196,38 @@
         bind:value={dueLocal}
       />
     </label>
+
+    <div class="field">
+      <span class="mono-caps-faint">Tags</span>
+      <div class="tags-input">
+        {#each tags as t (t)}
+          <span class="tag-chip">
+            <span class="tag-text">{t}</span>
+            <button
+              class="tag-remove"
+              type="button"
+              onclick={() => removeTag(t)}
+              aria-label="Remove tag {t}"
+            >×</button>
+          </span>
+        {/each}
+        <input
+          class="tag-input"
+          type="text"
+          placeholder={tags.length === 0 ? "work, personal, urgent…" : "+ tag"}
+          bind:value={tagDraft}
+          onkeydown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              commitTagDraft();
+            } else if (e.key === "Backspace" && tagDraft === "" && tags.length > 0) {
+              tags = tags.slice(0, -1);
+            }
+          }}
+          onblur={commitTagDraft}
+        />
+      </div>
+    </div>
 
     {#if !silent}
       <div class="field">
@@ -330,6 +391,58 @@
     color: var(--text-muted);
     line-height: 1.55;
   }
+
+  /* Tag input */
+  .tags-input {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    transition: border-color 120ms var(--ease);
+    min-height: 38px;
+  }
+  .tags-input:focus-within { border-color: var(--klaxon); }
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 4px 3px 8px;
+    border: 1px solid var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.08);
+    color: var(--klaxon);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
+  .tag-text { line-height: 1; }
+  .tag-remove {
+    width: 16px;
+    height: 16px;
+    background: transparent;
+    border: none;
+    color: var(--klaxon-dim);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    transition: color 100ms var(--ease);
+  }
+  .tag-remove:hover { color: var(--signal-high); }
+  .tag-input {
+    flex: 1;
+    min-width: 100px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 4px 2px;
+  }
+  .tag-input:focus { outline: none; }
+  .tag-input::placeholder { color: var(--text-faint); }
 
   .field {
     display: flex;

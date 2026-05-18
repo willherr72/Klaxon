@@ -4,6 +4,7 @@ mod commands;
 mod db;
 mod error;
 mod models;
+mod nl;
 mod recurrence;
 mod scheduler;
 mod sync;
@@ -178,6 +179,7 @@ pub fn run() {
             commands::data_dir,
             commands::set_global_hotkey,
             commands::preview_tone,
+            commands::nl_parse,
             commands::list_peers,
             commands::add_peer,
             commands::remove_peer,

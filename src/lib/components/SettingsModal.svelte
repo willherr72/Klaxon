@@ -36,7 +36,9 @@
   let autostart = $state(false);
   let dataDirPath = $state("");
   let globalHotkey = $state("Ctrl+Alt+KeyN");
-  let recordingHotkey = $state(false);
+  let quickAddHotkey = $state("Ctrl+KeyK");
+  type HotkeySlot = "global" | "quickadd" | null;
+  let recordingSlot = $state<HotkeySlot>(null);
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -86,7 +88,8 @@
         tone: parseTone(settings["tone_high"], "siren"),
       };
       globalHotkey = settings["global_hotkey_new"] ?? "Ctrl+Alt+KeyN";
-      recordingHotkey = false;
+      quickAddHotkey = settings["inapp_hotkey_quickadd"] ?? "Ctrl+KeyK";
+      recordingSlot = null;
       sortOrder = settings["list_sort_order"] === "date_desc" ? "date_desc" : "date_asc";
       try {
         autostart = await autostartIsEnabled();
@@ -121,6 +124,7 @@
         api.setSetting("repeat_interval_secs_high", String(highCfg.intervalSecs)),
         api.setSetting("tone_high", highCfg.tone),
         api.setSetting("list_sort_order", sortOrder),
+        api.setSetting("inapp_hotkey_quickadd", quickAddHotkey),
       ]);
       try {
         if (autostart) await enableAutostart();
@@ -158,7 +162,8 @@
     normalCfg = { count: 5, intervalSecs: 8, tone: "klaxon" };
     highCfg = { count: 30, intervalSecs: 4, tone: "siren" };
     globalHotkey = "Ctrl+Alt+KeyN";
-    recordingHotkey = false;
+    quickAddHotkey = "Ctrl+KeyK";
+    recordingSlot = null;
     sortOrder = "date_asc";
   }
 
@@ -171,26 +176,29 @@
   }
 
   function captureHotkey(e: KeyboardEvent) {
-    if (!recordingHotkey) return;
+    if (!recordingSlot) return;
+    const slot = recordingSlot;
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      recordingHotkey = false;
+      recordingSlot = null;
       return;
     }
     if (e.key === "Backspace" || e.key === "Delete") {
       e.preventDefault();
       e.stopPropagation();
-      globalHotkey = "";
-      recordingHotkey = false;
+      if (slot === "global") globalHotkey = "";
+      else if (slot === "quickadd") quickAddHotkey = "";
+      recordingSlot = null;
       return;
     }
     const combo = keyEventToCombo(e);
     if (combo) {
       e.preventDefault();
       e.stopPropagation();
-      globalHotkey = combo;
-      recordingHotkey = false;
+      if (slot === "global") globalHotkey = combo;
+      else if (slot === "quickadd") quickAddHotkey = combo;
+      recordingSlot = null;
     }
   }
 
@@ -201,7 +209,7 @@
 
 <svelte:window onkeydown={(e) => {
   if (!open) return;
-  if (recordingHotkey) {
+  if (recordingSlot) {
     captureHotkey(e);
     return;
   }
@@ -386,16 +394,16 @@
           </button>
           {#if sectionOpen.hotkeys}
             <div class="section-help mono-caps-faint">
-              System-wide hotkey for opening a new reminder from anywhere.
+              Global = system-wide. In-app = only when the main window is focused.
             </div>
             <div class="hotkey-row">
               <span class="hotkey-label-text">Global · New Reminder</span>
               <button
                 class="hotkey-btn"
-                class:recording={recordingHotkey}
-                onclick={() => (recordingHotkey = !recordingHotkey)}
+                class:recording={recordingSlot === "global"}
+                onclick={() => (recordingSlot = recordingSlot === "global" ? null : "global")}
               >
-                {#if recordingHotkey}
+                {#if recordingSlot === "global"}
                   <span class="rec-dot"></span>
                   <span>Press combo… (Esc cancel · Del clear)</span>
                 {:else}
@@ -404,8 +412,31 @@
               </button>
               <button
                 class="hotkey-clear"
-                onclick={() => { globalHotkey = ""; recordingHotkey = false; }}
+                onclick={() => { globalHotkey = ""; recordingSlot = null; }}
                 disabled={!globalHotkey}
+              >
+                Clear
+              </button>
+            </div>
+
+            <div class="hotkey-row">
+              <span class="hotkey-label-text">In-app · Quick Add</span>
+              <button
+                class="hotkey-btn"
+                class:recording={recordingSlot === "quickadd"}
+                onclick={() => (recordingSlot = recordingSlot === "quickadd" ? null : "quickadd")}
+              >
+                {#if recordingSlot === "quickadd"}
+                  <span class="rec-dot"></span>
+                  <span>Press combo… (Esc cancel · Del clear)</span>
+                {:else}
+                  <span class="hotkey-value">{prettyShortcut(quickAddHotkey)}</span>
+                {/if}
+              </button>
+              <button
+                class="hotkey-clear"
+                onclick={() => { quickAddHotkey = ""; recordingSlot = null; }}
+                disabled={!quickAddHotkey}
               >
                 Clear
               </button>

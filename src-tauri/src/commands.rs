@@ -184,6 +184,15 @@ pub fn preview_tone(state: State<'_, AppState>, tone: String) -> AppResult<()> {
     Ok(())
 }
 
+/// Parse a natural-language quick-add string into a title + due-at preview.
+/// Returns an error string if no usable title could be extracted — the
+/// frontend uses that to keep the Save button disabled while showing the
+/// hint.
+#[tauri::command]
+pub fn nl_parse(input: String) -> Result<crate::nl::Parsed, crate::nl::ParseError> {
+    crate::nl::parse(&input, chrono::Local::now())
+}
+
 // ── Sync ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

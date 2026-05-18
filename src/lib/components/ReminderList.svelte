@@ -10,6 +10,7 @@
     onSelect,
     onComplete,
     onDelete,
+    onTagClick,
     searchOpen = false,
     searchQuery = $bindable(""),
     onSearchClose,
@@ -20,6 +21,7 @@
     onSelect: (r: Reminder) => void;
     onComplete: (r: Reminder) => void;
     onDelete: (r: Reminder) => void;
+    onTagClick?: (tag: string) => void;
     searchOpen?: boolean;
     searchQuery?: string;
     onSearchClose?: () => void;
@@ -105,6 +107,7 @@
               onClick={onSelect}
               onComplete={onComplete}
               onDelete={onDelete}
+              onTagClick={onTagClick}
             />
           {/each}
         </div>

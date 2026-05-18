@@ -88,6 +88,9 @@ pub struct Reminder {
     /// When true the scheduler ignores this row entirely — no alarm. Used
     /// for to-do style items that have a date but shouldn't ring.
     pub silent: bool,
+    /// Free-form labels, lowercase, deduplicated. Persisted as a JSON array.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -100,6 +103,8 @@ pub struct ReminderCreate {
     pub repeat_rule: Option<RepeatRule>,
     #[serde(default)]
     pub silent: bool,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,6 +116,36 @@ pub struct ReminderUpdate {
     pub sound_path: Option<Option<String>>,
     pub repeat_rule: Option<Option<RepeatRule>>,
     pub silent: Option<bool>,
+    pub tags: Option<Vec<String>>,
+}
+
+/// Canonical form for a tag — lowercase, trimmed, with internal whitespace
+/// collapsed to single spaces. Empty strings are returned as `None`.
+pub fn normalize_tag(raw: &str) -> Option<String> {
+    let s: String = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// Normalize + dedupe a list of tags, preserving first-seen order.
+pub fn normalize_tags(input: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw in input {
+        if let Some(t) = normalize_tag(&raw) {
+            if seen.insert(t.clone()) {
+                out.push(t);
+            }
+        }
+    }
+    out
 }
 
 pub fn now_ms() -> i64 {

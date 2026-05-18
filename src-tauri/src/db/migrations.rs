@@ -69,6 +69,10 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE reminders ADD COLUMN silent INTEGER NOT NULL DEFAULT 0;
     "#,
+    // 005 — tags: comma-free labels stored as a JSON array of lowercase strings
+    r#"
+    ALTER TABLE reminders ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

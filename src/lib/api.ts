@@ -33,6 +33,8 @@ export const api = {
     invoke<void>("set_global_hotkey", { combo }),
   previewTone: (tone: string) =>
     invoke<void>("preview_tone", { tone }),
+  nlParse: (input: string) =>
+    invoke<NlParsed>("nl_parse", { input }),
   // Sync
   deviceIdentity: () => invoke<DeviceInfo>("device_identity"),
   generateSecret: () => invoke<string>("generate_secret"),
@@ -82,6 +84,13 @@ export interface PendingPairEvent {
   initiator_name: string;
   initiator_url: string;
   confirmation_code: string;
+}
+
+export interface NlParsed {
+  due_at_ms: number;
+  title: string;
+  matched_date: string | null;
+  matched_time: string | null;
 }
 
 export interface DiscoveredPeer {

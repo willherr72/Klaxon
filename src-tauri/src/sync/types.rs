@@ -28,6 +28,8 @@ pub struct RemoteReminder {
     pub updated_at: i64,
     #[serde(default)]
     pub silent: bool,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +113,7 @@ impl From<&crate::models::Reminder> for RemoteReminder {
             created_at: r.created_at,
             updated_at: r.updated_at,
             silent: r.silent,
+            tags: r.tags.clone(),
         }
     }
 }

@@ -6,12 +6,16 @@
     view,
     timeFilter,
     onTimeFilterChange,
+    tagFilter = null,
+    onTagFilterClear,
     nextReminder,
     now,
   }: {
     view: ViewMode;
     timeFilter: TimeFilter;
     onTimeFilterChange: (t: TimeFilter) => void;
+    tagFilter?: string | null;
+    onTagFilterClear?: () => void;
     nextReminder: Reminder | null;
     now: number;
   } = $props();
@@ -59,6 +63,14 @@
         </button>
       {/each}
     </div>
+  {/if}
+
+  {#if tagFilter}
+    <button class="tag-filter" onclick={() => onTagFilterClear?.()}>
+      <span class="tag-filter-hash">#</span>
+      <span class="tag-filter-name">{tagFilter}</span>
+      <span class="tag-filter-x">×</span>
+    </button>
   {/if}
 
   <div class="right">
@@ -144,6 +156,27 @@
     background: rgba(255, 157, 0, 0.05);
     box-shadow: inset 0 0 12px rgba(255, 157, 0, 0.08);
   }
+
+  .tag-filter {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border: 1px solid var(--klaxon);
+    background: rgba(255, 157, 0, 0.08);
+    color: var(--klaxon);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .tag-filter:hover {
+    background: var(--klaxon);
+    color: var(--bg);
+  }
+  .tag-filter-hash { opacity: 0.7; }
+  .tag-filter-x { margin-left: 4px; font-size: 12px; line-height: 1; }
 
   .right {
     display: flex;
