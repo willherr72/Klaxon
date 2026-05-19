@@ -71,14 +71,17 @@ pub fn generate_secret() -> String {
     hex::encode(bytes)
 }
 
-/// Six-digit Short Authentication String shown on both devices during the
-/// tap-to-pair flow. Both sides compute it identically. LAN-trusted: not
-/// MITM-resistant on hostile networks (would need DH+SAS for that).
+/// Six-digit Short Authentication String shown on both devices during
+/// the tap-to-pair flow. Both sides compute it identically from values
+/// they both have available: the per-attempt `request_id` +
+/// `ephemeral_token` (set by the initiator), and both peers' iroh
+/// NodeIds. The NodeId-based scheme lets ticket pairing work without
+/// the initiator needing to know the responder's `device_id` up front.
 pub fn confirmation_code(
     request_id: &str,
     ephemeral_token: &str,
-    initiator_id: &str,
-    responder_id: &str,
+    initiator_node_id: &str,
+    responder_node_id: &str,
 ) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -86,9 +89,9 @@ pub fn confirmation_code(
     hasher.update(b"|");
     hasher.update(ephemeral_token.as_bytes());
     hasher.update(b"|");
-    hasher.update(initiator_id.as_bytes());
+    hasher.update(initiator_node_id.as_bytes());
     hasher.update(b"|");
-    hasher.update(responder_id.as_bytes());
+    hasher.update(responder_node_id.as_bytes());
     let hash = hasher.finalize();
     let bytes: [u8; 4] = hash[..4].try_into().unwrap_or([0; 4]);
     let n = u32::from_be_bytes(bytes) % 1_000_000;

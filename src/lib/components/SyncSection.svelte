@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import QRCode from "qrcode";
   import {
     api,
     type DeviceInfo,
@@ -26,14 +27,12 @@
   let error = $state<string | null>(null);
   let discoveryTimer: number | null = null;
 
-  // Pair modal state
+  // Pairing-ticket modal — "Show this device's ticket" + "Paste their ticket".
   let pairOpen = $state(false);
-  let pairId = $state("");
-  let pairName = $state("");
-  let pairUrl = $state("");
-  let pairSecret = $state("");
+  let pairTicket = $state(""); // pasted ticket input
   let pairBusy = $state(false);
   let pairError = $state<string | null>(null);
+  let qrDataUrl = $state<string | null>(null);
 
   let pingStatus = $state<Record<string, "ok" | "fail" | "pending" | undefined>>({});
   let copyFlash = $state<string | null>(null);
@@ -100,18 +99,15 @@
     if (!d.node_id) {
       tapPair = {
         kind: "error",
-        message: "Peer is not advertising a TLS fingerprint — try restarting it.",
+        message:
+          "Peer hasn't advertised an iroh node id (older build?) — they need to upgrade to v0.3+",
       };
       return;
     }
     tapPairBusy = true;
     tapPair = { kind: "starting", peerName: d.device_name };
     try {
-      const outcome = await api.startPairWith(
-        d.node_id,
-        d.device_id,
-        d.device_name,
-      );
+      const outcome = await api.startPairWith(d.node_id, d.device_name);
       tapPair = { kind: "success", peerName: outcome.peer_name };
       await refresh();
       await refreshDiscovery();
@@ -164,42 +160,45 @@
     }
   }
 
-  function openPair() {
-    pairId = "";
-    pairName = "";
-    pairUrl = "";
-    pairSecret = "";
+  async function openPair() {
+    pairTicket = "";
     pairError = null;
     pairOpen = true;
-  }
-
-  async function generateSecret() {
-    try {
-      pairSecret = await api.generateSecret();
-    } catch (e) {
-      pairError = String(e);
+    qrDataUrl = null;
+    if (device?.iroh_node_id) {
+      try {
+        qrDataUrl = await QRCode.toDataURL(device.iroh_node_id, {
+          margin: 1,
+          width: 240,
+          color: { dark: "#ff9d00", light: "#0a0a0a" },
+        });
+      } catch (e) {
+        console.error("qr generation failed", e);
+      }
     }
   }
 
   async function submitPair() {
     if (pairBusy) return;
     pairError = null;
-    if (!pairId.trim() || !pairUrl.trim() || !pairSecret.trim()) {
-      pairError = "ID, Node ID, and Secret are required.";
+    const ticket = pairTicket.trim();
+    if (!ticket) {
+      pairError = "Paste the other device's pairing ticket first.";
       return;
     }
     pairBusy = true;
     try {
-      await api.addPeer({
-        id: pairId.trim(),
-        name: pairName.trim() || pairId.trim(),
-        iroh_node_id: pairUrl.trim(),
-        shared_secret: pairSecret.trim(),
-      });
+      // The ticket is the peer's iroh node id (~52-char base32). Initiates
+      // the same `klaxon/pair/0` handshake as mDNS tap-to-pair; the user
+      // confirms the SAS on both ends to complete pairing.
+      tapPair = { kind: "starting", peerName: "(ticket)" };
+      const outcome = await api.startPairWith(ticket, "");
+      tapPair = { kind: "success", peerName: outcome.peer_name };
       pairOpen = false;
       await refresh();
     } catch (e) {
       pairError = String(e);
+      tapPair = { kind: "error", message: String(e) };
     } finally {
       pairBusy = false;
     }
@@ -314,6 +313,7 @@
           <code class="mono">{device.iroh_node_id ?? "(endpoint not started)"}</code>
           {#if device.iroh_node_id}
             <button class="copy" onclick={() => device?.iroh_node_id && copy(device.iroh_node_id, "Node id")}>Copy</button>
+            <button class="copy" onclick={openPair}>Pairing ticket</button>
           {/if}
         </div>
       </div>
@@ -457,46 +457,64 @@
       <header class="pair-head">
         <div class="pair-head-left">
           <span class="lamp"></span>
-          <h3 class="display pair-title">PAIR DEVICE</h3>
+          <h3 class="display pair-title">PAIRING TICKET</h3>
         </div>
         <button class="pair-close" onclick={() => (pairOpen = false)}>×</button>
       </header>
 
       <div class="pair-help">
-        Both devices need each other's <strong>ID</strong>, <strong>iroh node id</strong>, and the <strong>same shared secret</strong>. Tap-to-pair (above) does this automatically. Use this only if mDNS discovery isn't finding the peer (e.g. across home networks).
+        Show this ticket on another device, or paste theirs below. Same handshake as tap-to-pair — the 6-digit code on both screens must match before you Approve.
       </div>
 
-      {#if pairError}
-        <div class="error mono-caps">⚠ {pairError}</div>
-      {/if}
-
-      <div class="pair-fields">
-        <label class="pair-field">
-          <span class="mono-caps-faint">Their Device ID</span>
-          <input type="text" class="pair-input" bind:value={pairId} placeholder="UUID from the other device" />
-        </label>
-        <label class="pair-field">
-          <span class="mono-caps-faint">Their Name (optional)</span>
-          <input type="text" class="pair-input" bind:value={pairName} placeholder="e.g., Phone" />
-        </label>
-        <label class="pair-field">
-          <span class="mono-caps-faint">Their iroh node id</span>
-          <input type="text" class="pair-input mono-input" bind:value={pairUrl} placeholder="52-char base32 NodeId from the other device" />
-        </label>
-        <label class="pair-field">
-          <span class="mono-caps-faint">Shared Secret</span>
-          <div class="secret-row">
-            <input type="text" class="pair-input mono-input" bind:value={pairSecret} placeholder="Hex token (same on both devices)" />
-            <button class="ghost-btn" onclick={generateSecret}>Generate</button>
+      <div class="ticket-block">
+        <div class="ticket-title mono-caps-faint">Your ticket</div>
+        {#if device?.iroh_node_id}
+          <div class="ticket-row">
+            {#if qrDataUrl}
+              <img class="ticket-qr" src={qrDataUrl} alt="Pairing QR code" width="240" height="240" />
+            {:else}
+              <div class="ticket-qr-pending mono-caps-faint">generating QR…</div>
+            {/if}
+            <div class="ticket-text-col">
+              <code class="mono ticket-id">{device.iroh_node_id}</code>
+              <button class="ghost-btn" onclick={() => device?.iroh_node_id && copy(device.iroh_node_id, "Ticket")}>
+                Copy ticket
+              </button>
+              <div class="ticket-caption mono-caps-faint">
+                52-char base32 iroh node id. Same value as the QR. Mobile scans the QR; desktop pastes the string.
+              </div>
+            </div>
           </div>
-        </label>
+        {:else}
+          <div class="ticket-pending mono-caps-faint">Iroh endpoint not ready — sync may be disabled.</div>
+        {/if}
+      </div>
+
+      <div class="ticket-block">
+        <div class="ticket-title mono-caps-faint">Pair from a ticket</div>
+        {#if pairError}
+          <div class="error mono-caps">⚠ {pairError}</div>
+        {/if}
+        <div class="pair-from-row">
+          <input
+            type="text"
+            class="pair-input mono-input"
+            bind:value={pairTicket}
+            placeholder="Paste their pairing ticket"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="primary-btn" onclick={submitPair} disabled={pairBusy}>
+            {pairBusy ? "Pairing…" : "Pair"}
+          </button>
+        </div>
+        <div class="ticket-caption mono-caps-faint">
+          Both devices must approve the matching 6-digit code on the next screen.
+        </div>
       </div>
 
       <footer class="pair-actions">
-        <button class="ghost-btn" onclick={() => (pairOpen = false)}>Cancel</button>
-        <button class="primary-btn" onclick={submitPair} disabled={pairBusy}>
-          {pairBusy ? "Adding…" : "Add Peer"}
-        </button>
+        <button class="ghost-btn" onclick={() => (pairOpen = false)}>Close</button>
       </footer>
     </div>
   </div>
@@ -996,6 +1014,81 @@
     from { opacity: 0; }
     to { opacity: 1; }
   }
+  .ticket-block {
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ticket-block:last-of-type { border-bottom: none; }
+  .ticket-title {
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    color: var(--text-muted);
+  }
+  .ticket-row {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+  }
+  .ticket-qr {
+    width: 240px;
+    height: 240px;
+    background: var(--bg);
+    padding: 6px;
+    border: 1px solid var(--border-strong);
+    image-rendering: pixelated;
+    flex-shrink: 0;
+  }
+  .ticket-qr-pending {
+    width: 240px;
+    height: 240px;
+    border: 1px dashed var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .ticket-text-col {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: flex-start;
+    min-width: 0;
+  }
+  .ticket-id {
+    font-size: 11px;
+    word-break: break-all;
+    line-height: 1.5;
+    color: var(--klaxon);
+    border: 1px solid var(--klaxon-dim);
+    background: rgba(255, 157, 0, 0.06);
+    padding: 8px 10px;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .ticket-caption {
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--text-muted);
+    line-height: 1.6;
+  }
+  .ticket-pending {
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-muted);
+  }
+  .pair-from-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+  }
+
   .pair-modal {
     width: min(560px, 92vw);
     background: var(--bg-elev);

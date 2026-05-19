@@ -361,28 +361,26 @@ pub fn list_discovered_peers(
 
 // ── Tap-to-pair (initiator side) ──────────────────────────────────────
 
-/// v0.3 phase 3c: pair handshake rides iroh, not HTTPS.
-///
-/// The discovered peer's `node_id` (from mDNS TXT) is now what we dial.
-/// `peer_url` and `peer_cert_fingerprint` are intentionally gone — there
-/// is no LAN HTTPS path anymore. mDNS-discovered peers without a
-/// `node_id` (shouldn't happen post-v0.3 cutover, but defensive) are
-/// rejected up front.
+/// Start a pair handshake with the peer at `peer_node_id` over the iroh
+/// `klaxon/pair/0` ALPN. The same command serves both flows:
+///   - mDNS tap-to-pair — UI passes the node_id from a `DiscoveredPeer`.
+///   - Ticket pairing — UI passes a node_id the user pasted (from a QR
+///     scan or copy-paste).
+/// The peer's `device_id` is no longer required up front; we learn it
+/// from the `PairAck`.
 #[tauri::command]
 pub async fn start_pair_with(
     state: State<'_, AppState>,
     app: AppHandle,
     peer_node_id: String,
-    peer_id: String,
     peer_name: String,
 ) -> AppResult<crate::sync::types::PairOutcome> {
     use crate::sync::proto::{PairAck, PairOffer};
     use crate::sync::types::PairOutcome;
 
-    if peer_node_id.trim().is_empty() {
-        return Err(AppError::Invalid(
-            "peer must advertise an iroh node id via mDNS to be paired".into(),
-        ));
+    let peer_node_id = peer_node_id.trim().to_string();
+    if peer_node_id.is_empty() {
+        return Err(AppError::Invalid("peer iroh node id is required".into()));
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -396,13 +394,13 @@ pub async fn start_pair_with(
         .map(|n| (n.endpoint.clone(), n.node_id.clone()))
         .ok_or_else(|| AppError::Invalid("local iroh endpoint not started".into()))?;
 
-    let sas = sync::confirmation_code(&request_id, &ephemeral, &our.device_id, &peer_id);
+    let sas = sync::confirmation_code(&request_id, &ephemeral, &our_node_id, &peer_node_id);
 
     let _ = app.emit(
         "klaxon://pair-progress",
         serde_json::json!({
             "request_id": request_id,
-            "peer_id": peer_id,
+            "peer_node_id": peer_node_id,
             "peer_name": peer_name,
             "confirmation_code": sas,
         }),

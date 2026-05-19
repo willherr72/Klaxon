@@ -85,13 +85,13 @@ impl PairHandler {
     {
         let offer: PairOffer = proto::read_frame(recv).await?;
 
-        // Compute the SAS identically on both sides — initiator already
-        // showed this code to the user before dialing.
+        // Compute the SAS identically on both sides. Uses NodeIds so the
+        // initiator can pair via ticket without knowing our device_id.
         let sas = crate::sync::confirmation_code(
             &offer.request_id,
             &offer.ephemeral_token,
-            &offer.initiator_id,
-            &self.identity.device_id,
+            &offer.initiator_node_id,
+            &self.local_node_id,
         );
 
         let (tx, rx) = oneshot::channel::<PairDecision>();
