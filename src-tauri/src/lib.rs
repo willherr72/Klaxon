@@ -49,7 +49,8 @@ pub fn run() {
         env_logger::Env::default().default_filter_or(
             "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
              iroh_base=warn,iroh_metrics=warn,n0_future=warn,n0_watcher=warn,\
-             tracing::span=error",
+             tracing::span=error,\
+             iroh::net_report=error,iroh::net_report::reportgen=error",
         ),
     )
     .init();
