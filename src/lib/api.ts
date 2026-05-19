@@ -45,6 +45,7 @@ export const api = {
     invoke<PeerView>("add_peer", { input }),
   removePeer: (id: string) => invoke<void>("remove_peer", { id }),
   pingPeer: (id: string) => invoke<PingResponse>("ping_peer", { id }),
+  pingPeerIroh: (id: string) => invoke<PingResponse>("ping_peer_iroh", { id }),
   listDiscoveredPeers: () =>
     invoke<DiscoveredPeer[]>("list_discovered_peers"),
   startPairWith: (
@@ -121,6 +122,10 @@ export interface PeerView {
   last_pull_at: number;
   last_push_at: number;
   last_seen_at: number | null;
+  /// v0.3 iroh: set iff this peer was paired on a v0.3 build. The UI
+  /// uses it to enable the "Ping (iroh)" action — peers paired pre-v0.3
+  /// must re-pair before they can sync cross-network.
+  iroh_node_id: string | null;
 }
 
 export interface AddPeerInput {

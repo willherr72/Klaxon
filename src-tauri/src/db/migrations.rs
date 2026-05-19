@@ -73,6 +73,14 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE reminders ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
     "#,
+    // 006 — v0.3 iroh transport: each peer has a stable iroh EndpointId
+    // (Ed25519 pubkey, base32 string). Captured during pairing alongside
+    // the existing TLS cert fingerprint so the LAN HTTPS path keeps
+    // working until the cutover. Nullable for graceful upgrade from v0.2
+    // (where peers paired before iroh existed and have no node_id).
+    r#"
+    ALTER TABLE peers ADD COLUMN iroh_node_id TEXT;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

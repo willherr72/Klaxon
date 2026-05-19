@@ -212,6 +212,9 @@ pub struct PeerView {
     pub last_pull_at: i64,
     pub last_push_at: i64,
     pub last_seen_at: Option<i64>,
+    /// Set iff this peer was paired on a v0.3 build — used by the UI to
+    /// enable the "Ping (iroh)" action.
+    pub iroh_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -237,6 +240,7 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
             last_pull_at: p.last_pull_at,
             last_push_at: p.last_push_at,
             last_seen_at: p.last_seen_at,
+            iroh_node_id: p.iroh_node_id,
         })
         .collect())
 }
@@ -266,6 +270,7 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
             .as_ref()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        iroh_node_id: None,
     };
     {
         let conn = state.db.lock();
@@ -278,6 +283,7 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_pull_at: peer.last_pull_at,
         last_push_at: peer.last_push_at,
         last_seen_at: peer.last_seen_at,
+        iroh_node_id: peer.iroh_node_id,
     })
 }
 
@@ -303,6 +309,38 @@ pub async fn ping_peer(
     };
     let client = SyncClient::new(url, secret, &fp)?;
     client.ping().await
+}
+
+/// v0.3 phase 3a — ping a paired peer over the iroh transport instead of
+/// HTTPS. Fails fast if the peer has no `iroh_node_id` (paired pre-v0.3)
+/// or if our local iroh endpoint isn't up.
+#[tauri::command]
+pub async fn ping_peer_iroh(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<PingResponse> {
+    let (node_id, secret) = {
+        let conn = state.db.lock();
+        let peers = peer_repo::list_all(&conn)?;
+        let p = peers
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| AppError::NotFound(format!("peer {id}")))?;
+        let node_id = p.iroh_node_id.ok_or_else(|| {
+            AppError::Invalid(
+                "peer has no iroh node id — was paired on a pre-v0.3 build, re-pair to enable"
+                    .into(),
+            )
+        })?;
+        (node_id, p.shared_secret)
+    };
+    let endpoint = state
+        .iroh_node
+        .lock()
+        .as_ref()
+        .map(|n| n.endpoint.clone())
+        .ok_or_else(|| AppError::Invalid("local iroh endpoint not started".into()))?;
+    sync::iroh_client::ping(&endpoint, &node_id, &secret).await
 }
 
 #[tauri::command]
@@ -395,6 +433,11 @@ pub async fn start_pair_with(
         }),
     );
 
+    let our_iroh_node_id = state
+        .iroh_node
+        .lock()
+        .as_ref()
+        .map(|n| n.node_id.clone());
     let req = PairRequest {
         request_id: request_id.clone(),
         initiator_id: our.device_id.clone(),
@@ -402,6 +445,7 @@ pub async fn start_pair_with(
         initiator_url: our_url,
         ephemeral_token: ephemeral,
         initiator_cert_fingerprint: our_fp,
+        initiator_iroh_node_id: our_iroh_node_id,
     };
 
     let tls_config = sync::tls::pinned_client_config(&peer_cert_fingerprint);
@@ -462,6 +506,7 @@ pub async fn start_pair_with(
             created_at: now_ms(),
             last_seen_at: Some(now_ms()),
             cert_fingerprint: Some(body.responder_cert_fingerprint.clone()),
+            iroh_node_id: body.responder_iroh_node_id.clone(),
         };
         peer_repo::upsert(&conn, &peer)?;
     }

@@ -274,13 +274,24 @@ async fn handle_pair_initiate(
         created_at: now_ms(),
         last_seen_at: Some(now_ms()),
         cert_fingerprint: Some(req.initiator_cert_fingerprint.clone()),
+        iroh_node_id: req.initiator_iroh_node_id.clone(),
     };
     if let Err(e) = peers::upsert(&conn, &peer) {
         log::error!("store peer after pair: {e}");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
+    drop(conn);
 
     let _ = s.app.emit("klaxon://peer-paired", peer.id.clone());
+
+    // Our own iroh node_id, if the endpoint is up. Optional — the
+    // responder can still pair without iroh (e.g. degraded startup).
+    let our_node_id = {
+        use tauri::Manager;
+        s.app
+            .try_state::<crate::AppState>()
+            .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.node_id.clone()))
+    };
 
     Ok(Json(PairResponse {
         responder_id: s.identity.device_id.clone(),
@@ -288,5 +299,6 @@ async fn handle_pair_initiate(
         responder_url: our_url,
         shared_secret: secret,
         responder_cert_fingerprint: s.local_cert.fingerprint.clone(),
+        responder_iroh_node_id: our_node_id,
     }))
 }

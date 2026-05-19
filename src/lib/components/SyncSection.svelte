@@ -231,6 +231,25 @@
     }, 2200);
   }
 
+  // v0.3 phase 3a: ping a paired peer over the iroh transport instead of
+  // the LAN HTTPS path. Disabled in the UI when the peer has no
+  // iroh_node_id (paired pre-v0.3 — must re-pair).
+  async function pingPeerIroh(p: PeerView) {
+    const key = `${p.id}#iroh`;
+    pingStatus = { ...pingStatus, [key]: "pending" };
+    try {
+      await api.pingPeerIroh(p.id);
+      pingStatus = { ...pingStatus, [key]: "ok" };
+    } catch (e) {
+      console.error("iroh ping failed", e);
+      pingStatus = { ...pingStatus, [key]: "fail" };
+    }
+    setTimeout(() => {
+      pingStatus = { ...pingStatus, [key]: undefined };
+      refresh();
+    }, 2200);
+  }
+
   function relativeTime(ms: number | null): string {
     if (!ms || ms === 0) return "—";
     const diff = Date.now() - ms;
@@ -383,6 +402,17 @@
               <span class="ping-state fail mono-caps">FAIL</span>
             {:else}
               <button class="ghost-btn" onclick={() => pingPeer(p)}>Ping</button>
+            {/if}
+            {#if p.iroh_node_id}
+              {#if pingStatus[`${p.id}#iroh`] === "pending"}
+                <span class="ping-state mono-caps-faint">iroh…</span>
+              {:else if pingStatus[`${p.id}#iroh`] === "ok"}
+                <span class="ping-state ok mono-caps">iroh OK</span>
+              {:else if pingStatus[`${p.id}#iroh`] === "fail"}
+                <span class="ping-state fail mono-caps">iroh FAIL</span>
+              {:else}
+                <button class="ghost-btn" title="Ping over iroh ({p.iroh_node_id.slice(0, 12)}…)" onclick={() => pingPeerIroh(p)}>Ping (iroh)</button>
+              {/if}
             {/if}
             <button class="ghost-btn danger" onclick={() => removePeer(p)}>Remove</button>
           </div>

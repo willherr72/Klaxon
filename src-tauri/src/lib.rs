@@ -260,6 +260,7 @@ pub fn run() {
             commands::add_peer,
             commands::remove_peer,
             commands::ping_peer,
+            commands::ping_peer_iroh,
             commands::device_identity,
             commands::generate_secret,
             commands::set_sync_enabled,
