@@ -16,12 +16,12 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 
-use crate::db::{peers, reminders as repo, tombstones};
+use crate::db::peers;
 use crate::models::now_ms;
 use crate::sync::tls::LocalCert;
 use crate::sync::types::{
     ChangeSet, PairDecision, PairRequest, PairResponse, PendingPairEvent, PingResponse,
-    PushResponse, RemoteReminder, RemoteTombstone,
+    PushResponse,
 };
 use crate::sync::DeviceIdentity;
 
@@ -112,12 +112,7 @@ async fn auth_middleware(
 }
 
 async fn handle_ping(State(s): State<ServerState>) -> Json<PingResponse> {
-    Json(PingResponse {
-        device_id: s.identity.device_id.clone(),
-        device_name: s.identity.device_name.clone(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        server_time_ms: now_ms(),
-    })
+    Json(crate::sync::ops::ping(&s.identity))
 }
 
 #[derive(Deserialize)]
@@ -129,85 +124,24 @@ async fn handle_pull(
     State(s): State<ServerState>,
     Query(q): Query<PullQuery>,
 ) -> Result<Json<ChangeSet>, StatusCode> {
-    let since = q.since.unwrap_or(0);
-    let conn = s.db.lock();
-
-    let reminders = repo::updated_since(&conn, since)
+    crate::sync::ops::pull(&s.db, q.since.unwrap_or(0))
+        .map(Json)
         .map_err(|e| {
-            log::error!("pull list reminders: {e}");
+            log::error!("pull: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .iter()
-        .map(RemoteReminder::from)
-        .collect();
-
-    let ts = tombstones::dirty_since(&conn, since)
-        .map_err(|e| {
-            log::error!("pull list tombstones: {e}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .iter()
-        .map(RemoteTombstone::from)
-        .collect();
-
-    Ok(Json(ChangeSet {
-        server_time_ms: now_ms(),
-        reminders,
-        tombstones: ts,
-    }))
+        })
 }
 
 async fn handle_push(
     State(s): State<ServerState>,
     Json(set): Json<ChangeSet>,
 ) -> Result<Json<PushResponse>, StatusCode> {
-    let mut accepted_reminders = 0usize;
-    let mut accepted_tombstones = 0usize;
-    let mut to_cancel: Vec<String> = Vec::new();
-
-    {
-        let conn = s.db.lock();
-        for r in &set.reminders {
-            match repo::apply_remote(&conn, r) {
-                Ok(true) => {
-                    accepted_reminders += 1;
-                    if matches!(
-                        r.state,
-                        crate::models::ReminderState::Dismissed
-                            | crate::models::ReminderState::Snoozed
-                            | crate::models::ReminderState::Completed
-                    ) {
-                        to_cancel.push(r.id.clone());
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => log::warn!("apply remote reminder {}: {e}", r.id),
-            }
-        }
-
-        for t in &set.tombstones {
-            match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
-                Ok(()) => {
-                    accepted_tombstones += 1;
-                    to_cancel.push(t.id.clone());
-                }
-                Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
-            }
-        }
-    }
-
-    for id in to_cancel {
-        crate::alerts::cancel_alert(&s.app, &id);
-    }
-    if accepted_reminders > 0 || accepted_tombstones > 0 {
-        crate::sync::task::emit_reminders_changed(&s.app);
-    }
-
-    Ok(Json(PushResponse {
-        server_time_ms: now_ms(),
-        accepted_reminders,
-        accepted_tombstones,
-    }))
+    crate::sync::ops::push(&s.db, Some(&s.app), set)
+        .map(Json)
+        .map_err(|e| {
+            log::error!("push: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 /// Handle an incoming pair handshake. The flow:

@@ -23,9 +23,8 @@ use rusqlite::Connection as DbConnection;
 use tauri::AppHandle;
 
 use crate::error::AppResult;
-use crate::models::now_ms;
+use crate::sync::ops;
 use crate::sync::proto::{self, RpcEnvelope, RpcRequest, RpcResponse};
-use crate::sync::types::PingResponse;
 use crate::sync::DeviceIdentity;
 
 #[derive(Debug, Clone)]
@@ -80,13 +79,15 @@ impl SyncHandler {
         }
 
         let resp = match env.request {
-            RpcRequest::Ping => RpcResponse::Pong(self.handle_ping()),
-            RpcRequest::Pull { since: _ } => {
-                RpcResponse::Error("Pull not implemented in phase 2".into())
-            }
-            RpcRequest::Push(_) => {
-                RpcResponse::Error("Push not implemented in phase 2".into())
-            }
+            RpcRequest::Ping => RpcResponse::Pong(ops::ping(&self.identity)),
+            RpcRequest::Pull { since } => match ops::pull(&self.db, since) {
+                Ok(cs) => RpcResponse::Pull(cs),
+                Err(e) => RpcResponse::Error(format!("pull: {e}")),
+            },
+            RpcRequest::Push(cs) => match ops::push(&self.db, self.app.as_ref(), cs) {
+                Ok(ack) => RpcResponse::Push(ack),
+                Err(e) => RpcResponse::Error(format!("push: {e}")),
+            },
         };
 
         proto::write_frame(send, &resp).await
@@ -100,15 +101,6 @@ impl SyncHandler {
             |_| Ok::<(), rusqlite::Error>(()),
         )
         .is_ok()
-    }
-
-    fn handle_ping(&self) -> PingResponse {
-        PingResponse {
-            device_id: self.identity.device_id.clone(),
-            device_name: self.identity.device_name.clone(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            server_time_ms: now_ms(),
-        }
     }
 }
 

@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod iroh_client;
 pub mod iroh_handler;
 pub mod iroh_node;
+pub mod ops;
 pub mod proto;
 pub mod server;
 pub mod task;

@@ -14,7 +14,7 @@ use iroh::{Endpoint, EndpointId};
 
 use crate::error::{AppError, AppResult};
 use crate::sync::proto::{self, RpcEnvelope, RpcRequest, RpcResponse, ALPN_SYNC};
-use crate::sync::types::PingResponse;
+use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 const RPC_TIMEOUT: Duration = Duration::from_secs(15);
@@ -72,5 +72,31 @@ pub async fn ping(
         other => Err(AppError::Invalid(format!(
             "expected Pong, got {other:?}"
         ))),
+    }
+}
+
+pub async fn pull(
+    endpoint: &Endpoint,
+    node_id: &str,
+    shared_secret: &str,
+    since: i64,
+) -> AppResult<ChangeSet> {
+    match call(endpoint, node_id, shared_secret, RpcRequest::Pull { since }).await? {
+        RpcResponse::Pull(cs) => Ok(cs),
+        RpcResponse::Error(msg) => Err(AppError::Invalid(format!("peer rejected pull: {msg}"))),
+        other => Err(AppError::Invalid(format!("expected Pull, got {other:?}"))),
+    }
+}
+
+pub async fn push(
+    endpoint: &Endpoint,
+    node_id: &str,
+    shared_secret: &str,
+    set: ChangeSet,
+) -> AppResult<PushResponse> {
+    match call(endpoint, node_id, shared_secret, RpcRequest::Push(set)).await? {
+        RpcResponse::Push(ack) => Ok(ack),
+        RpcResponse::Error(msg) => Err(AppError::Invalid(format!("peer rejected push: {msg}"))),
+        other => Err(AppError::Invalid(format!("expected Push, got {other:?}"))),
     }
 }
