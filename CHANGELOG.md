@@ -5,6 +5,34 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-rc.1] — 2026-05-19
+
+First release candidate of the v0.3 iroh transport. Cross-network sync via iroh's QUIC + relay network; LAN HTTPS fallback retained for pairs that haven't re-paired since the upgrade.
+
+### Added
+
+- **iroh transport** for cross-network sync.
+  - Each device generates and persists a 32-byte Ed25519 secret key on first run (`klaxon-iroh-secret.bin` in the app data dir). The matching public key is the device's stable `NodeId`.
+  - Endpoint is bound on app start with `iroh::presets::N0` — uses n0's public relay network for hole-punching and address discovery.
+  - `klaxon/sync/0` ALPN with a length-prefixed `postcard` RPC envelope: `Ping`, `Pull{since}`, `Push(ChangeSet)`. Auth is the per-pair shared secret carried inside the envelope.
+- **Pair handshake carries node_id.** `PairRequest` and `PairResponse` gained optional `initiator_iroh_node_id` / `responder_iroh_node_id` fields. Both sides persist the other's NodeId on the new `peers.iroh_node_id` column (migration 006).
+- **mDNS TXT records now include `nid`** (the device's iroh NodeId) so LAN-discovered peers carry their NodeId from the start.
+- **Sync task auto-selects transport per peer.** If the peer has an `iroh_node_id` and our local endpoint is up, sync rides iroh; otherwise it falls back to the v0.2 HTTPS path. The per-tick debug log records which transport was used.
+- **Debug `Ping (iroh)` action** in the Sync settings, next to the existing HTTPS Ping. Appears only for peers paired on v0.3+.
+
+### Changed
+
+- **Internal refactor:** the per-RPC logic (Ping / Pull / Push) lives in a new transport-agnostic `sync::ops` module. Both the HTTPS server and the iroh ProtocolHandler dispatch into it — single source of truth.
+- **iroh log verbosity dialed down.** `env_logger` filter explicitly silences `iroh::*` and `iroh::net_report` span-entry events so the terminal stays useful for app debugging.
+
+### Known limitations
+
+- v0.2 peers won't sync via iroh until both sides re-pair. The HTTPS path keeps them working in the meantime.
+- The end-to-end iroh RPC test is currently disabled on Windows due to a STATUS_ENTRYPOINT_NOT_FOUND when `iroh::Endpoint::bind` is reachable from `#[cfg(test)]`. Production builds are unaffected; documented at the top of `sync/iroh_handler.rs`.
+- No QR-code or ticket-string pairing yet — cross-network bootstrap still requires the first pair to happen on the same LAN.
+
+---
+
 ## [Unreleased] — 0.2.0-dev
 
 Tagged release pending: cross-device sync needs to be validated on a second physical machine before `v0.2.0`.

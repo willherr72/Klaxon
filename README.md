@@ -93,15 +93,21 @@ See [DESIGN.md](DESIGN.md) for architecture detail.
 
 ---
 
-## Install (Windows)
+## Install
 
-The v0.1.0 installer is attached to the [v0.1.0 release](https://github.com/willherr72/Klaxon/releases/tag/v0.1.0).
+### Windows
 
-Newer code on `main` builds a `Klaxon_0.2.0-dev_x64-setup.exe` via `npm run tauri build` — see below.
+The v0.1.0 installer is attached to the [v0.1.0 release](https://github.com/willherr72/Klaxon/releases/tag/v0.1.0). Newer code on `main` and tagged release candidates (`v0.3.0-rc.1`+) build via `npm run tauri build` — see below.
 
 The installer is **unsigned**, so Windows SmartScreen will warn on first run. Click *More info → Run anyway*. Code-signing is on the long-term roadmap.
 
-macOS and Linux compile but are not yet packaged or tested.
+### Linux
+
+No prebuilt binary yet — build from source (instructions below). Tested on Ubuntu/Debian for v0.3.
+
+### macOS
+
+Compiles but not yet tested.
 
 ---
 
@@ -112,7 +118,23 @@ macOS and Linux compile but are not yet packaged or tested.
 - [Rust](https://rustup.rs/) 1.77+
 - [Node.js](https://nodejs.org/) 20+
 - Tauri 2 platform prerequisites — see [Tauri docs](https://tauri.app/start/prerequisites/)
-- Windows needs the WebView2 runtime (already on Windows 11)
+
+**Windows:** WebView2 runtime (already on Windows 11).
+
+**Linux** (Debian/Ubuntu):
+```bash
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  libssl-dev \
+  libgtk-3-dev \
+  librsvg2-dev \
+  libxdo-dev \
+  build-essential \
+  curl wget file
+```
+
+(For Fedora / Arch see the [Tauri prerequisites page](https://tauri.app/start/prerequisites/#linux).)
 
 ### Run in development
 
@@ -129,7 +151,11 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Outputs `src-tauri/target/release/bundle/nsis/Klaxon_<version>_x64-setup.exe`. First run takes several minutes for the full release compile; subsequent builds are incremental.
+Outputs land in `src-tauri/target/release/bundle/`:
+- **Windows:** `nsis/Klaxon_<version>_x64-setup.exe`
+- **Linux:** `deb/klaxon_<version>_amd64.deb` + `appimage/Klaxon_<version>_amd64.AppImage`
+
+First run takes several minutes for the full release compile; subsequent builds are incremental.
 
 ### Tests
 
