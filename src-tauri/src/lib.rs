@@ -41,7 +41,18 @@ const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // iroh's per-packet `poll_send` and tracing-span events flood the
+    // log at INFO — hundreds of lines per minute under steady state.
+    // Knock them down to warn-or-higher while keeping our own crate
+    // and other deps at the default info level.
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(
+            "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
+             iroh_base=warn,iroh_metrics=warn,n0_future=warn,n0_watcher=warn,\
+             tracing::span=error",
+        ),
+    )
+    .init();
 
     // rustls 0.23 requires an explicit crypto provider before any TLS use.
     let _ = rustls::crypto::ring::default_provider().install_default();
