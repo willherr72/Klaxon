@@ -1,31 +1,39 @@
-//! Peer-to-peer sync over LAN.
+//! Peer-to-peer sync over iroh.
 //!
-//! Each Klaxon instance can run an embedded HTTP server (axum) and a sync
-//! task that periodically pushes local changes to / pulls remote changes
-//! from each paired peer. Auth is a per-pair shared secret.
+//! Each Klaxon instance runs an iroh `Endpoint` bound on startup. Two
+//! ALPNs are accepted on it:
 //!
-//! v0.2 first slice: manual peer config (no mDNS, no pairing UX).
+//!   - `klaxon/sync/0` — authenticated RPC (Ping / Pull / Push)
+//!   - `klaxon/pair/0` — pre-auth pair handshake
+//!
+//! Discovery happens via mDNS on the LAN; iroh's relay network handles
+//! the cross-network reachability case. Auth is a per-pair shared
+//! secret established during pairing.
 
-pub mod client;
 pub mod discovery;
 pub mod iroh_client;
 pub mod iroh_handler;
 pub mod iroh_node;
 pub mod ops;
+pub mod pair_handler;
 pub mod proto;
-pub mod server;
 pub mod task;
-pub mod tls;
 pub mod types;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rusqlite::Connection;
+use tokio::sync::oneshot;
 
 use crate::db::settings as cfg;
+use crate::sync::types::PairDecision;
 
-const DEFAULT_PORT: u16 = 7124;
+/// Pending pair handshakes the local UI hasn't decided on yet. Keyed
+/// by `request_id`; the oneshot sender flips Approve/Decline from the
+/// `approve_pair_request` / `decline_pair_request` Tauri commands.
+pub type PendingPairs = Arc<Mutex<HashMap<String, oneshot::Sender<PairDecision>>>>;
 
 #[derive(Debug, Clone)]
 pub struct DeviceIdentity {
@@ -45,15 +53,6 @@ pub fn read_identity(db: &Arc<Mutex<Connection>>) -> DeviceIdentity {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Klaxon".to_string());
     DeviceIdentity { device_id, device_name }
-}
-
-pub fn read_port(db: &Arc<Mutex<Connection>>) -> u16 {
-    let conn = db.lock();
-    cfg::get(&conn, "sync_port")
-        .ok()
-        .flatten()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
 }
 
 pub fn read_enabled(db: &Arc<Mutex<Connection>>) -> bool {
@@ -96,11 +95,3 @@ pub fn confirmation_code(
     format!("{:03}-{:03}", n / 1000, n % 1000)
 }
 
-/// Best-effort URL we'd advertise to a peer — `https://<lan-ip>:<port>`.
-/// Sync runs over TLS with self-signed certs pinned per peer.
-pub fn local_url(port: u16) -> String {
-    match local_ip_address::local_ip() {
-        Ok(ip) => format!("https://{ip}:{port}"),
-        Err(_) => format!("https://127.0.0.1:{port}"),
-    }
-}

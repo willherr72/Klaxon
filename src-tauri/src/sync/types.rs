@@ -54,35 +54,6 @@ pub struct PushResponse {
 
 // ── Tap-to-pair handshake ────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PairRequest {
-    pub request_id: String,
-    pub initiator_id: String,
-    pub initiator_name: String,
-    pub initiator_url: String,
-    pub ephemeral_token: String,
-    pub initiator_cert_fingerprint: String,
-    /// v0.3: initiator's iroh EndpointId. Optional in the wire format so
-    /// a v0.3 initiator can still pair with a v0.2 responder that doesn't
-    /// know about iroh. The responder stores whatever it gets; a `None`
-    /// means cross-network sync isn't available with this peer.
-    #[serde(default)]
-    pub initiator_iroh_node_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PairResponse {
-    pub responder_id: String,
-    pub responder_name: String,
-    pub responder_url: String,
-    pub shared_secret: String,
-    pub responder_cert_fingerprint: String,
-    /// Mirrors `PairRequest::initiator_iroh_node_id` — present iff the
-    /// responder is on a v0.3 build with iroh available.
-    #[serde(default)]
-    pub responder_iroh_node_id: Option<String>,
-}
-
 /// What the responder's frontend gets via Tauri event when an incoming
 /// pair request arrives.
 #[derive(Debug, Clone, Serialize, Deserialize)]

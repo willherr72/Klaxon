@@ -1,7 +1,10 @@
 //! mDNS discovery: announce ourselves on the LAN and browse for other
-//! Klaxon instances. Service type: `_klaxon._tcp.local.`
+//! Klaxon instances. Service type: `_klaxon._tcp.local.`.
 //!
-//! Started only when `sync_enabled` is true at app boot.
+//! v0.3 the port number we advertise is meaningless (sync rides iroh,
+//! not HTTP), but mDNS service records require one — we hardcode it.
+//! What matters in the TXT record is `device_id`, `device_name`, and
+//! the iroh `nid` (EndpointId).
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -16,18 +19,16 @@ use crate::models::now_ms;
 use crate::sync::DeviceIdentity;
 
 const SERVICE_TYPE: &str = "_klaxon._tcp.local.";
+/// Cosmetic port — mDNS requires a value, sync no longer uses it.
+const ADVERTISED_PORT: u16 = 7124;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DiscoveredPeer {
     pub device_id: String,
     pub device_name: String,
-    pub url: String,
     pub last_seen_ms: i64,
-    pub cert_fingerprint: Option<String>,
-    /// v0.3 iroh transport: present once the peer is on a Klaxon build
-    /// that publishes an iroh EndpointId in its mDNS TXT record. Stays
-    /// `None` for v0.2 peers — phase-3 pairing will treat them as
-    /// "needs-re-pair-after-upgrade".
+    /// Iroh EndpointId from the mDNS TXT record. `None` would mean the
+    /// peer is on a pre-v0.3 build; v0.3 will refuse to pair without it.
     pub node_id: Option<String>,
 }
 
@@ -39,8 +40,6 @@ pub struct DiscoveryHandle {
 
 pub fn start(
     identity: DeviceIdentity,
-    port: u16,
-    cert_fingerprint: String,
     node_id: Option<String>,
 ) -> AppResult<DiscoveryHandle> {
     let daemon =
@@ -66,10 +65,8 @@ pub fn start(
         "version".to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     );
-    // mDNS TXT records are limited to 255 bytes per pair; SHA-256 hex (64 chars) fits.
-    props.insert("fp".to_string(), cert_fingerprint.clone());
-    // v0.3: advertise the iroh EndpointId so a peer that finds us via mDNS
-    // can also reach us off-LAN later via iroh. Absent on v0.2-only builds.
+    // mDNS TXT records are limited to 255 bytes per pair; base32 NodeId
+    // (~52 chars) fits comfortably.
     if let Some(nid) = node_id.as_deref() {
         props.insert("nid".to_string(), nid.to_string());
     }
@@ -79,7 +76,7 @@ pub fn start(
         &instance,
         &host_name,
         local_ips.as_slice(),
-        port,
+        ADVERTISED_PORT,
         Some(props),
     )
     .map_err(|e| AppError::Invalid(format!("mDNS service info: {e}")))?;
@@ -88,9 +85,8 @@ pub fn start(
         .register(info)
         .map_err(|e| AppError::Invalid(format!("mDNS register: {e}")))?;
     log::info!(
-        "mDNS announce: {} on port {} ({} addrs)",
+        "mDNS announce: {} ({} addrs)",
         identity.device_name,
-        port,
         local_ips.len()
     );
 
@@ -119,23 +115,10 @@ pub fn start(
                             .get_property_val_str("device_name")
                             .unwrap_or("")
                             .to_string();
-                        let fingerprint = props
-                            .get_property_val_str("fp")
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string());
                         let node_id = props
                             .get_property_val_str("nid")
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string());
-                        let port = info.get_port();
-                        let chosen = info
-                            .get_addresses()
-                            .iter()
-                            .find(|a| a.is_ipv4() && !a.is_loopback())
-                            .copied()
-                            .or_else(|| info.get_addresses().iter().next().copied());
-                        let Some(addr) = chosen else { continue };
-                        let url = format!("https://{addr}:{port}");
 
                         let peer = DiscoveredPeer {
                             device_id: device_id.clone(),
@@ -144,22 +127,18 @@ pub fn start(
                             } else {
                                 device_name
                             },
-                            url,
                             last_seen_ms: now_ms(),
-                            cert_fingerprint: fingerprint,
                             node_id,
                         };
                         log::info!(
-                            "mDNS discovered: {} ({}) → {}",
+                            "mDNS discovered: {} ({})",
                             peer.device_name,
                             peer.device_id,
-                            peer.url
                         );
                         peers_thread.lock().insert(device_id, peer);
                     }
                     ServiceEvent::ServiceRemoved(_ty, fullname) => {
                         log::debug!("mDNS removed: {fullname}");
-                        // Trim entries we can match by instance prefix.
                         peers_thread
                             .lock()
                             .retain(|_, p| !fullname.starts_with(&p.device_name));

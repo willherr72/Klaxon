@@ -31,19 +31,12 @@ log = "0.4"
 env_logger = "0.11"
 parking_lot = "0.12"
 rodio = "0.19"
-axum = "0.7"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rand = "0.8"
 hex = "0.4"
 local-ip-address = "0.6"
 mdns-sd = "0.13"
 sha2 = "0.10"
-rcgen = "0.13"
 rustls = "0.23"
-rustls-pemfile = "2"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
 
 # v0.3 iroh transport — phase 1 wires up an Endpoint alongside the existing
 # HTTPS sync server. Cutover to iroh-only happens in a later phase.

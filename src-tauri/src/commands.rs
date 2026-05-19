@@ -9,7 +9,6 @@ use crate::error::{AppError, AppResult};
 use crate::models::{now_ms, Reminder, ReminderCreate, ReminderState, ReminderUpdate};
 use crate::scheduler::SchedulerMsg;
 use crate::sync;
-use crate::sync::client::SyncClient;
 use crate::sync::types::PingResponse;
 use crate::AppState;
 
@@ -200,20 +199,18 @@ pub struct DeviceInfo {
     pub device_id: String,
     pub device_name: String,
     pub sync_enabled: bool,
-    pub sync_port: u16,
-    pub sync_url_hint: String,
+    /// v0.3 iroh transport — this device's stable EndpointId, or `None`
+    /// if sync is disabled / the endpoint hasn't started.
+    pub iroh_node_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerView {
     pub id: String,
     pub name: String,
-    pub url: String,
     pub last_pull_at: i64,
     pub last_push_at: i64,
     pub last_seen_at: Option<i64>,
-    /// Set iff this peer was paired on a v0.3 build — used by the UI to
-    /// enable the "Ping (iroh)" action.
     pub iroh_node_id: Option<String>,
 }
 
@@ -221,10 +218,8 @@ pub struct PeerView {
 pub struct AddPeerInput {
     pub id: String,
     pub name: String,
-    pub url: String,
     pub shared_secret: String,
-    #[serde(default)]
-    pub cert_fingerprint: Option<String>,
+    pub iroh_node_id: String,
 }
 
 #[tauri::command]
@@ -236,7 +231,6 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
         .map(|p| PeerView {
             id: p.id,
             name: p.name,
-            url: p.url,
             last_pull_at: p.last_pull_at,
             last_push_at: p.last_push_at,
             last_seen_at: p.last_seen_at,
@@ -245,32 +239,31 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
         .collect())
 }
 
+/// Manual peer entry — bypasses pairing. Useful for transferring a peer
+/// list between installs, or pairing two devices that can't reach each
+/// other via mDNS (e.g. across home networks before QR/ticket pairing
+/// lands). Caller is responsible for getting the shared_secret and
+/// node_id from the other device out-of-band.
 #[tauri::command]
 pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<PeerView> {
     if input.id.trim().is_empty() {
         return Err(AppError::Invalid("peer id required".into()));
     }
-    if input.url.trim().is_empty() {
-        return Err(AppError::Invalid("peer url required".into()));
-    }
     if input.shared_secret.trim().is_empty() {
         return Err(AppError::Invalid("shared secret required".into()));
+    }
+    if input.iroh_node_id.trim().is_empty() {
+        return Err(AppError::Invalid("iroh node_id required".into()));
     }
     let peer = peer_repo::Peer {
         id: input.id.trim().to_string(),
         name: input.name.trim().to_string(),
-        url: input.url.trim().to_string(),
         shared_secret: input.shared_secret.trim().to_string(),
         last_pull_at: 0,
         last_push_at: 0,
         created_at: now_ms(),
         last_seen_at: None,
-        cert_fingerprint: input
-            .cert_fingerprint
-            .as_ref()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        iroh_node_id: None,
+        iroh_node_id: Some(input.iroh_node_id.trim().to_string()),
     };
     {
         let conn = state.db.lock();
@@ -279,7 +272,6 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
     Ok(PeerView {
         id: peer.id,
         name: peer.name,
-        url: peer.url,
         last_pull_at: peer.last_pull_at,
         last_push_at: peer.last_push_at,
         last_seen_at: peer.last_seen_at,
@@ -293,29 +285,11 @@ pub fn remove_peer(state: State<'_, AppState>, id: String) -> AppResult<()> {
     peer_repo::delete(&conn, &id)
 }
 
+/// Ping a paired peer over iroh. Fails fast if the peer has no
+/// `iroh_node_id` (paired pre-v0.3 — must re-pair) or if our local iroh
+/// endpoint isn't up.
 #[tauri::command]
 pub async fn ping_peer(
-    state: State<'_, AppState>,
-    id: String,
-) -> AppResult<PingResponse> {
-    let (url, secret, fp) = {
-        let conn = state.db.lock();
-        let peers = peer_repo::list_all(&conn)?;
-        let p = peers
-            .into_iter()
-            .find(|p| p.id == id)
-            .ok_or_else(|| AppError::NotFound(format!("peer {id}")))?;
-        (p.url, p.shared_secret, p.cert_fingerprint.unwrap_or_default())
-    };
-    let client = SyncClient::new(url, secret, &fp)?;
-    client.ping().await
-}
-
-/// v0.3 phase 3a — ping a paired peer over the iroh transport instead of
-/// HTTPS. Fails fast if the peer has no `iroh_node_id` (paired pre-v0.3)
-/// or if our local iroh endpoint isn't up.
-#[tauri::command]
-pub async fn ping_peer_iroh(
     state: State<'_, AppState>,
     id: String,
 ) -> AppResult<PingResponse> {
@@ -328,8 +302,7 @@ pub async fn ping_peer_iroh(
             .ok_or_else(|| AppError::NotFound(format!("peer {id}")))?;
         let node_id = p.iroh_node_id.ok_or_else(|| {
             AppError::Invalid(
-                "peer has no iroh node id — was paired on a pre-v0.3 build, re-pair to enable"
-                    .into(),
+                "peer has no iroh node id — was paired pre-v0.3, re-pair to enable".into(),
             )
         })?;
         (node_id, p.shared_secret)
@@ -346,18 +319,17 @@ pub async fn ping_peer_iroh(
 #[tauri::command]
 pub fn device_identity(state: State<'_, AppState>) -> AppResult<DeviceInfo> {
     let identity = sync::read_identity(&state.db);
-    let port = sync::read_port(&state.db);
     let enabled = sync::read_enabled(&state.db);
-    let url_hint = match local_ip_address::local_ip() {
-        Ok(ip) => format!("http://{ip}:{port}"),
-        Err(_) => format!("http://<this-device-ip>:{port}"),
-    };
+    let iroh_node_id = state
+        .iroh_node
+        .lock()
+        .as_ref()
+        .map(|n| n.node_id.clone());
     Ok(DeviceInfo {
         device_id: identity.device_id,
         device_name: identity.device_name,
         sync_enabled: enabled,
-        sync_port: port,
-        sync_url_hint: url_hint,
+        iroh_node_id,
     })
 }
 
@@ -389,37 +361,40 @@ pub fn list_discovered_peers(
 
 // ── Tap-to-pair (initiator side) ──────────────────────────────────────
 
+/// v0.3 phase 3c: pair handshake rides iroh, not HTTPS.
+///
+/// The discovered peer's `node_id` (from mDNS TXT) is now what we dial.
+/// `peer_url` and `peer_cert_fingerprint` are intentionally gone — there
+/// is no LAN HTTPS path anymore. mDNS-discovered peers without a
+/// `node_id` (shouldn't happen post-v0.3 cutover, but defensive) are
+/// rejected up front.
 #[tauri::command]
 pub async fn start_pair_with(
     state: State<'_, AppState>,
     app: AppHandle,
-    peer_url: String,
+    peer_node_id: String,
     peer_id: String,
     peer_name: String,
-    peer_cert_fingerprint: String,
 ) -> AppResult<crate::sync::types::PairOutcome> {
-    use std::time::Duration;
+    use crate::sync::proto::{PairAck, PairOffer};
+    use crate::sync::types::PairOutcome;
 
-    use crate::sync::types::{PairOutcome, PairRequest, PairResponse};
-
-    if peer_cert_fingerprint.trim().is_empty() {
+    if peer_node_id.trim().is_empty() {
         return Err(AppError::Invalid(
-            "peer must advertise a TLS fingerprint via mDNS to be paired".into(),
+            "peer must advertise an iroh node id via mDNS to be paired".into(),
         ));
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let ephemeral = sync::generate_secret();
-
     let our = sync::read_identity(&state.db);
-    let port = sync::read_port(&state.db);
-    let our_url = sync::local_url(port);
-    let our_fp = state
-        .local_cert
+
+    let (endpoint, our_node_id) = state
+        .iroh_node
         .lock()
         .as_ref()
-        .map(|c| c.fingerprint.clone())
-        .ok_or_else(|| AppError::Invalid("local cert not yet ready".into()))?;
+        .map(|n| (n.endpoint.clone(), n.node_id.clone()))
+        .ok_or_else(|| AppError::Invalid("local iroh endpoint not started".into()))?;
 
     let sas = sync::confirmation_code(&request_id, &ephemeral, &our.device_id, &peer_id);
 
@@ -433,91 +408,53 @@ pub async fn start_pair_with(
         }),
     );
 
-    let our_iroh_node_id = state
-        .iroh_node
-        .lock()
-        .as_ref()
-        .map(|n| n.node_id.clone());
-    let req = PairRequest {
+    let offer = PairOffer {
         request_id: request_id.clone(),
         initiator_id: our.device_id.clone(),
         initiator_name: our.device_name.clone(),
-        initiator_url: our_url,
+        initiator_node_id: our_node_id,
         ephemeral_token: ephemeral,
-        initiator_cert_fingerprint: our_fp,
-        initiator_iroh_node_id: our_iroh_node_id,
     };
 
-    let tls_config = sync::tls::pinned_client_config(&peer_cert_fingerprint);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(150))
-        .connect_timeout(Duration::from_secs(5))
-        .use_preconfigured_tls((*tls_config).clone())
-        .build()
-        .map_err(|e| AppError::Invalid(format!("http client: {e}")))?;
+    let ack = sync::iroh_client::pair_initiate(&endpoint, &peer_node_id, offer).await?;
 
-    let url = format!(
-        "{}/klaxon/v1/pair/initiate",
-        peer_url.trim_end_matches('/')
-    );
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|e| AppError::Invalid(format!("pair request failed: {e}")))?;
+    match ack {
+        PairAck::Approved {
+            responder_id,
+            responder_name,
+            responder_node_id,
+            shared_secret,
+        } => {
+            {
+                let conn = state.db.lock();
+                let peer = peer_repo::Peer {
+                    id: responder_id.clone(),
+                    name: if peer_name.trim().is_empty() {
+                        responder_name.clone()
+                    } else {
+                        peer_name.clone()
+                    },
+                    shared_secret,
+                    last_pull_at: 0,
+                    last_push_at: 0,
+                    created_at: now_ms(),
+                    last_seen_at: Some(now_ms()),
+                    iroh_node_id: Some(responder_node_id.clone()),
+                };
+                peer_repo::upsert(&conn, &peer)?;
+            }
 
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(AppError::Invalid(match status.as_u16() {
-            403 => "peer declined the pairing".to_string(),
-            408 => "peer did not respond in time".to_string(),
-            other => format!("peer returned HTTP {other}"),
-        }));
+            let _ = app.emit("klaxon://peer-paired", responder_id.clone());
+
+            Ok(PairOutcome {
+                peer_id: responder_id,
+                peer_name: responder_name,
+                confirmation_code: sas,
+            })
+        }
+        PairAck::Declined => Err(AppError::Invalid("peer declined the pairing".into())),
+        PairAck::Error(msg) => Err(AppError::Invalid(format!("pair error: {msg}"))),
     }
-
-    let body: PairResponse = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Invalid(format!("parse pair response: {e}")))?;
-
-    if !body
-        .responder_cert_fingerprint
-        .eq_ignore_ascii_case(&peer_cert_fingerprint)
-    {
-        return Err(AppError::Invalid(
-            "peer's reported fingerprint disagrees with mDNS — refusing to pair".into(),
-        ));
-    }
-
-    {
-        let conn = state.db.lock();
-        let peer = peer_repo::Peer {
-            id: body.responder_id.clone(),
-            name: if peer_name.trim().is_empty() {
-                body.responder_name.clone()
-            } else {
-                peer_name.clone()
-            },
-            url: body.responder_url,
-            shared_secret: body.shared_secret,
-            last_pull_at: 0,
-            last_push_at: 0,
-            created_at: now_ms(),
-            last_seen_at: Some(now_ms()),
-            cert_fingerprint: Some(body.responder_cert_fingerprint.clone()),
-            iroh_node_id: body.responder_iroh_node_id.clone(),
-        };
-        peer_repo::upsert(&conn, &peer)?;
-    }
-
-    let _ = app.emit("klaxon://peer-paired", body.responder_id.clone());
-
-    Ok(PairOutcome {
-        peer_id: body.responder_id,
-        peer_name: body.responder_name,
-        confirmation_code: sas,
-    })
 }
 
 // ── Tap-to-pair (responder side) ──────────────────────────────────────

@@ -97,7 +97,7 @@
 
   async function pairDiscovered(d: DiscoveredPeer) {
     if (tapPairBusy) return;
-    if (!d.cert_fingerprint) {
+    if (!d.node_id) {
       tapPair = {
         kind: "error",
         message: "Peer is not advertising a TLS fingerprint — try restarting it.",
@@ -108,10 +108,9 @@
     tapPair = { kind: "starting", peerName: d.device_name };
     try {
       const outcome = await api.startPairWith(
-        d.url,
+        d.node_id,
         d.device_id,
         d.device_name,
-        d.cert_fingerprint,
       );
       tapPair = { kind: "success", peerName: outcome.peer_name };
       await refresh();
@@ -186,7 +185,7 @@
     if (pairBusy) return;
     pairError = null;
     if (!pairId.trim() || !pairUrl.trim() || !pairSecret.trim()) {
-      pairError = "ID, URL, and Secret are required.";
+      pairError = "ID, Node ID, and Secret are required.";
       return;
     }
     pairBusy = true;
@@ -194,7 +193,7 @@
       await api.addPeer({
         id: pairId.trim(),
         name: pairName.trim() || pairId.trim(),
-        url: pairUrl.trim(),
+        iroh_node_id: pairUrl.trim(),
         shared_secret: pairSecret.trim(),
       });
       pairOpen = false;
@@ -231,24 +230,6 @@
     }, 2200);
   }
 
-  // v0.3 phase 3a: ping a paired peer over the iroh transport instead of
-  // the LAN HTTPS path. Disabled in the UI when the peer has no
-  // iroh_node_id (paired pre-v0.3 — must re-pair).
-  async function pingPeerIroh(p: PeerView) {
-    const key = `${p.id}#iroh`;
-    pingStatus = { ...pingStatus, [key]: "pending" };
-    try {
-      await api.pingPeerIroh(p.id);
-      pingStatus = { ...pingStatus, [key]: "ok" };
-    } catch (e) {
-      console.error("iroh ping failed", e);
-      pingStatus = { ...pingStatus, [key]: "fail" };
-    }
-    setTimeout(() => {
-      pingStatus = { ...pingStatus, [key]: undefined };
-      refresh();
-    }, 2200);
-  }
 
   function relativeTime(ms: number | null): string {
     if (!ms || ms === 0) return "—";
@@ -328,10 +309,12 @@
           <button class="copy" onclick={() => device && copy(device.device_id, "ID")}>Copy</button>
         </div>
 
-        <span class="kv-label mono-caps-faint">URL</span>
+        <span class="kv-label mono-caps-faint">Iroh node id</span>
         <div class="kv-row">
-          <code class="mono">{device.sync_url_hint}</code>
-          <button class="copy" onclick={() => device && copy(device.sync_url_hint, "URL")}>Copy</button>
+          <code class="mono">{device.iroh_node_id ?? "(endpoint not started)"}</code>
+          {#if device.iroh_node_id}
+            <button class="copy" onclick={() => device?.iroh_node_id && copy(device.iroh_node_id, "Node id")}>Copy</button>
+          {/if}
         </div>
       </div>
       {#if copyFlash}
@@ -353,7 +336,11 @@
           <span class="discovered-led"></span>
           <div class="discovered-body">
             <div class="discovered-name">{d.device_name}</div>
-            <code class="mono discovered-url">{d.url}</code>
+            {#if d.node_id}
+              <code class="mono discovered-url">iroh://{d.node_id.slice(0, 16)}…</code>
+            {:else}
+              <code class="mono discovered-url" title="Peer hasn't advertised an iroh node id — likely on a pre-v0.3 build">no node id</code>
+            {/if}
           </div>
           <button class="primary-btn" onclick={() => pairDiscovered(d)}>Pair</button>
         </div>
@@ -387,7 +374,11 @@
               </span>
             </div>
             <div class="peer-row2">
-              <code class="mono peer-url">{p.url}</code>
+              <code class="mono peer-url">
+                {p.iroh_node_id
+                  ? `iroh://${p.iroh_node_id.slice(0, 16)}…`
+                  : "no iroh node id — re-pair to sync"}
+              </code>
             </div>
             <div class="peer-row3 mono-caps-faint">
               pull {relativeTime(p.last_pull_at)} · push {relativeTime(p.last_push_at)}
@@ -402,17 +393,6 @@
               <span class="ping-state fail mono-caps">FAIL</span>
             {:else}
               <button class="ghost-btn" onclick={() => pingPeer(p)}>Ping</button>
-            {/if}
-            {#if p.iroh_node_id}
-              {#if pingStatus[`${p.id}#iroh`] === "pending"}
-                <span class="ping-state mono-caps-faint">iroh…</span>
-              {:else if pingStatus[`${p.id}#iroh`] === "ok"}
-                <span class="ping-state ok mono-caps">iroh OK</span>
-              {:else if pingStatus[`${p.id}#iroh`] === "fail"}
-                <span class="ping-state fail mono-caps">iroh FAIL</span>
-              {:else}
-                <button class="ghost-btn" title="Ping over iroh ({p.iroh_node_id.slice(0, 12)}…)" onclick={() => pingPeerIroh(p)}>Ping (iroh)</button>
-              {/if}
             {/if}
             <button class="ghost-btn danger" onclick={() => removePeer(p)}>Remove</button>
           </div>
@@ -483,7 +463,7 @@
       </header>
 
       <div class="pair-help">
-        Both devices need each other's <strong>ID</strong>, <strong>URL</strong>, and the <strong>same shared secret</strong>. Generate the secret on one device, copy it, then add the other device on both ends.
+        Both devices need each other's <strong>ID</strong>, <strong>iroh node id</strong>, and the <strong>same shared secret</strong>. Tap-to-pair (above) does this automatically. Use this only if mDNS discovery isn't finding the peer (e.g. across home networks).
       </div>
 
       {#if pairError}
@@ -500,8 +480,8 @@
           <input type="text" class="pair-input" bind:value={pairName} placeholder="e.g., Phone" />
         </label>
         <label class="pair-field">
-          <span class="mono-caps-faint">Their URL</span>
-          <input type="text" class="pair-input" bind:value={pairUrl} placeholder="http://192.168.x.x:7124" />
+          <span class="mono-caps-faint">Their iroh node id</span>
+          <input type="text" class="pair-input mono-input" bind:value={pairUrl} placeholder="52-char base32 NodeId from the other device" />
         </label>
         <label class="pair-field">
           <span class="mono-caps-faint">Shared Secret</span>

@@ -13,7 +13,9 @@ use std::time::Duration;
 use iroh::{Endpoint, EndpointId};
 
 use crate::error::{AppError, AppResult};
-use crate::sync::proto::{self, RpcEnvelope, RpcRequest, RpcResponse, ALPN_SYNC};
+use crate::sync::proto::{
+    self, PairAck, PairOffer, RpcEnvelope, RpcRequest, RpcResponse, ALPN_PAIR, ALPN_SYNC,
+};
 use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
 const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -99,4 +101,46 @@ pub async fn push(
         RpcResponse::Error(msg) => Err(AppError::Invalid(format!("peer rejected push: {msg}"))),
         other => Err(AppError::Invalid(format!("expected Push, got {other:?}"))),
     }
+}
+
+/// Initiate a pair handshake with the peer at `node_id`. Returns the
+/// responder's `PairAck` — caller is responsible for matching the SAS
+/// against what they're showing the user and for persisting the new
+/// peer on `Approved`.
+///
+/// This rides the `klaxon/pair/0` ALPN — there's no shared secret yet,
+/// so this is the only RPC path that's unauthenticated. The user's
+/// explicit Approve/Decline on each device is the only authorization.
+pub async fn pair_initiate(
+    endpoint: &Endpoint,
+    node_id: &str,
+    offer: PairOffer,
+) -> AppResult<PairAck> {
+    let id = EndpointId::from_str(node_id)
+        .map_err(|e| AppError::Invalid(format!("invalid iroh node_id {node_id:?}: {e}")))?;
+
+    // Pair flow needs to wait up to ~2 minutes for the remote user to
+    // approve, so this gets a generous timeout that just outlasts the
+    // server-side 120s window.
+    let pair_timeout = Duration::from_secs(150);
+
+    let conn = tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(id, ALPN_PAIR))
+        .await
+        .map_err(|_| AppError::Invalid(format!("pair connect timed out after {DIAL_TIMEOUT:?}")))?
+        .map_err(|e| AppError::Invalid(format!("pair connect failed: {e}")))?;
+
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .map_err(|e| AppError::Invalid(format!("pair open bi: {e}")))?;
+
+    proto::write_frame(&mut send, &offer).await?;
+    let _ = send.finish();
+
+    let ack: PairAck = tokio::time::timeout(pair_timeout, proto::read_frame(&mut recv))
+        .await
+        .map_err(|_| AppError::Invalid(format!("pair wait timed out after {pair_timeout:?}")))??;
+
+    conn.close(0u32.into(), b"done");
+    Ok(ack)
 }

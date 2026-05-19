@@ -29,15 +29,15 @@ pub struct AppState {
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
-    pub pending_pairs: sync::server::PendingPairs,
-    pub local_cert: Arc<Mutex<Option<sync::tls::LocalCert>>>,
-    /// v0.3 iroh transport. `None` until phase 1 setup completes (or if
-    /// sync is disabled). Holds a cloneable `Endpoint` handle plus the
-    /// device's stable EndpointId string.
+    pub pending_pairs: sync::PendingPairs,
+    /// v0.3 iroh transport. `None` until setup completes or if sync is
+    /// disabled. Holds a cloneable `Endpoint` plus the device's stable
+    /// EndpointId string.
     pub iroh_node: Arc<Mutex<Option<sync::iroh_node::IrohNode>>>,
-    /// v0.3 phase 2: the iroh `Router` dispatching `klaxon/sync/0` to the
-    /// `SyncHandler`. Held here so it doesn't drop — `Router` aborts its
-    /// accept loop when the last handle is dropped.
+    /// The iroh `Router` dispatching `klaxon/sync/0` (RPC) and
+    /// `klaxon/pair/0` (pair handshake) to their handlers. Held here so
+    /// it doesn't drop — Router aborts its accept loop when the last
+    /// handle is gone.
     pub iroh_router: Arc<Mutex<Option<sync::iroh_node::Router>>>,
 }
 
@@ -59,7 +59,9 @@ pub fn run() {
     )
     .init();
 
-    // rustls 0.23 requires an explicit crypto provider before any TLS use.
+    // iroh's QUIC stack uses rustls under the hood and rustls 0.23
+    // requires an explicit crypto provider before any TLS context spins
+    // up. `let _ = ...` because the second call returns Err — fine.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     tauri::Builder::default()
@@ -118,34 +120,20 @@ pub fn run() {
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));
-            let pending_pairs: sync::server::PendingPairs =
+            let pending_pairs: sync::PendingPairs =
                 Arc::new(Mutex::new(HashMap::new()));
-            let local_cert_state: Arc<Mutex<Option<sync::tls::LocalCert>>> =
-                Arc::new(Mutex::new(None));
             let iroh_node_state: Arc<Mutex<Option<sync::iroh_node::IrohNode>>> =
                 Arc::new(Mutex::new(None));
             let iroh_router_state: Arc<Mutex<Option<sync::iroh_node::Router>>> =
                 Arc::new(Mutex::new(None));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
-                let port = sync::read_port(&db);
-                let cert = match sync::tls::load_or_generate(&app_dir) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        log::error!("could not provision TLS cert: {e}");
-                        return Err(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        )) as Box<dyn std::error::Error>);
-                    }
-                };
-                *local_cert_state.lock() = Some(cert.clone());
 
-                // v0.3 phase 1: spin up the iroh endpoint alongside the
-                // existing HTTPS sync server. `block_on` is OK here — bind
-                // is a fast local socket op plus reading a 32-byte key file.
-                // We tolerate failure: a missing iroh node degrades us to
-                // v0.2 LAN-only sync rather than blocking startup entirely.
+                // Spin up the iroh endpoint. `block_on` is OK here — bind
+                // is a fast local socket op plus reading a 32-byte key
+                // file. Failure here is fatal in v0.3 (no fallback);
+                // we log and bail out of the sync subsystem but the rest
+                // of the app keeps running.
                 let iroh_app_dir = app_dir.clone();
                 let iroh_node_opt = match tauri::async_runtime::block_on(async move {
                     sync::iroh_node::start(&iroh_app_dir).await
@@ -160,51 +148,39 @@ pub fn run() {
                     }
                 };
 
-                // v0.3 phase 2: spawn the iroh Router that dispatches the
-                // `klaxon/sync/0` ALPN to our SyncHandler. Phase 2 only
-                // implements Ping; Pull/Push come online in phase 3.
-                //
-                // `Router::spawn()` internally calls `tokio::spawn`, which
-                // requires being inside a tokio runtime context — must be
-                // wrapped in `block_on` since the surrounding `setup()`
-                // closure runs on a plain thread.
+                // Spawn the iroh Router that dispatches both
+                // `klaxon/sync/0` (authed RPC: Ping/Pull/Push) and
+                // `klaxon/pair/0` (pre-auth pair handshake) to the right
+                // handler. `Router::spawn()` calls `tokio::spawn`
+                // internally so it must run inside a runtime context;
+                // hence the `block_on` wrap.
                 if let Some(node) = &iroh_node_opt {
-                    let handler = sync::iroh_handler::SyncHandler {
+                    let sync_handler = sync::iroh_handler::SyncHandler {
                         db: db.clone(),
                         identity: identity.clone(),
                         app: Some(app.handle().clone()),
                     };
+                    let pair_handler = sync::pair_handler::PairHandler {
+                        db: db.clone(),
+                        identity: identity.clone(),
+                        pending_pairs: pending_pairs.clone(),
+                        app: app.handle().clone(),
+                        local_node_id: node.node_id.clone(),
+                    };
                     let endpoint = node.endpoint.clone();
                     let router = tauri::async_runtime::block_on(async move {
-                        sync::iroh_node::spawn_sync_router(endpoint, handler)
+                        sync::iroh_node::spawn_sync_router(endpoint, sync_handler, pair_handler)
                     });
                     *iroh_router_state.lock() = Some(router);
                     log::info!(
-                        "iroh sync handler attached on ALPN {}",
-                        String::from_utf8_lossy(sync::proto::ALPN_SYNC)
+                        "iroh router attached: ALPNs {} + {}",
+                        String::from_utf8_lossy(sync::proto::ALPN_SYNC),
+                        String::from_utf8_lossy(sync::proto::ALPN_PAIR),
                     );
                 }
 
-                let server_state = sync::server::ServerState {
-                    db: db.clone(),
-                    identity: identity.clone(),
-                    pending_pairs: pending_pairs.clone(),
-                    app: app.handle().clone(),
-                    local_cert: cert.clone(),
-                };
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) = sync::server::run(server_state, port).await {
-                        log::error!("sync server exited: {e}");
-                    }
-                });
-
                 let node_id_for_mdns = iroh_node_opt.as_ref().map(|n| n.node_id.clone());
-                match sync::discovery::start(
-                    identity,
-                    port,
-                    cert.fingerprint.clone(),
-                    node_id_for_mdns,
-                ) {
+                match sync::discovery::start(identity, node_id_for_mdns) {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
                 }
@@ -230,7 +206,6 @@ pub fn run() {
                 current_hotkey,
                 discovery: discovery_handle,
                 pending_pairs,
-                local_cert: local_cert_state,
                 iroh_node: iroh_node_state,
                 iroh_router: iroh_router_state,
             });
@@ -260,7 +235,6 @@ pub fn run() {
             commands::add_peer,
             commands::remove_peer,
             commands::ping_peer,
-            commands::ping_peer_iroh,
             commands::device_identity,
             commands::generate_secret,
             commands::set_sync_enabled,

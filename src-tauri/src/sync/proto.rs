@@ -20,6 +20,38 @@ use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 /// envelope shape changes incompatibly.
 pub const ALPN_SYNC: &[u8] = b"klaxon/sync/0";
 
+/// Pre-auth pair-handshake ALPN. Deliberately separate from `ALPN_SYNC`:
+/// pairing has no shared secret yet, so the handler skips secret check —
+/// keeping it on its own ALPN guards against accidental "Ping with no
+/// secret" requests landing in the sync handler.
+pub const ALPN_PAIR: &[u8] = b"klaxon/pair/0";
+
+/// Body of an incoming pair-handshake stream. The initiator writes this,
+/// the responder echoes a `PairAck` back. The shared secret is established
+/// during the exchange — neither side has one before this point.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairOffer {
+    pub request_id: String,
+    pub initiator_id: String,
+    pub initiator_name: String,
+    pub initiator_node_id: String,
+    /// Random per-attempt token, mixed into the SAS so a previous SAS
+    /// can't be replayed.
+    pub ephemeral_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PairAck {
+    Approved {
+        responder_id: String,
+        responder_name: String,
+        responder_node_id: String,
+        shared_secret: String,
+    },
+    Declined,
+    Error(String),
+}
+
 /// Maximum frame body we'll accept off the wire — 16 MiB is well above
 /// any reasonable Klaxon ChangeSet and small enough that a malicious or
 /// confused peer can't OOM us by claiming a 1 GiB length.

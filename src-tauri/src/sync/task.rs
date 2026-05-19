@@ -1,11 +1,6 @@
 //! Background sync task: every N seconds, walk paired peers and push/pull
-//! changes against each one. Errors are logged, not surfaced.
-//!
-//! Transport selection per-peer:
-//!   - If the peer has an `iroh_node_id` (paired on v0.3+) AND our local
-//!     iroh endpoint is up, sync runs over the iroh transport.
-//!   - Otherwise we fall back to the v0.2 LAN HTTPS path. This keeps
-//!     existing pairs working until the user re-pairs.
+//! changes against each one over the iroh transport. Errors are logged,
+//! not surfaced.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,9 +13,8 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::alerts;
 use crate::db::{peers, reminders as repo, tombstones};
 use crate::models::ReminderState;
-use crate::sync::client::SyncClient;
 use crate::sync::iroh_client;
-use crate::sync::types::{ChangeSet, PushResponse, RemoteReminder, RemoteTombstone};
+use crate::sync::types::{ChangeSet, RemoteReminder, RemoteTombstone};
 
 /// Emit a "something changed about the reminders table" event so the
 /// frontend re-fetches. Called from anywhere the backend mutates reminders
@@ -53,8 +47,12 @@ pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
         let iroh_endpoint = app
             .try_state::<crate::AppState>()
             .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
+        let Some(endpoint) = iroh_endpoint else {
+            log::debug!("sync tick: iroh endpoint not ready, skipping");
+            continue;
+        };
         for peer in peer_list {
-            if let Err(e) = sync_one(&db, &app, iroh_endpoint.as_ref(), &peer).await {
+            if let Err(e) = sync_one(&db, &app, &endpoint, &peer).await {
                 log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
             }
         }
@@ -64,21 +62,20 @@ pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
 async fn sync_one(
     db: &Arc<Mutex<Connection>>,
     app: &AppHandle,
-    iroh_endpoint: Option<&Endpoint>,
+    endpoint: &Endpoint,
     peer: &crate::db::peers::Peer,
 ) -> crate::error::AppResult<()> {
-    let use_iroh = iroh_endpoint.is_some() && peer.iroh_node_id.is_some();
+    let Some(node_id) = peer.iroh_node_id.as_deref() else {
+        log::debug!(
+            "skipping sync with {} — no iroh_node_id (re-pair required)",
+            peer.name
+        );
+        return Ok(());
+    };
 
     // Pull
-    let pulled = if use_iroh {
-        let ep = iroh_endpoint.expect("iroh endpoint checked above");
-        let nid = peer.iroh_node_id.as_deref().expect("node_id checked above");
-        iroh_client::pull(ep, nid, &peer.shared_secret, peer.last_pull_at).await?
-    } else {
-        let fp = peer.cert_fingerprint.as_deref().unwrap_or("");
-        let client = SyncClient::new(peer.url.clone(), peer.shared_secret.clone(), fp)?;
-        client.pull(peer.last_pull_at).await?
-    };
+    let pulled =
+        iroh_client::pull(endpoint, node_id, &peer.shared_secret, peer.last_pull_at).await?;
     let mut max_pulled = peer.last_pull_at;
     let mut to_cancel: Vec<String> = Vec::new();
     {
@@ -138,24 +135,15 @@ async fn sync_one(
         reminders: rems,
         tombstones: tombs,
     };
-    let resp: PushResponse = if use_iroh {
-        let ep = iroh_endpoint.expect("iroh endpoint checked above");
-        let nid = peer.iroh_node_id.as_deref().expect("node_id checked above");
-        iroh_client::push(ep, nid, &peer.shared_secret, set).await?
-    } else {
-        let fp = peer.cert_fingerprint.as_deref().unwrap_or("");
-        let client = SyncClient::new(peer.url.clone(), peer.shared_secret.clone(), fp)?;
-        client.push(&set).await?
-    };
+    let resp = iroh_client::push(endpoint, node_id, &peer.shared_secret, set).await?;
     {
         let conn = db.lock();
         let watermark = resp.server_time_ms.max(max_pushed);
         peers::mark_pushed(&conn, &peer.id, watermark)?;
     }
     log::debug!(
-        "synced with {} via {}: pulled {}r/{}t, pushed {}r/{}t",
+        "synced with {}: pulled {}r/{}t, pushed {}r/{}t",
         peer.name,
-        if use_iroh { "iroh" } else { "https" },
         pulled.reminders.len(),
         pulled.tombstones.len(),
         resp.accepted_reminders,

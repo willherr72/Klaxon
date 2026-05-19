@@ -18,7 +18,8 @@ use iroh::{Endpoint, SecretKey};
 
 use crate::error::{AppError, AppResult};
 use crate::sync::iroh_handler::SyncHandler;
-use crate::sync::proto::ALPN_SYNC;
+use crate::sync::pair_handler::PairHandler;
+use crate::sync::proto::{ALPN_PAIR, ALPN_SYNC};
 
 /// Filename for the persisted Ed25519 secret key inside the app data dir.
 /// Raw 32 bytes, not PEM — there's no interop need and binary keeps it tight.
@@ -31,11 +32,18 @@ pub struct IrohNode {
 }
 
 /// Wrap an existing `Endpoint` in an iroh `Router` that dispatches incoming
-/// `klaxon/sync/0` connections to the given `SyncHandler`. The returned
-/// `Router` must be kept alive — dropping it aborts the accept loop.
-pub fn spawn_sync_router(endpoint: Endpoint, handler: SyncHandler) -> Router {
+/// connections on both `klaxon/sync/0` (authenticated RPC) and
+/// `klaxon/pair/0` (pre-auth pair handshake) to the right handler. The
+/// returned `Router` must be kept alive — dropping it aborts the accept
+/// loop on both ALPNs.
+pub fn spawn_sync_router(
+    endpoint: Endpoint,
+    sync_handler: SyncHandler,
+    pair_handler: PairHandler,
+) -> Router {
     Router::builder(endpoint)
-        .accept(ALPN_SYNC, handler)
+        .accept(ALPN_SYNC, sync_handler)
+        .accept(ALPN_PAIR, pair_handler)
         .spawn()
 }
 

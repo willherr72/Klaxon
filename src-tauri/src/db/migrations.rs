@@ -81,6 +81,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE peers ADD COLUMN iroh_node_id TEXT;
     "#,
+    // 007 — drop the v0.2 HTTPS transport columns now that iroh is the
+    // only transport. Peers with no `iroh_node_id` after this migration
+    // will simply fail to sync until re-paired.
+    r#"
+    ALTER TABLE peers DROP COLUMN url;
+    ALTER TABLE peers DROP COLUMN cert_fingerprint;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

@@ -45,20 +45,13 @@ export const api = {
     invoke<PeerView>("add_peer", { input }),
   removePeer: (id: string) => invoke<void>("remove_peer", { id }),
   pingPeer: (id: string) => invoke<PingResponse>("ping_peer", { id }),
-  pingPeerIroh: (id: string) => invoke<PingResponse>("ping_peer_iroh", { id }),
   listDiscoveredPeers: () =>
     invoke<DiscoveredPeer[]>("list_discovered_peers"),
-  startPairWith: (
-    peerUrl: string,
-    peerId: string,
-    peerName: string,
-    peerCertFingerprint: string,
-  ) =>
+  startPairWith: (peerNodeId: string, peerId: string, peerName: string) =>
     invoke<PairOutcome>("start_pair_with", {
-      peerUrl,
+      peerNodeId,
       peerId,
       peerName,
-      peerCertFingerprint,
     }),
   approvePairRequest: (requestId: string) =>
     invoke<void>("approve_pair_request", { requestId }),
@@ -83,6 +76,8 @@ export interface PendingPairEvent {
   request_id: string;
   initiator_id: string;
   initiator_name: string;
+  /// Carries `iroh://<node_id>` in v0.3 — kept named `initiator_url` so
+  /// existing UI strings don't need to change.
   initiator_url: string;
   confirmation_code: string;
 }
@@ -98,12 +93,10 @@ export interface NlParsed {
 export interface DiscoveredPeer {
   device_id: string;
   device_name: string;
-  url: string;
   last_seen_ms: number;
-  cert_fingerprint: string | null;
-  // v0.3: iroh EndpointId, present on peers running a build with the
-  // iroh transport. `null` on v0.2 peers — those will need re-pairing
-  // once both sides are upgraded.
+  // iroh EndpointId from the mDNS TXT record. `null` would mean the
+  // peer is on an older build that doesn't advertise it; v0.3 requires
+  // it to pair.
   node_id: string | null;
 }
 
@@ -111,28 +104,23 @@ export interface DeviceInfo {
   device_id: string;
   device_name: string;
   sync_enabled: boolean;
-  sync_port: number;
-  sync_url_hint: string;
+  iroh_node_id: string | null;
 }
 
 export interface PeerView {
   id: string;
   name: string;
-  url: string;
   last_pull_at: number;
   last_push_at: number;
   last_seen_at: number | null;
-  /// v0.3 iroh: set iff this peer was paired on a v0.3 build. The UI
-  /// uses it to enable the "Ping (iroh)" action — peers paired pre-v0.3
-  /// must re-pair before they can sync cross-network.
   iroh_node_id: string | null;
 }
 
 export interface AddPeerInput {
   id: string;
   name: string;
-  url: string;
   shared_secret: string;
+  iroh_node_id: string;
 }
 
 export interface PingResponse {
