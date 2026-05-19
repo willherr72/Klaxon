@@ -5,6 +5,31 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-rc.2] — 2026-05-19
+
+Second release candidate. Phases 3c and 3d landed on top of rc.1.
+
+### Removed
+
+- **HTTPS transport entirely.** `sync::server`, `sync::client`, `sync::tls` modules deleted; `axum`, `axum-server`, `tower`, `tower-http`, `reqwest`, `rcgen`, `rustls-pemfile` Cargo deps dropped.
+- `peers.url` and `peers.cert_fingerprint` schema columns dropped (migration 007).
+- `DiscoveredPeer.url` / `DiscoveredPeer.cert_fingerprint`, `PeerView.url`, `DeviceInfo.{sync_port, sync_url_hint}`, `AddPeerInput.{url, cert_fingerprint}` — all gone. The UI no longer collects URLs or fingerprints anywhere.
+- `ping_peer_iroh` command merged into the single `ping_peer`.
+
+### Added
+
+- **Pair handshake over iroh** — new `klaxon/pair/0` ALPN with `sync::pair_handler` mirroring the old HTTPS handshake (SAS code, user Approve/Decline, oneshot decision channel).
+- **Pairing tickets** — replaces the manual "Add Peer" form. New `Pairing ticket` button in Sync settings opens a modal with the device's NodeId rendered as a QR code (klaxon-amber on near-black, 240px) plus the base32 string with a Copy button. A "Pair from a ticket" input in the same modal accepts a pasted ticket and starts the standard SAS handshake.
+- **NodeId-based SAS.** `confirmation_code` now derives the 6-digit pairing code from both peers' NodeIds instead of their `device_id`s. Lets ticket pairing work without knowing the responder's `device_id` up front.
+- `qrcode` npm dep for client-side QR generation.
+
+### Changed
+
+- `start_pair_with` Tauri command drops its `peer_id` argument — the peer's `device_id` is now learned from `PairAck`, not required up front.
+- `klaxon://pair-progress` event payload: `peer_id` field renamed to `peer_node_id`.
+
+---
+
 ## [0.3.0-rc.1] — 2026-05-19
 
 First release candidate of the v0.3 iroh transport. Cross-network sync via iroh's QUIC + relay network; LAN HTTPS fallback retained for pairs that haven't re-paired since the upgrade.
