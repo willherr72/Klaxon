@@ -100,6 +100,10 @@ export interface DiscoveredPeer {
   url: string;
   last_seen_ms: number;
   cert_fingerprint: string | null;
+  // v0.3: iroh EndpointId, present on peers running a build with the
+  // iroh transport. `null` on v0.2 peers — those will need re-pairing
+  // once both sides are upgraded.
+  node_id: string | null;
 }
 
 export interface DeviceInfo {

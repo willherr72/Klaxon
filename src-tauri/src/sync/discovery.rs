@@ -24,6 +24,11 @@ pub struct DiscoveredPeer {
     pub url: String,
     pub last_seen_ms: i64,
     pub cert_fingerprint: Option<String>,
+    /// v0.3 iroh transport: present once the peer is on a Klaxon build
+    /// that publishes an iroh EndpointId in its mDNS TXT record. Stays
+    /// `None` for v0.2 peers — phase-3 pairing will treat them as
+    /// "needs-re-pair-after-upgrade".
+    pub node_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -36,6 +41,7 @@ pub fn start(
     identity: DeviceIdentity,
     port: u16,
     cert_fingerprint: String,
+    node_id: Option<String>,
 ) -> AppResult<DiscoveryHandle> {
     let daemon =
         ServiceDaemon::new().map_err(|e| AppError::Invalid(format!("mDNS daemon: {e}")))?;
@@ -62,6 +68,11 @@ pub fn start(
     );
     // mDNS TXT records are limited to 255 bytes per pair; SHA-256 hex (64 chars) fits.
     props.insert("fp".to_string(), cert_fingerprint.clone());
+    // v0.3: advertise the iroh EndpointId so a peer that finds us via mDNS
+    // can also reach us off-LAN later via iroh. Absent on v0.2-only builds.
+    if let Some(nid) = node_id.as_deref() {
+        props.insert("nid".to_string(), nid.to_string());
+    }
 
     let info = ServiceInfo::new(
         SERVICE_TYPE,
@@ -112,6 +123,10 @@ pub fn start(
                             .get_property_val_str("fp")
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string());
+                        let node_id = props
+                            .get_property_val_str("nid")
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
                         let port = info.get_port();
                         let chosen = info
                             .get_addresses()
@@ -132,6 +147,7 @@ pub fn start(
                             url,
                             last_seen_ms: now_ms(),
                             cert_fingerprint: fingerprint,
+                            node_id,
                         };
                         log::info!(
                             "mDNS discovered: {} ({}) → {}",

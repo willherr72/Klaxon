@@ -31,6 +31,10 @@ pub struct AppState {
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::server::PendingPairs,
     pub local_cert: Arc<Mutex<Option<sync::tls::LocalCert>>>,
+    /// v0.3 iroh transport. `None` until phase 1 setup completes (or if
+    /// sync is disabled). Holds a cloneable `Endpoint` handle plus the
+    /// device's stable EndpointId string.
+    pub iroh_node: Arc<Mutex<Option<sync::iroh_node::IrohNode>>>,
 }
 
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
@@ -102,6 +106,8 @@ pub fn run() {
                 Arc::new(Mutex::new(HashMap::new()));
             let local_cert_state: Arc<Mutex<Option<sync::tls::LocalCert>>> =
                 Arc::new(Mutex::new(None));
+            let iroh_node_state: Arc<Mutex<Option<sync::iroh_node::IrohNode>>> =
+                Arc::new(Mutex::new(None));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
                 let port = sync::read_port(&db);
@@ -117,6 +123,25 @@ pub fn run() {
                 };
                 *local_cert_state.lock() = Some(cert.clone());
 
+                // v0.3 phase 1: spin up the iroh endpoint alongside the
+                // existing HTTPS sync server. `block_on` is OK here — bind
+                // is a fast local socket op plus reading a 32-byte key file.
+                // We tolerate failure: a missing iroh node degrades us to
+                // v0.2 LAN-only sync rather than blocking startup entirely.
+                let iroh_app_dir = app_dir.clone();
+                let iroh_node_opt = match tauri::async_runtime::block_on(async move {
+                    sync::iroh_node::start(&iroh_app_dir).await
+                }) {
+                    Ok(n) => {
+                        *iroh_node_state.lock() = Some(n.clone());
+                        Some(n)
+                    }
+                    Err(e) => {
+                        log::error!("iroh endpoint failed to start: {e}");
+                        None
+                    }
+                };
+
                 let server_state = sync::server::ServerState {
                     db: db.clone(),
                     identity: identity.clone(),
@@ -130,7 +155,13 @@ pub fn run() {
                     }
                 });
 
-                match sync::discovery::start(identity, port, cert.fingerprint.clone()) {
+                let node_id_for_mdns = iroh_node_opt.as_ref().map(|n| n.node_id.clone());
+                match sync::discovery::start(
+                    identity,
+                    port,
+                    cert.fingerprint.clone(),
+                    node_id_for_mdns,
+                ) {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
                 }
@@ -157,6 +188,7 @@ pub fn run() {
                 discovery: discovery_handle,
                 pending_pairs,
                 local_cert: local_cert_state,
+                iroh_node: iroh_node_state,
             });
 
             tray::setup(app)?;
