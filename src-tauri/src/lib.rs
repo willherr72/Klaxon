@@ -1,13 +1,13 @@
 mod alerts;
 mod audio;
 mod commands;
-mod db;
-mod error;
-mod models;
+pub mod db;
+pub mod error;
+pub mod models;
 mod nl;
 mod recurrence;
 mod scheduler;
-mod sync;
+pub mod sync;
 mod tray;
 
 use std::collections::HashMap;
@@ -35,6 +35,10 @@ pub struct AppState {
     /// sync is disabled). Holds a cloneable `Endpoint` handle plus the
     /// device's stable EndpointId string.
     pub iroh_node: Arc<Mutex<Option<sync::iroh_node::IrohNode>>>,
+    /// v0.3 phase 2: the iroh `Router` dispatching `klaxon/sync/0` to the
+    /// `SyncHandler`. Held here so it doesn't drop — `Router` aborts its
+    /// accept loop when the last handle is dropped.
+    pub iroh_router: Arc<Mutex<Option<sync::iroh_node::Router>>>,
 }
 
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
@@ -120,6 +124,8 @@ pub fn run() {
                 Arc::new(Mutex::new(None));
             let iroh_node_state: Arc<Mutex<Option<sync::iroh_node::IrohNode>>> =
                 Arc::new(Mutex::new(None));
+            let iroh_router_state: Arc<Mutex<Option<sync::iroh_node::Router>>> =
+                Arc::new(Mutex::new(None));
             if sync::read_enabled(&db) {
                 let identity = sync::read_identity(&db);
                 let port = sync::read_port(&db);
@@ -153,6 +159,31 @@ pub fn run() {
                         None
                     }
                 };
+
+                // v0.3 phase 2: spawn the iroh Router that dispatches the
+                // `klaxon/sync/0` ALPN to our SyncHandler. Phase 2 only
+                // implements Ping; Pull/Push come online in phase 3.
+                //
+                // `Router::spawn()` internally calls `tokio::spawn`, which
+                // requires being inside a tokio runtime context — must be
+                // wrapped in `block_on` since the surrounding `setup()`
+                // closure runs on a plain thread.
+                if let Some(node) = &iroh_node_opt {
+                    let handler = sync::iroh_handler::SyncHandler {
+                        db: db.clone(),
+                        identity: identity.clone(),
+                        app: Some(app.handle().clone()),
+                    };
+                    let endpoint = node.endpoint.clone();
+                    let router = tauri::async_runtime::block_on(async move {
+                        sync::iroh_node::spawn_sync_router(endpoint, handler)
+                    });
+                    *iroh_router_state.lock() = Some(router);
+                    log::info!(
+                        "iroh sync handler attached on ALPN {}",
+                        String::from_utf8_lossy(sync::proto::ALPN_SYNC)
+                    );
+                }
 
                 let server_state = sync::server::ServerState {
                     db: db.clone(),
@@ -201,6 +232,7 @@ pub fn run() {
                 pending_pairs,
                 local_cert: local_cert_state,
                 iroh_node: iroh_node_state,
+                iroh_router: iroh_router_state,
             });
 
             tray::setup(app)?;

@@ -13,9 +13,12 @@
 use std::path::{Path, PathBuf};
 
 use iroh::endpoint::presets;
+pub use iroh::protocol::Router;
 use iroh::{Endpoint, SecretKey};
 
 use crate::error::{AppError, AppResult};
+use crate::sync::iroh_handler::SyncHandler;
+use crate::sync::proto::ALPN_SYNC;
 
 /// Filename for the persisted Ed25519 secret key inside the app data dir.
 /// Raw 32 bytes, not PEM — there's no interop need and binary keeps it tight.
@@ -25,6 +28,15 @@ const SECRET_FILE: &str = "klaxon-iroh-secret.bin";
 pub struct IrohNode {
     pub endpoint: Endpoint,
     pub node_id: String,
+}
+
+/// Wrap an existing `Endpoint` in an iroh `Router` that dispatches incoming
+/// `klaxon/sync/0` connections to the given `SyncHandler`. The returned
+/// `Router` must be kept alive — dropping it aborts the accept loop.
+pub fn spawn_sync_router(endpoint: Endpoint, handler: SyncHandler) -> Router {
+    Router::builder(endpoint)
+        .accept(ALPN_SYNC, handler)
+        .spawn()
 }
 
 /// Start the iroh endpoint, loading or generating the local secret key as
