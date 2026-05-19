@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod discovery;
+pub mod iroh_node;
 pub mod server;
 pub mod task;
 pub mod tls;

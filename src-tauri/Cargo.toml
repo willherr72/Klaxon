@@ -45,6 +45,15 @@ rustls = "0.23"
 rustls-pemfile = "2"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 
+# v0.3 iroh transport — phase 1 wires up an Endpoint alongside the existing
+# HTTPS sync server. Cutover to iroh-only happens in a later phase.
+#
+# `portmapper` (default) pulls in netwatch → wmi 0.18.4, which has its own
+# windows-core version conflict on Windows. We get along fine without UPnP
+# port mapping — iroh's hole-punching + relays are the primary NAT traversal
+# path. `tls-ring` and `metrics` re-added because they're useful defaults.
+iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring", "metrics"] }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
