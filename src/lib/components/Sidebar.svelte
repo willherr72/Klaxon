@@ -1,5 +1,16 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import type { ViewMode } from "../types";
+
+  let appVersion = $state("");
+  onMount(async () => {
+    try {
+      appVersion = await getVersion();
+    } catch (e) {
+      console.error("getVersion failed", e);
+    }
+  });
 
   let {
     current,
@@ -62,7 +73,7 @@
       <span class="gear">⚙</span>
       <span class="settings-text">System Config</span>
     </button>
-    <div class="version mono-caps-faint">v0.2.0-dev · Industrial</div>
+    <div class="version mono-caps-faint">v{appVersion || "…"} · Industrial</div>
   </div>
 </nav>
 

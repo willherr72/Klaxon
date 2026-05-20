@@ -1,5 +1,7 @@
 <script lang="ts">
   import { api } from "../api";
+  import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import {
     enable as enableAutostart,
     disable as disableAutostart,
@@ -43,6 +45,17 @@
   let busy = $state(false);
   let error = $state<string | null>(null);
   let savedFlash = $state(false);
+  // Pulled from tauri.conf.json at runtime so the System Config "Version"
+  // row stays in sync with what was actually built — no hardcoded string
+  // that drifts after every release bump.
+  let appVersion = $state("");
+  onMount(async () => {
+    try {
+      appVersion = await getVersion();
+    } catch (e) {
+      console.error("getVersion failed", e);
+    }
+  });
 
   // Each panel section starts collapsed so the modal stays compact. Click a
   // section header to expand the one you want to edit.
@@ -497,7 +510,7 @@
                 </button>
               </div>
               <span class="mono-caps-faint">Version</span>
-              <span class="meta-value">v0.2.0-dev · industrial</span>
+              <span class="meta-value">v{appVersion || "…"} · industrial</span>
             </div>
           {/if}
         </section>

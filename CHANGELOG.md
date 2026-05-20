@@ -5,6 +5,38 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-20
+
+Klaxon syncs **across networks** — peers on different LANs, behind different NATs, even on different platforms can pair and stay in sync via iroh's QUIC + relay network.
+
+### Added
+
+- **iroh transport.** Each device gets a stable `NodeId` (Ed25519 pubkey, persisted in app data dir). The single iroh `Endpoint` accepts two ALPNs:
+  - `klaxon/sync/0` — authenticated RPC (Ping / Pull / Push), one bidi stream per call, length-prefixed `postcard` envelope, per-pair shared secret in the envelope.
+  - `klaxon/pair/0` — pre-auth pair handshake.
+- **Cross-network reachability** via n0's relay network + hole punching. Same connection auto-picks direct LAN when both peers are on the same network, falls back to relays when not.
+- **Pairing tickets** — a single base32 string IS the device's pairing token. Settings → Sync → 'Pairing ticket' opens a modal with the ticket as a QR code (klaxon-amber on near-black, scan-friendly for the mobile client when it lands) plus a Copy button. A 'Pair from a ticket' input in the same modal accepts a pasted ticket from the other device.
+- **mDNS still works** for same-LAN tap-to-pair — TXT record carries the `NodeId` so the handshake routes through iroh from the first byte.
+- **NodeId-based SAS.** The 6-digit pairing code is derived from both peers' `NodeId`s, not their `device_id`s. Lets ticket pairing work without the initiator knowing the responder's identity ahead of time.
+- **Version row in System Config** now reads from `tauri.conf.json` at runtime so it can't drift away from what was actually built.
+
+### Changed
+
+- Sync section in Settings: "LAN Sync" → "Sync"; copy reflects iroh / direct-LAN / relay behavior. Device-identity row shows the iroh node id and a 'Pairing ticket' button next to Copy.
+- "Next in" countdown now skips silent tasks and past-due reminders, so a forgotten silent task can't peg the countdown at 00:00:00.
+
+### Removed
+
+- HTTPS transport entirely. `sync::server`, `sync::client`, `sync::tls` deleted; `axum`, `axum-server`, `tower`, `tower-http`, `reqwest`, `rcgen`, `rustls-pemfile` deps dropped. `peers.url` and `peers.cert_fingerprint` schema columns dropped (migration 007). `DeviceInfo.sync_port` / `sync_url_hint` gone — there's no more URL.
+- Manual `Add Peer` form (URL + cert fingerprint + secret) — replaced by the pairing-ticket modal.
+
+### Migration from 0.2.x
+
+- **Database is forward-compatible.** Migrations 001-007 run automatically on first launch under 0.3.0.
+- **Existing pairs must be re-paired.** Peers paired under 0.2.x have a `NULL` `iroh_node_id` and the sync task hard-skips them. Use Sync → tap-to-pair (or paste a ticket) once on each side after both devices are on 0.3.0.
+
+---
+
 ## [0.3.0-rc.3] — 2026-05-19
 
 Hotfix for ticket pairing surfaced during the rc.2 cross-platform validation pass.

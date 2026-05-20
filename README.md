@@ -4,7 +4,7 @@
 
 Klaxon fires persistent, hard-to-ignore notifications when you set a reminder. Three priority tiers — quiet toast, popup window with repeating tone, fullscreen alarm — let you decide how loud each thing should be. No cloud, no account, no subscription. Your data lives in a SQLite file on your machine, and v0.2 lets paired devices sync over the LAN with TLS-encrypted traffic.
 
-**Status:** v0.2 in `0.2.0-dev` on `main`. v0.1.0 is tagged with a binary release. v0.2.0 will be tagged once cross-device sync has been validated on real hardware.
+**Status:** v0.3.0 — iroh transport, cross-network sync, pairing tickets. v0.1.0 + v0.3.0 are tagged with binary releases; v0.2 was rolled into v0.3 before tagging since the LAN HTTPS transport got replaced before it shipped.
 
 ---
 
@@ -199,8 +199,9 @@ All sections collapse by default; click a header to expand just the one you're e
 | Milestone | Status | Highlights |
 | --- | --- | --- |
 | **v0.1** | ✅ Released | Single device. CRUD, three priority tiers, recurrence, snooze, system tray, autostart, configurable hotkey. |
-| **v0.2** | 🟡 In `0.2.0-dev` | LAN sync (mDNS + tap-to-pair + TLS), Task reminders, calendar view, search, sort, collapsible Settings, dismiss/snooze propagation. Pending: validate sync on a second machine before tagging. |
-| **v0.3** | ⏳ Planned | Remote sync via [iroh](https://www.iroh.computer/) — peer-to-peer with NAT traversal so devices on different networks can sync. |
+| **v0.2** | ⤴ Merged into v0.3 | Originally LAN HTTPS sync; the transport got replaced before tagging so the features (Task reminders, calendar view, search, sort, collapsible Settings, dismiss/snooze propagation) shipped under v0.3.0 instead. |
+| **v0.3** | ✅ Released | Sync over [iroh](https://www.iroh.computer/) — direct LAN when possible, hole-punched / relayed otherwise. Pairing tickets (QR + base32 string). Cross-platform verified Windows ↔ Linux. |
+| **v0.3.1** | 🟡 Planned | Swim-lane Tasks board — expand the Tasks panel from a flat list into a draggable swim-lane view. |
 | **v0.4** | ⏳ Planned | Microsoft Graph (Outlook/Teams), Google Calendar, CalDAV integrations. |
 | **v0.5** | ⏳ Planned | **Opt-in shared groups.** Reminders can belong to a group; devices that explicitly joined sync those records. Per-group encryption key so paired peers outside the group can't read the contents even if they intercept traffic. Default behavior unchanged — reminders are private until you actively share them. Needs careful threat-model work; likely a separate design doc when it lands. |
 | **v1.0** | ⏳ Planned | iOS + Android via Tauri 2 mobile, sharing the Rust scheduler core. |

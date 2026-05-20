@@ -1,7 +1,7 @@
 {
   "name": "klaxon",
   "private": true,
-  "version": "0.3.0-rc.3",
+  "version": "0.3.0",
   "description": "A reminder app that actually gets your attention",
   "license": "MIT",
   "author": "Will Herr",

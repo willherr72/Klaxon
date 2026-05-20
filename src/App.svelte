@@ -228,8 +228,16 @@
   );
 
   let nextReminder = $derived.by<Reminder | null>(() => {
+    // "Next in" represents the next *alert* that will fire. Silent tasks
+    // don't ring, so they're not real next-events. And a past-due
+    // pending item (typically a silent task that wasn't acted on) would
+    // peg the countdown at 00:00:00 forever — skip those too.
+    const nowMs = now;
     const candidates = allReminders.filter(
-      (r) => r.state === "pending" || r.state === "snoozed",
+      (r) =>
+        !r.silent &&
+        (r.state === "pending" || r.state === "snoozed") &&
+        (r.snooze_until ?? r.due_at) > nowMs,
     );
     if (candidates.length === 0) return null;
     candidates.sort(

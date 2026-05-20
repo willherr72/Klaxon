@@ -1,6 +1,17 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { countdown } from "../time";
   import type { Reminder } from "../types";
+
+  let appVersion = $state("");
+  onMount(async () => {
+    try {
+      appVersion = await getVersion();
+    } catch (e) {
+      console.error("getVersion failed", e);
+    }
+  });
 
   let {
     pendingCount,
@@ -38,7 +49,7 @@
   </div>
   <div class="spacer"></div>
   <div class="cell tail">
-    <span class="mono-caps-faint">Klaxon · v0.2.0-dev</span>
+    <span class="mono-caps-faint">Klaxon · v{appVersion || "…"}</span>
   </div>
 </footer>
 

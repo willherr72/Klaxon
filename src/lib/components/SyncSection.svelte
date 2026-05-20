@@ -265,7 +265,7 @@
   >
     <span class="chevron" class:open={!collapsed}>▸</span>
     <span class="section-tick"></span>
-    <h3 class="mono-caps section-title">LAN Sync</h3>
+    <h3 class="mono-caps section-title">Sync</h3>
     <span class="section-line"></span>
     <span class="status-pill" class:on={syncEnabled}>
       {syncEnabled ? "ON" : "OFF"}
@@ -273,7 +273,7 @@
   </button>
   {#if !collapsed}
   <div class="section-help mono-caps-faint">
-    Sync reminders between paired devices on your local network. Restart Klaxon after enabling so the sync server starts up.
+    Sync reminders between paired devices over iroh — direct LAN when possible, hole-punched / relayed when peers are on different networks. Restart Klaxon after enabling so the transport spins up.
   </div>
 
   {#if error}
@@ -284,8 +284,8 @@
     <input type="checkbox" checked={syncEnabled} onchange={toggleSync} class="toggle-input" />
     <span class="toggle-knob"></span>
     <span class="toggle-text">
-      <span class="toggle-title">Enable LAN sync</span>
-      <span class="mono-caps-faint">Run an embedded HTTP server + periodic sync task</span>
+      <span class="toggle-title">Enable sync</span>
+      <span class="mono-caps-faint">Bring up the iroh endpoint + periodic sync task</span>
     </span>
   </label>
 
@@ -658,13 +658,17 @@
   }
   .kv-grid {
     display: grid;
-    grid-template-columns: 80px 1fr;
+    grid-template-columns: 130px minmax(0, 1fr);
     gap: 8px 14px;
     align-items: center;
   }
   .kv-label {
     font-size: 9px;
     letter-spacing: 0.22em;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .kv-input {
     background: var(--bg-elev);
