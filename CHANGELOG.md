@@ -5,6 +5,17 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-rc.3] — 2026-05-19
+
+Hotfix for ticket pairing surfaced during the rc.2 cross-platform validation pass.
+
+### Fixed
+
+- **Ticket pairing failed with "CONNECTION LOST" before the responder's ack could be read.** `PairHandler::accept` returned as soon as it wrote the `PairAck` frame, which let iroh's router tear down the QUIC connection before the initiator's `read_frame` could drain the ack from its receive buffer. Fixed by holding the connection until the initiator gracefully closes it (matches the pattern in iroh's own `Echo` example).
+- **Ticket modal stayed open on top of the SAS-confirmation modal.** Submitting a ticket now closes the ticket modal immediately so the pair-progress overlay isn't stacked on top of it.
+
+---
+
 ## [0.3.0-rc.2] — 2026-05-19
 
 Second release candidate. Phases 3c and 3d landed on top of rc.1.

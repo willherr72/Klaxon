@@ -54,8 +54,7 @@ impl std::fmt::Debug for PairHandler {
 impl ProtocolHandler for PairHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
         // One incoming pair attempt per connection. The first bidi stream
-        // is the offer; once we ack, we close. Anyone holding the
-        // connection open longer just sits there until peer drops it.
+        // is the offer; once we ack, we wait for the initiator to close.
         let (mut send, mut recv) = match conn.accept_bi().await {
             Ok(s) => s,
             Err(e) => {
@@ -69,6 +68,14 @@ impl ProtocolHandler for PairHandler {
             let _ = proto::write_frame(&mut send, &PairAck::Error(e.to_string())).await;
         }
         let _ = send.finish();
+
+        // Critical: hold the QUIC connection alive until the initiator
+        // gracefully closes it from its side. Returning here would let
+        // iroh's router tear down the underlying connection immediately,
+        // dropping the ack frame before the initiator's `read_frame` can
+        // drain it from its receive buffer (surfaces as
+        // "INVALID INPUT: READ FRAME LENGTH: CONNECTION LOST").
+        conn.closed().await;
         Ok(())
     }
 }

@@ -187,17 +187,19 @@
       return;
     }
     pairBusy = true;
+    // Close the ticket modal immediately so the tap-pair overlay (which
+    // shows the SAS code and the eventual success/error) isn't stacked
+    // on top of it.
+    pairOpen = false;
+    tapPair = { kind: "starting", peerName: "(ticket)" };
     try {
-      // The ticket is the peer's iroh node id (~52-char base32). Initiates
-      // the same `klaxon/pair/0` handshake as mDNS tap-to-pair; the user
-      // confirms the SAS on both ends to complete pairing.
-      tapPair = { kind: "starting", peerName: "(ticket)" };
       const outcome = await api.startPairWith(ticket, "");
       tapPair = { kind: "success", peerName: outcome.peer_name };
-      pairOpen = false;
       await refresh();
+      setTimeout(() => {
+        if (tapPair?.kind === "success") tapPair = null;
+      }, 1600);
     } catch (e) {
-      pairError = String(e);
       tapPair = { kind: "error", message: String(e) };
     } finally {
       pairBusy = false;
