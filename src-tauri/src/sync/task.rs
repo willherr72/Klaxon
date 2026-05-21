@@ -11,7 +11,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::alerts;
-use crate::db::{peers, reminders as repo, tombstones};
+use crate::db::{peers, reminders as repo, task_lanes, tombstones};
 use crate::models::ReminderState;
 use crate::sync::iroh_client;
 use crate::sync::types::{ChangeSet, RemoteReminder, RemoteTombstone};
@@ -80,6 +80,14 @@ async fn sync_one(
     let mut to_cancel: Vec<String> = Vec::new();
     {
         let conn = db.lock();
+        // Lanes before reminders so an arriving reminder with a freshly-
+        // created task_lane_id sees its lane row already present.
+        for lane in &pulled.lanes {
+            let _ = task_lanes::apply_remote(&conn, lane);
+            if lane.updated_at > max_pulled {
+                max_pulled = lane.updated_at;
+            }
+        }
         for r in &pulled.reminders {
             if matches!(repo::apply_remote(&conn, r), Ok(true))
                 && silences_alert(r.state)
@@ -93,7 +101,9 @@ async fn sync_one(
         for t in &pulled.tombstones {
             let _ = tombstones::apply_remote(&conn, &t.id, t.deleted_at);
             // Tombstones unconditionally cancel — the reminder is gone, no
-            // reason to keep ringing about it.
+            // reason to keep ringing about it. Same id might also belong
+            // to a deleted lane; deleting a non-existent row is a no-op.
+            let _ = task_lanes::delete(&conn, &t.id);
             to_cancel.push(t.id.clone());
             if t.deleted_at > max_pulled {
                 max_pulled = t.deleted_at;
@@ -107,33 +117,37 @@ async fn sync_one(
     for id in to_cancel {
         alerts::cancel_alert(app, &id);
     }
-    if !pulled.reminders.is_empty() || !pulled.tombstones.is_empty() {
+    if !pulled.reminders.is_empty() || !pulled.tombstones.is_empty() || !pulled.lanes.is_empty() {
         emit_reminders_changed(app);
     }
 
     // Push
-    let (rems, tombs) = {
+    let (rems, tombs, lanes) = {
         let conn = db.lock();
         let rs = repo::updated_since(&conn, peer.last_push_at)?;
         let ts = tombstones::dirty_since(&conn, peer.last_push_at)?;
+        let ls = task_lanes::dirty_since(&conn, peer.last_push_at)?;
         (
             rs.iter().map(RemoteReminder::from).collect::<Vec<_>>(),
             ts.iter().map(RemoteTombstone::from).collect::<Vec<_>>(),
+            ls,
         )
     };
-    if rems.is_empty() && tombs.is_empty() {
+    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() {
         return Ok(());
     }
     let max_pushed = rems
         .iter()
         .map(|r| r.updated_at)
         .chain(tombs.iter().map(|t| t.deleted_at))
+        .chain(lanes.iter().map(|l| l.updated_at))
         .max()
         .unwrap_or(peer.last_push_at);
     let set = ChangeSet {
         server_time_ms: crate::models::now_ms(),
         reminders: rems,
         tombstones: tombs,
+        lanes,
     };
     let resp = iroh_client::push(endpoint, node_id, &peer.shared_secret, set).await?;
     {
@@ -142,12 +156,14 @@ async fn sync_one(
         peers::mark_pushed(&conn, &peer.id, watermark)?;
     }
     log::debug!(
-        "synced with {}: pulled {}r/{}t, pushed {}r/{}t",
+        "synced with {}: pulled {}r/{}t/{}l, pushed {}r/{}t/{}l",
         peer.name,
         pulled.reminders.len(),
         pulled.tombstones.len(),
+        pulled.lanes.len(),
         resp.accepted_reminders,
         resp.accepted_tombstones,
+        resp.accepted_lanes,
     );
     Ok(())
 }

@@ -192,6 +192,189 @@ pub fn nl_parse(input: String) -> Result<crate::nl::Parsed, crate::nl::ParseErro
     crate::nl::parse(&input, chrono::Local::now())
 }
 
+// ── Swim lanes (v0.3.1) ──────────────────────────────────────────────
+
+use crate::db::task_lanes::{self, Lane};
+
+#[tauri::command]
+pub fn list_lanes(state: State<'_, AppState>) -> AppResult<Vec<Lane>> {
+    let conn = state.db.lock();
+    task_lanes::list_all(&conn)
+}
+
+#[tauri::command]
+pub fn create_lane(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    name: String,
+) -> AppResult<Lane> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Invalid("lane name required".into()));
+    }
+    let now = now_ms();
+    let lane = {
+        let conn = state.db.lock();
+        let existing = task_lanes::list_all(&conn)?;
+        let next_order = existing
+            .iter()
+            .map(|l| l.order_index)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        let lane = Lane {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: trimmed.to_string(),
+            order_index: next_order,
+            is_default: false,
+            created_at: now,
+            updated_at: now,
+        };
+        task_lanes::insert(&conn, &lane)?;
+        lane
+    };
+    let _ = app.emit("klaxon://lanes-changed", ());
+    Ok(lane)
+}
+
+#[tauri::command]
+pub fn rename_lane(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+    name: String,
+) -> AppResult<Lane> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Invalid("lane name required".into()));
+    }
+    let lane = {
+        let conn = state.db.lock();
+        let existing = task_lanes::get_by_id(&conn, &id)?
+            .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?;
+        task_lanes::update(
+            &conn,
+            &id,
+            trimmed,
+            existing.order_index,
+            now_ms(),
+        )?;
+        task_lanes::get_by_id(&conn, &id)?
+            .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?
+    };
+    let _ = app.emit("klaxon://lanes-changed", ());
+    Ok(lane)
+}
+
+/// Result of a `delete_lane` call — surfaces how many tasks got
+/// cascaded to the default lane so the UI can confirm the user's
+/// "this will move N tasks" warning was accurate.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteLaneOutcome {
+    pub tasks_moved: usize,
+}
+
+#[tauri::command]
+pub fn delete_lane(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<DeleteLaneOutcome> {
+    let outcome = {
+        let conn = state.db.lock();
+        let lane = task_lanes::get_by_id(&conn, &id)?
+            .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?;
+        if lane.is_default {
+            return Err(AppError::Invalid(
+                "cannot delete the default lane — rename it or move tasks to it instead"
+                    .into(),
+            ));
+        }
+        let default_id = task_lanes::default_lane(&conn)?.id;
+        // Cascade tasks: re-home everything in this lane onto the
+        // default lane. updated_at bumps so each row syncs naturally
+        // on the next tick.
+        let now = now_ms();
+        let moved = conn.execute(
+            "UPDATE reminders
+                SET task_lane_id = ?2, updated_at = ?3, dirty = 1
+              WHERE task_lane_id = ?1",
+            rusqlite::params![id, default_id, now],
+        )?;
+        task_lanes::delete(&conn, &id)?;
+        // Tombstone uses the shared tombstones table so peers learn
+        // to drop the lane too.
+        crate::db::tombstones::create(&conn, &id, now)?;
+        DeleteLaneOutcome {
+            tasks_moved: moved,
+        }
+    };
+    let _ = app.emit("klaxon://lanes-changed", ());
+    let _ = app.emit("klaxon://reminders-changed", ());
+    Ok(outcome)
+}
+
+#[tauri::command]
+pub fn reorder_lanes(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    ids: Vec<String>,
+) -> AppResult<()> {
+    let now = now_ms();
+    {
+        let conn = state.db.lock();
+        for (idx, id) in ids.iter().enumerate() {
+            let lane = task_lanes::get_by_id(&conn, id)?
+                .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?;
+            // Only bump if the position actually changed — saves
+            // unnecessary updated_at churn and spurious sync traffic.
+            if lane.order_index != idx as i64 {
+                task_lanes::update(&conn, id, &lane.name, idx as i64, now)?;
+            }
+        }
+    }
+    let _ = app.emit("klaxon://lanes-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_task_lane(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    reminder_id: String,
+    lane_id: String,
+) -> AppResult<Reminder> {
+    let trimmed = lane_id.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Invalid("lane_id required".into()));
+    }
+    // Validate the lane exists so a stale UI state doesn't write a
+    // dangling FK.
+    {
+        let conn = state.db.lock();
+        if task_lanes::get_by_id(&conn, trimmed)?.is_none() {
+            return Err(AppError::NotFound(format!("lane {trimmed}")));
+        }
+    }
+    let patch = crate::models::ReminderUpdate {
+        title: None,
+        description: None,
+        due_at: None,
+        priority: None,
+        sound_path: None,
+        repeat_rule: None,
+        silent: None,
+        tags: None,
+        task_lane_id: Some(Some(trimmed.to_string())),
+    };
+    let updated = {
+        let conn = state.db.lock();
+        repo::update(&conn, &reminder_id, patch)?
+    };
+    let _ = app.emit("klaxon://reminders-changed", ());
+    Ok(updated)
+}
+
 // ── Sync ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

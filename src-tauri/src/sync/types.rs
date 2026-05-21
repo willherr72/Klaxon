@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::db::task_lanes::Lane;
 use crate::models::{Priority, ReminderState, RepeatRule};
 
 /// Server identity returned by `/ping` so peers can confirm who they're
@@ -30,6 +31,10 @@ pub struct RemoteReminder {
     pub silent: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// v0.3.1: swim-lane assignment for silent reminders. `None` on
+    /// non-silent rows, and on rows synced from a pre-v0.3.1 peer.
+    #[serde(default)]
+    pub task_lane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +48,11 @@ pub struct ChangeSet {
     pub server_time_ms: i64,
     pub reminders: Vec<RemoteReminder>,
     pub tombstones: Vec<RemoteTombstone>,
+    /// v0.3.1: swim-lane CRUD also flows over sync so paired devices
+    /// see the same set of lanes. `#[serde(default)]` keeps the wire
+    /// format compatible with v0.3.0 peers — they just ignore the field.
+    #[serde(default)]
+    pub lanes: Vec<Lane>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +60,8 @@ pub struct PushResponse {
     pub server_time_ms: i64,
     pub accepted_reminders: usize,
     pub accepted_tombstones: usize,
+    #[serde(default)]
+    pub accepted_lanes: usize,
 }
 
 // ── Tap-to-pair handshake ────────────────────────────────────────────
@@ -95,6 +107,7 @@ impl From<&crate::models::Reminder> for RemoteReminder {
             updated_at: r.updated_at,
             silent: r.silent,
             tags: r.tags.clone(),
+            task_lane_id: r.task_lane_id.clone(),
         }
     }
 }

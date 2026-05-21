@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use tauri::AppHandle;
 
 use crate::alerts;
-use crate::db::{reminders as repo, tombstones};
+use crate::db::{reminders as repo, task_lanes, tombstones};
 use crate::error::AppResult;
 use crate::models::{now_ms, ReminderState};
 use crate::sync::types::{
@@ -42,10 +42,12 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .iter()
         .map(RemoteTombstone::from)
         .collect();
+    let lanes = task_lanes::dirty_since(&conn, since)?;
     Ok(ChangeSet {
         server_time_ms: now_ms(),
         reminders,
         tombstones: ts,
+        lanes,
     })
 }
 
@@ -61,10 +63,24 @@ pub fn push(
 ) -> AppResult<PushResponse> {
     let mut accepted_reminders = 0usize;
     let mut accepted_tombstones = 0usize;
+    let mut accepted_lanes = 0usize;
     let mut to_cancel: Vec<String> = Vec::new();
 
     {
         let conn = db.lock();
+        // Lanes first — a reminder arriving with a new task_lane_id has
+        // to have that lane already present in the table for the FK
+        // story to be intuitive. With nullable FK and no actual SQL
+        // constraint this isn't strictly required, but ordering reads
+        // better in logs.
+        for lane in &set.lanes {
+            match task_lanes::apply_remote(&conn, lane) {
+                Ok(true) => accepted_lanes += 1,
+                Ok(false) => {}
+                Err(e) => log::warn!("apply remote lane {}: {e}", lane.id),
+            }
+        }
+
         for r in &set.reminders {
             match repo::apply_remote(&conn, r) {
                 Ok(true) => {
@@ -88,6 +104,11 @@ pub fn push(
                 Ok(()) => {
                     accepted_tombstones += 1;
                     to_cancel.push(t.id.clone());
+                    // A tombstone may refer to either a reminder or a
+                    // lane (both share the tombstones table). For lanes
+                    // we just delete the row — sync apply already drops
+                    // the row when tombstone is newer.
+                    let _ = task_lanes::delete(&conn, &t.id);
                 }
                 Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
             }
@@ -98,7 +119,7 @@ pub fn push(
         for id in to_cancel {
             alerts::cancel_alert(app, &id);
         }
-        if accepted_reminders > 0 || accepted_tombstones > 0 {
+        if accepted_reminders > 0 || accepted_tombstones > 0 || accepted_lanes > 0 {
             crate::sync::task::emit_reminders_changed(app);
         }
     }
@@ -107,5 +128,6 @@ pub fn push(
         server_time_ms: now_ms(),
         accepted_reminders,
         accepted_tombstones,
+        accepted_lanes,
     })
 }

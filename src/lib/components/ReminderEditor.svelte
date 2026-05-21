@@ -8,6 +8,7 @@
     reminder,
     defaultDueAt = null,
     defaultSilent = false,
+    defaultLaneId = null,
     onClose,
     onSave,
     onDelete,
@@ -16,6 +17,7 @@
     reminder: Reminder | null;
     defaultDueAt?: number | null;
     defaultSilent?: boolean;
+    defaultLaneId?: string | null;
     onClose: () => void;
     onSave: (input: ReminderCreate, id: string | null) => void;
     onDelete: (id: string) => void;
@@ -115,6 +117,9 @@
       repeat_rule: silent ? null : buildRepeatRule(),
       silent,
       tags,
+      // Only forward defaultLaneId on a fresh create — editing an
+      // existing task keeps its lane unchanged (use DnD to move it).
+      task_lane_id: reminder ? null : silent ? defaultLaneId : null,
     };
     onSave(input, reminder?.id ?? null);
   }

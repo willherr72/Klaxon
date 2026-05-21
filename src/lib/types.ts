@@ -31,6 +31,8 @@ export interface Reminder {
   dirty: boolean;
   silent: boolean;
   tags: string[];
+  // v0.3.1: swim-lane id (only set for silent reminders / tasks).
+  task_lane_id: string | null;
 }
 
 export interface ReminderCreate {
@@ -42,6 +44,8 @@ export interface ReminderCreate {
   repeat_rule: RepeatRule | null;
   silent: boolean;
   tags: string[];
+  // Pre-seed the lane when creating from a specific column's `+ Add`.
+  task_lane_id?: string | null;
 }
 
 export interface ReminderUpdate {

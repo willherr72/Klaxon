@@ -14,6 +14,7 @@
   import IncomingPairModal from "./lib/components/IncomingPairModal.svelte";
   import CalendarView from "./lib/components/CalendarView.svelte";
   import QuickAdd from "./lib/components/QuickAdd.svelte";
+  import TasksBoard from "./lib/components/TasksBoard.svelte";
 
   let allReminders = $state<Reminder[]>([]);
   let currentView = $state<ViewMode>("reminders");
@@ -27,6 +28,9 @@
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let editorDefaultDueAt = $state<number | null>(null);
   let editorDefaultSilent = $state(false);
+  // v0.3.1: when the user hits `+ Add task` on a swim-lane column, this
+  // pre-seeds the editor so the saved task lands in the right lane.
+  let editorDefaultLaneId = $state<string | null>(null);
   let tagFilter = $state<string | null>(null);
   let quickAddOpen = $state(false);
   let quickAddHotkey = $state("Ctrl+KeyK");
@@ -295,6 +299,7 @@
   function openNew() {
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
+    editorDefaultLaneId = null;
     editingId.set(null);
     editorOpen.set(true);
   }
@@ -304,6 +309,17 @@
   function openNewForDate(ms: number, silent: boolean) {
     editorDefaultDueAt = ms;
     editorDefaultSilent = silent;
+    editorDefaultLaneId = null;
+    editingId.set(null);
+    editorOpen.set(true);
+  }
+
+  /** Open the editor for a brand-new task that should land in a specific
+   * swim lane. Used by the `+ Add task` button on a column. */
+  function openNewInLane(laneId: string) {
+    editorDefaultDueAt = null;
+    editorDefaultSilent = true;
+    editorDefaultLaneId = laneId;
     editingId.set(null);
     editorOpen.set(true);
   }
@@ -311,6 +327,7 @@
   function openEdit(r: Reminder) {
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
+    editorDefaultLaneId = null;
     editingId.set(r.id);
     editorOpen.set(true);
   }
@@ -320,6 +337,7 @@
     editingId.set(null);
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
+    editorDefaultLaneId = null;
   }
 
   async function handleSave(input: ReminderCreate, id: string | null) {
@@ -396,6 +414,12 @@
       onSelect={openEdit}
       onCreateForDate={openNewForDate}
     />
+  {:else if currentView === "tasks"}
+    <TasksBoard
+      reminders={filtered}
+      onSelect={openEdit}
+      onAddCardToLane={openNewInLane}
+    />
   {:else}
     <ReminderList
       reminders={filtered}
@@ -420,6 +444,7 @@
     reminder={editingReminder}
     defaultDueAt={editorDefaultDueAt}
     defaultSilent={editorDefaultSilent}
+    defaultLaneId={editorDefaultLaneId}
     onClose={closeEditor}
     onSave={handleSave}
     onDelete={handleDelete}

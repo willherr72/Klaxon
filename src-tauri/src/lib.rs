@@ -242,6 +242,12 @@ pub fn run() {
             commands::start_pair_with,
             commands::approve_pair_request,
             commands::decline_pair_request,
+            commands::list_lanes,
+            commands::create_lane,
+            commands::rename_lane,
+            commands::delete_lane,
+            commands::reorder_lanes,
+            commands::set_task_lane,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

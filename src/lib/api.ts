@@ -56,7 +56,31 @@ export const api = {
     invoke<void>("approve_pair_request", { requestId }),
   declinePairRequest: (requestId: string) =>
     invoke<void>("decline_pair_request", { requestId }),
+  // Swim lanes (v0.3.1)
+  listLanes: () => invoke<Lane[]>("list_lanes"),
+  createLane: (name: string) => invoke<Lane>("create_lane", { name }),
+  renameLane: (id: string, name: string) =>
+    invoke<Lane>("rename_lane", { id, name }),
+  deleteLane: (id: string) =>
+    invoke<DeleteLaneOutcome>("delete_lane", { id }),
+  reorderLanes: (ids: string[]) =>
+    invoke<void>("reorder_lanes", { ids }),
+  setTaskLane: (reminderId: string, laneId: string) =>
+    invoke<Reminder>("set_task_lane", { reminderId, laneId }),
 };
+
+export interface Lane {
+  id: string;
+  name: string;
+  order_index: number;
+  is_default: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DeleteLaneOutcome {
+  tasks_moved: number;
+}
 
 export interface PairOutcome {
   peer_id: string;

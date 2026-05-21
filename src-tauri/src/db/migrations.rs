@@ -88,6 +88,52 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE peers DROP COLUMN url;
     ALTER TABLE peers DROP COLUMN cert_fingerprint;
     "#,
+    // 008 — v0.3.1 swim-lane Tasks board.
+    //
+    // Each silent "task" reminder belongs to a user-defined lane. Lanes
+    // are first-class rows so the user can create / rename / reorder /
+    // delete them, and so the set syncs between paired devices.
+    //
+    // The seed `Todo` lane has a deterministic UUID — when two devices
+    // both upgrade to v0.3.1 they create rows with the same `id`, so
+    // their first sync resolves to a single Todo lane via the usual
+    // last-write-wins semantics instead of producing two duplicates.
+    //
+    // `is_default = 1` marks the cascade target for lane deletion (the
+    // user can rename the default lane but not delete it). All existing
+    // silent reminders get pointed at it as part of the migration.
+    r#"
+    CREATE TABLE task_lanes (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        order_index  INTEGER NOT NULL,
+        is_default   INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL,
+        dirty        INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX idx_task_lanes_order ON task_lanes(order_index);
+    CREATE INDEX idx_task_lanes_dirty ON task_lanes(updated_at) WHERE dirty = 1;
+
+    ALTER TABLE reminders ADD COLUMN task_lane_id TEXT;
+
+    INSERT INTO task_lanes
+        (id, name, order_index, is_default, created_at, updated_at, dirty)
+    VALUES (
+        '00000000-0000-4000-8000-000000000001',
+        'Todo',
+        0,
+        1,
+        unixepoch() * 1000,
+        unixepoch() * 1000,
+        1
+    );
+
+    UPDATE reminders
+       SET task_lane_id = '00000000-0000-4000-8000-000000000001'
+     WHERE silent = 1;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

@@ -38,13 +38,15 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         dirty: dirty_int != 0,
         silent: silent_int != 0,
         tags,
+        task_lane_id: row.get("task_lane_id")?,
     })
 }
+
 
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
          FROM reminders
          ORDER BY due_at ASC",
     )?;
@@ -59,7 +61,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
 pub fn next_pending(conn: &Connection) -> AppResult<Option<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
          FROM reminders
          WHERE state IN ('pending', 'snoozed') AND silent = 0
          ORDER BY COALESCE(snooze_until, due_at) ASC
@@ -84,11 +86,27 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
     let tags = normalize_tags(input.tags);
     let tags_json = serde_json::to_string(&tags)?;
 
+    // Silent reminders (tasks) must land in a lane. Use the explicit
+    // input lane if given, otherwise the default. Non-silent reminders
+    // never get a lane.
+    let lane_id = if input.silent {
+        match input.task_lane_id.as_deref() {
+            Some(s) if !s.trim().is_empty() => Some(s.to_string()),
+            _ => Some(
+                super::task_lanes::default_lane(conn)
+                    .map(|l| l.id)
+                    .unwrap_or_else(|_| super::task_lanes::DEFAULT_LANE_ID.to_string()),
+            ),
+        }
+    } else {
+        None
+    };
+
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, 1, ?9, ?10)",
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, 1, ?9, ?10, ?11)",
         params![
             id,
             input.title.trim(),
@@ -100,6 +118,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
             now,
             input.silent as i32,
             tags_json,
+            lane_id,
         ],
     )?;
 
@@ -109,7 +128,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
 pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Reminder> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
          FROM reminders WHERE id = ?1",
     )?;
     let r = stmt
@@ -150,6 +169,16 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
         None => existing.tags.clone(),
     };
     let tags_json = serde_json::to_string(&tags)?;
+    // Lane is patchable via DnD on the TasksBoard. Non-silent reminders
+    // are forced back to `None` even if a lane was set.
+    let task_lane_id = if silent {
+        match patch.task_lane_id {
+            Some(v) => v.or_else(|| Some(crate::db::task_lanes::DEFAULT_LANE_ID.to_string())),
+            None => existing.task_lane_id.clone(),
+        }
+    } else {
+        None
+    };
     let now = now_ms();
 
     // If the user moved the due time, treat the edit as a manual reschedule:
@@ -169,7 +198,8 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
         "UPDATE reminders
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
              sound_path = ?6, repeat_rule = ?7, updated_at = ?8, dirty = 1,
-             silent = ?9, state = ?10, snooze_until = ?11, tags = ?12
+             silent = ?9, state = ?10, snooze_until = ?11, tags = ?12,
+             task_lane_id = ?13
          WHERE id = ?1",
         params![
             id,
@@ -184,6 +214,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
             new_state.as_str(),
             new_snooze,
             tags_json,
+            task_lane_id,
         ],
     )?;
 
@@ -203,7 +234,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
          FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
@@ -253,8 +284,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0, ?13, ?14)
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
@@ -268,7 +299,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
            last_synced_at = excluded.last_synced_at,
            dirty = 0,
            silent = excluded.silent,
-           tags = excluded.tags",
+           tags = excluded.tags,
+           task_lane_id = excluded.task_lane_id",
         params![
             r.id,
             r.title,
@@ -284,6 +316,7 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
             now_ms(),
             r.silent as i32,
             tags_json,
+            r.task_lane_id,
         ],
     )?;
     Ok(true)

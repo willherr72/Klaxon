@@ -91,6 +91,11 @@ pub struct Reminder {
     /// Free-form labels, lowercase, deduplicated. Persisted as a JSON array.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// v0.3.1: swim-lane assignment for silent (task) reminders. Always
+    /// `Some` when `silent = true` post-migration-008; `None` on
+    /// non-silent reminders.
+    #[serde(default)]
+    pub task_lane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -105,6 +110,11 @@ pub struct ReminderCreate {
     pub silent: bool,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Pre-set the lane when creating a task from a specific column's
+    /// `+ Add` button. Ignored when `silent = false`. When omitted on a
+    /// silent reminder, the backend assigns the default lane.
+    #[serde(default)]
+    pub task_lane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -117,6 +127,8 @@ pub struct ReminderUpdate {
     pub repeat_rule: Option<Option<RepeatRule>>,
     pub silent: Option<bool>,
     pub tags: Option<Vec<String>>,
+    /// Used by DnD between columns on the TasksBoard.
+    pub task_lane_id: Option<Option<String>>,
 }
 
 /// Canonical form for a tag — lowercase, trimmed, with internal whitespace
