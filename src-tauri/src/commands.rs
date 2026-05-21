@@ -159,6 +159,10 @@ pub fn data_dir(app: AppHandle) -> AppResult<String> {
     Ok(path.to_string_lossy().to_string())
 }
 
+/// Desktop-only. The global-shortcut plugin doesn't exist on Android/iOS
+/// and the underlying OS APIs (e.g. RegisterHotKey on Windows) have no
+/// mobile equivalent. The mobile UI hides the relevant Settings row.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn set_global_hotkey(
     state: State<'_, AppState>,

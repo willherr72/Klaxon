@@ -1,0 +1,39 @@
+# Android targets: some crate in our graph (most likely wry's Android
+# bindings or rodio) compiles C++ and references `__cxa_pure_virtual`,
+# so the resulting `.so` needs libc++_shared.so loaded before it.
+# Tauri-mobile copies the .so into jniLibs/, but unless our shared
+# object declares it as a DT_NEEDED dependency the Android linker
+# doesn't load it eagerly — `dlopen` then fails with
+# "cannot locate symbol __cxa_pure_virtual".
+#
+# The `-lc++_shared` link-arg adds the DT_NEEDED entry, which makes
+# Android's loader find libc++_shared.so (already in the APK under
+# `jniLibs/arm64-v8a/`) before resolving symbols in our lib.
+
+[target.aarch64-linux-android]
+rustflags = [
+  "-C", "link-arg=-Wl,--no-as-needed",
+  "-C", "link-arg=-lc++_shared",
+  "-C", "link-arg=-Wl,--as-needed",
+]
+
+[target.armv7-linux-androideabi]
+rustflags = [
+  "-C", "link-arg=-Wl,--no-as-needed",
+  "-C", "link-arg=-lc++_shared",
+  "-C", "link-arg=-Wl,--as-needed",
+]
+
+[target.i686-linux-android]
+rustflags = [
+  "-C", "link-arg=-Wl,--no-as-needed",
+  "-C", "link-arg=-lc++_shared",
+  "-C", "link-arg=-Wl,--as-needed",
+]
+
+[target.x86_64-linux-android]
+rustflags = [
+  "-C", "link-arg=-Wl,--no-as-needed",
+  "-C", "link-arg=-lc++_shared",
+  "-C", "link-arg=-Wl,--as-needed",
+]

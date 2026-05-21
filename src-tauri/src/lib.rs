@@ -8,18 +8,24 @@ mod nl;
 mod recurrence;
 mod scheduler;
 pub mod sync;
+#[cfg(desktop)]
 mod tray;
 
 use std::collections::HashMap;
+#[cfg(desktop)]
 use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+#[cfg(desktop)]
+use tauri::AppHandle;
+use tauri::{Emitter, Manager};
+#[cfg(desktop)]
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::db::settings as cfg;
+#[cfg(desktop)]
 use crate::error::AppResult;
 
 pub struct AppState {
@@ -27,6 +33,7 @@ pub struct AppState {
     pub scheduler_tx: tokio::sync::mpsc::UnboundedSender<scheduler::SchedulerMsg>,
     pub audio_tx: std::sync::mpsc::Sender<audio::AudioCmd>,
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    #[cfg(desktop)]
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::PendingPairs,
@@ -41,6 +48,7 @@ pub struct AppState {
     pub iroh_router: Arc<Mutex<Option<sync::iroh_node::Router>>>,
 }
 
+#[cfg(desktop)]
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -64,27 +72,44 @@ pub fn run() {
     // up. `let _ = ...` because the second call returns Err — fine.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
-        }))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+        .plugin(tauri_plugin_notification::init());
+
+    // Desktop-only plugins. Autostart/single-instance/global-shortcut all
+    // assume a windowed desktop OS; on Android they wouldn't even compile.
+    #[cfg(desktop)]
+    {
+        builder = builder
+            .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }))
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ));
+    }
+
+    builder
         .on_window_event(|window, event| {
+            // Desktop close-to-tray. On mobile the close path is owned
+            // by the platform (back button / system-shelf swipe).
+            #[cfg(desktop)]
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
                     let _ = window.hide();
                 }
+            }
+            #[cfg(not(desktop))]
+            {
+                let _ = (window, event);
             }
         })
         .setup(|app| {
@@ -102,6 +127,7 @@ pub fn run() {
 
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             let audio_tx = audio::spawn_engine();
+            #[cfg(desktop)]
             let current_hotkey: Arc<Mutex<Option<Shortcut>>> = Arc::new(Mutex::new(None));
 
             let scheduler_db = db.clone();
@@ -186,16 +212,23 @@ pub fn run() {
                 }
             }
 
-            // Install global hotkey from persisted setting (or default if none).
-            let stored = {
-                let conn = db.lock();
-                cfg::get(&conn, "global_hotkey_new")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| DEFAULT_GLOBAL_HOTKEY.to_string())
-            };
-            if let Err(e) = install_global_hotkey(&app.handle().clone(), &current_hotkey, &stored) {
-                log::warn!("could not register global hotkey {stored:?}: {e}");
+            // Desktop-only: global hotkey + system tray. On mobile the OS
+            // owns the equivalents (lockscreen widgets, quick settings
+            // tiles) and we don't try to recreate them inside the app.
+            #[cfg(desktop)]
+            {
+                let stored = {
+                    let conn = db.lock();
+                    cfg::get(&conn, "global_hotkey_new")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| DEFAULT_GLOBAL_HOTKEY.to_string())
+                };
+                if let Err(e) =
+                    install_global_hotkey(&app.handle().clone(), &current_hotkey, &stored)
+                {
+                    log::warn!("could not register global hotkey {stored:?}: {e}");
+                }
             }
 
             app.manage(AppState {
@@ -203,6 +236,7 @@ pub fn run() {
                 scheduler_tx: tx,
                 audio_tx,
                 active_alerts: Arc::new(Mutex::new(HashMap::new())),
+                #[cfg(desktop)]
                 current_hotkey,
                 discovery: discovery_handle,
                 pending_pairs,
@@ -210,6 +244,7 @@ pub fn run() {
                 iroh_router: iroh_router_state,
             });
 
+            #[cfg(desktop)]
             tray::setup(app)?;
 
             Ok(())
@@ -228,6 +263,7 @@ pub fn run() {
             commands::set_setting,
             commands::list_settings,
             commands::data_dir,
+            #[cfg(desktop)]
             commands::set_global_hotkey,
             commands::preview_tone,
             commands::nl_parse,
@@ -254,6 +290,7 @@ pub fn run() {
 }
 
 /// Replace the currently-registered global hotkey with one parsed from `combo`.
+#[cfg(desktop)]
 pub fn install_global_hotkey(
     app: &AppHandle,
     current: &Mutex<Option<Shortcut>>,

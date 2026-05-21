@@ -14,9 +14,6 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "notification:default",
-    "opener:default",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
+    "opener:default"
   ]
 }

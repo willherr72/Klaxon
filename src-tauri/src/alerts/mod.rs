@@ -9,7 +9,9 @@
 //! `repeat_interval_secs_*` seconds. Cancellation comes from
 //! dismiss / snooze / complete commands via `cancel_alert`.
 
+#[cfg(desktop)]
 mod fullscreen;
+#[cfg(desktop)]
 mod popup;
 mod toast;
 
@@ -28,10 +30,21 @@ use crate::AppState;
 
 pub fn dispatch(app: &AppHandle, r: &Reminder) {
     log::info!("FIRE [{:?}] {} — {}", r.priority, r.title, r.id);
-    match r.priority {
-        Priority::Low => toast::show(app, r),
-        Priority::Normal => popup::spawn(app, r),
-        Priority::High => fullscreen::spawn(app, r),
+    #[cfg(desktop)]
+    {
+        match r.priority {
+            Priority::Low => toast::show(app, r),
+            Priority::Normal => popup::spawn(app, r),
+            Priority::High => fullscreen::spawn(app, r),
+        }
+    }
+    // Mobile path: notifications only. The "popup" and "fullscreen"
+    // tiers don't exist as concepts on Android — they collapse into
+    // notification importance levels handled by tauri-plugin-notification.
+    // For v0.4 first pass, all priorities use the toast/notification.
+    #[cfg(not(desktop))]
+    {
+        toast::show(app, r);
     }
 }
 

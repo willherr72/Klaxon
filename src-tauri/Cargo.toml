@@ -14,12 +14,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-notification = "2"
-tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-single-instance = "2"
-tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "io-util"] }
@@ -53,3 +50,12 @@ postcard = { version = "1", features = ["alloc"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# v0.4: desktop-only deps — system tray, global hotkeys, autostart, and
+# the single-instance plugin all assume a windowed desktop OS. Gating
+# them by target so the Android build doesn't try to compile them.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-global-shortcut = "2"
