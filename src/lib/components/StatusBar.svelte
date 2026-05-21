@@ -107,4 +107,32 @@
   .sep { color: var(--text-faint); }
   .spacer { flex: 1; }
   .tail { opacity: 0.7; }
+
+  /* Mobile: keep the status row to a single line. Compress the
+     "Scheduler Active" / "Pending" cells to icon-only signals so the
+     "Next In" countdown + Klaxon version tail still fit. */
+  @media (max-width: 1024px) {
+    .status {
+      padding: 0 10px;
+      gap: 6px;
+      font-size: 9px;
+      overflow: hidden;
+    }
+    .cell { gap: 5px; }
+    /* Hide the chatty labels — the LED + count + countdown are enough
+       visual signal on a narrow phone. */
+    .cell .mono-caps,
+    .cell .mono-caps-faint:not(.cell.tail .mono-caps-faint) {
+      display: none;
+    }
+    .cell.tail .mono-caps-faint {
+      font-size: 8px;
+      letter-spacing: 0.14em;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sep { display: none; }
+    .num { font-size: 11px; }
+  }
 </style>

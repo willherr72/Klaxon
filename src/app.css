@@ -78,17 +78,10 @@ html, body {
   user-select: none;
 }
 
-body {
-  /* subtle CRT-ish horizontal scanlines, near-invisible */
-  background-image:
-    repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0) 0px,
-      rgba(255, 255, 255, 0) 2px,
-      rgba(255, 255, 255, 0.012) 3px,
-      rgba(255, 255, 255, 0) 4px
-    );
-}
+/* Flat background — the previous CRT-scanline pattern read as a faint
+ * banding under empty areas (most visible on the Tasks board where
+ * lane cards leave lots of negative space). Kept the var so it can
+ * be re-introduced selectively in a future design pass. */
 
 #app {
   height: 100%;

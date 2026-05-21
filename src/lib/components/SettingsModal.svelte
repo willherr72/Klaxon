@@ -12,6 +12,9 @@
   import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
   import { keyEventToCombo, prettyShortcut } from "../shortcut";
+  import { isMobilePlatform } from "../platform";
+
+  const isMobile = isMobilePlatform();
 
   let { open, onClose }: { open: boolean; onClose: () => void } = $props();
 
@@ -104,11 +107,15 @@
       quickAddHotkey = settings["inapp_hotkey_quickadd"] ?? "Ctrl+KeyK";
       recordingSlot = null;
       sortOrder = settings["list_sort_order"] === "date_desc" ? "date_desc" : "date_asc";
-      try {
-        autostart = await autostartIsEnabled();
-      } catch (e) {
-        console.warn("autostart status check failed", e);
+      if (isMobile) {
         autostart = false;
+      } else {
+        try {
+          autostart = await autostartIsEnabled();
+        } catch (e) {
+          console.warn("autostart status check failed", e);
+          autostart = false;
+        }
       }
       try {
         dataDirPath = await api.dataDir();
@@ -139,17 +146,22 @@
         api.setSetting("list_sort_order", sortOrder),
         api.setSetting("inapp_hotkey_quickadd", quickAddHotkey),
       ]);
-      try {
-        if (autostart) await enableAutostart();
-        else await disableAutostart();
-      } catch (e) {
-        console.warn("autostart toggle failed", e);
-      }
-      try {
-        await api.setGlobalHotkey(globalHotkey ?? "");
-      } catch (e) {
-        console.error("hotkey save failed", e);
-        error = `Could not register hotkey: ${e}`;
+      // Desktop-only plugin commands. The autostart plugin and the
+      // global-shortcut command don't exist on Android/iOS — invoking
+      // them surfaces a "command not found" banner in the modal.
+      if (!isMobile) {
+        try {
+          if (autostart) await enableAutostart();
+          else await disableAutostart();
+        } catch (e) {
+          console.warn("autostart toggle failed", e);
+        }
+        try {
+          await api.setGlobalHotkey(globalHotkey ?? "");
+        } catch (e) {
+          console.error("hotkey save failed", e);
+          error = `Could not register hotkey: ${e}`;
+        }
       }
       savedFlash = true;
       setTimeout(() => (savedFlash = false), 1200);
@@ -409,28 +421,30 @@
             <div class="section-help mono-caps-faint">
               Global = system-wide. In-app = only when the main window is focused.
             </div>
-            <div class="hotkey-row">
-              <span class="hotkey-label-text">Global · New Reminder</span>
-              <button
-                class="hotkey-btn"
-                class:recording={recordingSlot === "global"}
-                onclick={() => (recordingSlot = recordingSlot === "global" ? null : "global")}
-              >
-                {#if recordingSlot === "global"}
-                  <span class="rec-dot"></span>
-                  <span>Press combo… (Esc cancel · Del clear)</span>
-                {:else}
-                  <span class="hotkey-value">{prettyShortcut(globalHotkey)}</span>
-                {/if}
-              </button>
-              <button
-                class="hotkey-clear"
-                onclick={() => { globalHotkey = ""; recordingSlot = null; }}
-                disabled={!globalHotkey}
-              >
-                Clear
-              </button>
-            </div>
+            {#if !isMobile}
+              <div class="hotkey-row">
+                <span class="hotkey-label-text">Global · New Reminder</span>
+                <button
+                  class="hotkey-btn"
+                  class:recording={recordingSlot === "global"}
+                  onclick={() => (recordingSlot = recordingSlot === "global" ? null : "global")}
+                >
+                  {#if recordingSlot === "global"}
+                    <span class="rec-dot"></span>
+                    <span>Press combo… (Esc cancel · Del clear)</span>
+                  {:else}
+                    <span class="hotkey-value">{prettyShortcut(globalHotkey)}</span>
+                  {/if}
+                </button>
+                <button
+                  class="hotkey-clear"
+                  onclick={() => { globalHotkey = ""; recordingSlot = null; }}
+                  disabled={!globalHotkey}
+                >
+                  Clear
+                </button>
+              </div>
+            {/if}
 
             <div class="hotkey-row">
               <span class="hotkey-label-text">In-app · Quick Add</span>
@@ -457,6 +471,7 @@
           {/if}
         </section>
 
+        {#if !isMobile}
         <section class="section">
           <button
             class="section-head"
@@ -486,6 +501,7 @@
           </label>
           {/if}
         </section>
+        {/if}
 
         <section class="section">
           <button
@@ -1022,6 +1038,57 @@
     box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
   }
   .sort-btn + .sort-btn { border-left: 1px solid var(--border); }
+
+  /* ── Mobile / narrow viewports ───────────────────────────────────
+   * On the Fold's cover display (~904px) the modal's nested grids
+   * (sort-row, kv-grid, etc.) stay wider than the viewport because
+   * their label columns are fixed and the right column has long
+   * content (52-char iroh node id, sort-button copy). Stack labels
+   * above values and let the long mono strings ellipsize so nothing
+   * triggers horizontal scroll.
+   */
+  @media (max-width: 1024px) {
+    .modal {
+      width: 96vw;
+      max-height: 92vh;
+    }
+    .body { overflow-x: hidden; }
+    /* Stack each priority's signal+label, count/interval fields, and
+     * tone picker vertically. The desktop two-column layout pinches
+     * the right column on narrow screens until the interval input
+     * spills past the modal edge. */
+    .prio-row {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+    .prio-fields {
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .prio-row > .tone-row { grid-column: 1 / -1; }
+    .tone-row {
+      grid-template-columns: 60px 1fr auto;
+      gap: 8px;
+    }
+    .field input,
+    .suffix-input { width: 100%; min-width: 0; box-sizing: border-box; }
+    .sort-row {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+    .sort-btn {
+      padding: 9px 6px;
+      font-size: 9px;
+      letter-spacing: 0.12em;
+    }
+    /* Hotkey row: label | combo | clear. The fixed grid template
+     * pushes the clear button off the right edge. Wrap to two rows. */
+    .hotkey-row {
+      grid-template-columns: 1fr auto;
+      gap: 6px 8px;
+    }
+    .hotkey-label-text { grid-column: 1 / -1; }
+  }
 
   /* Tone picker (sits under count/interval inside each priority row) */
   .tone-row {

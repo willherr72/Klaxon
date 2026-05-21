@@ -269,4 +269,97 @@
     letter-spacing: 0.22em;
     margin-top: 6px;
   }
+
+  /* ── Mobile sidebar → bottom nav bar ─────────────────────────────
+   * Below 1024px the sidebar transforms into a horizontal nav strip.
+   * Brand block / version footer collapse, channel buttons become
+   * equal-width tabs, "New Reminder" + Settings shrink to icon-only
+   * affordances on the right of the bar.
+   */
+  @media (max-width: 1024px) {
+    .sidebar {
+      flex-direction: row;
+      align-items: stretch;
+      padding: 0;
+      border-right: none;
+      border-top: 1px solid var(--border);
+      min-height: 64px;
+      max-height: 64px;
+    }
+    .brand { display: none; }
+    .nav {
+      display: flex;
+      flex: 1;
+      padding: 0;
+      min-width: 0;
+    }
+    .nav-label { display: none; }
+    .nav-list {
+      display: flex;
+      flex: 1;
+      align-items: stretch;
+    }
+    .nav-list li { flex: 1; min-width: 0; }
+    .nav-btn {
+      width: 100%;
+      height: 100%;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr auto;
+      gap: 2px;
+      padding: 8px 2px 6px;
+      border-left: none;
+      border-top: 2px solid transparent;
+      align-items: center;
+      justify-items: center;
+      text-align: center;
+    }
+    .nav-bar { display: none; }
+    .nav-btn.active {
+      border-top-color: var(--klaxon);
+      background: var(--bg-active);
+    }
+    .nav-label-text {
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-align: center;
+      width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .nav-count {
+      min-width: 18px;
+      padding: 1px 4px;
+      font-size: 9px;
+    }
+    /* The `+` and `⚙` cluster locks against shrinking so the channel
+     * nav can't push them off-screen. */
+    .bottom {
+      flex-direction: row;
+      align-items: stretch;
+      padding: 0;
+      gap: 0;
+      border-left: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .new-btn {
+      grid-template-columns: 1fr;
+      padding: 0 10px;
+      min-width: 44px;
+      border: none;
+      border-right: 1px solid var(--border);
+    }
+    .new-btn .new-text,
+    .new-btn .new-shortcut { display: none; }
+    .plus { font-size: 22px; }
+    .settings-btn {
+      grid-template-columns: 1fr;
+      padding: 0 10px;
+      min-width: 40px;
+      border: none;
+    }
+    .settings-btn .settings-text { display: none; }
+    .gear { font-size: 18px; }
+    .version { display: none; }
+  }
 </style>

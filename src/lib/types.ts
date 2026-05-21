@@ -57,6 +57,7 @@ export interface ReminderUpdate {
   repeat_rule?: RepeatRule | null;
   silent?: boolean;
   tags?: string[];
+  task_lane_id?: string | null;
 }
 
 export type ViewMode = "reminders" | "tasks" | "calendar" | "completed";

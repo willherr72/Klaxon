@@ -15,17 +15,27 @@ mod fullscreen;
 mod popup;
 mod toast;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
+#[cfg(desktop)]
+use std::sync::atomic::AtomicBool;
+#[cfg(desktop)]
 use std::sync::Arc;
+#[cfg(desktop)]
 use std::time::Duration;
 
+#[cfg(desktop)]
 use parking_lot::Mutex;
+#[cfg(desktop)]
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
+#[cfg(desktop)]
 use crate::audio::{AudioCmd, TonePattern};
+#[cfg(desktop)]
 use crate::db::settings as cfg;
-use crate::models::{Priority, Reminder};
+#[cfg(desktop)]
+use crate::models::Priority;
+use crate::models::Reminder;
 use crate::AppState;
 
 pub fn dispatch(app: &AppHandle, r: &Reminder) {
@@ -55,7 +65,8 @@ pub fn label_for(id: &str) -> String {
 
 /// Start a tokio task that plays the user-chosen tone for this priority,
 /// waits the configured interval, replays — until `repeat_count` is hit or
-/// the cancel flag flips.
+/// the cancel flag flips. Desktop-only because the audio engine is.
+#[cfg(desktop)]
 pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
     let state = app.state::<AppState>();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -95,7 +106,9 @@ pub fn start_repeating_audio(app: &AppHandle, r: &Reminder) {
 }
 
 /// Look up the user's chosen tone for a given priority, falling back to a
-/// sensible per-priority default.
+/// sensible per-priority default. Desktop-only — tone selection only
+/// applies to the in-process audio engine.
+#[cfg(desktop)]
 pub fn read_tone(db: &Arc<Mutex<Connection>>, priority: Priority) -> TonePattern {
     let (key, default) = match priority {
         Priority::Low => ("tone_low", TonePattern::Chime),
@@ -117,12 +130,14 @@ pub fn cancel_alert(app: &AppHandle, id: &str) {
     if let Some(cancel) = state.active_alerts.lock().remove(id) {
         cancel.store(true, Ordering::Relaxed);
     }
+    #[cfg(desktop)]
     let _ = state.audio_tx.send(AudioCmd::Stop { id: id.to_string() });
     if let Some(w) = app.get_webview_window(&label_for(id)) {
         let _ = w.close();
     }
 }
 
+#[cfg(desktop)]
 fn read_repeat_settings(
     db: &Arc<Mutex<Connection>>,
     priority: Priority,

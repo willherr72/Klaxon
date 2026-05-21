@@ -203,4 +203,45 @@
     border-color: var(--klaxon-dim);
     box-shadow: inset 0 0 12px var(--klaxon-glow);
   }
+
+  /* ── Mobile / narrow viewports ──────────────────────────────────
+   * Without these the chip row + countdown overflow the cover-display
+   * width and push the whole page into horizontal scroll (the side
+   * effect: empty-state messages render off-center to the right, and
+   * the bottom nav clips its last items).
+   *
+   * Strategy: tighten paddings + gaps; let chips scroll horizontally
+   * inside their own row instead of pushing the parent wider; shrink
+   * the countdown box and let it ellipsize if needed; let the title
+   * shrink too.
+   */
+  @media (max-width: 1024px) {
+    .topbar {
+      gap: 10px;
+      padding: 0 12px;
+      min-width: 0;
+    }
+    .title {
+      font-size: 18px;
+      letter-spacing: 0.04em;
+    }
+    .left { gap: 8px; min-width: 0; }
+    .chips {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .chips::-webkit-scrollbar { display: none; }
+    .chip {
+      padding: 5px 9px;
+      font-size: 8px;
+      letter-spacing: 0.18em;
+      flex-shrink: 0;
+    }
+    /* Mobile drops the topbar countdown entirely — the StatusBar at
+       the bottom of the screen already shows the same NEXT IN value
+       and pulling it out frees ~140px of horizontal room for chips. */
+    .right { display: none; }
+  }
 </style>

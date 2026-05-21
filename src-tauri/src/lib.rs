@@ -31,6 +31,10 @@ use crate::error::AppResult;
 pub struct AppState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub scheduler_tx: tokio::sync::mpsc::UnboundedSender<scheduler::SchedulerMsg>,
+    /// Desktop only — `rodio`/`cpal` panic on Android when initialized
+    /// without a JNI context. Mobile alert sound goes through the
+    /// notification plugin's native channel instead of our synth.
+    #[cfg(desktop)]
     pub audio_tx: std::sync::mpsc::Sender<audio::AudioCmd>,
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     #[cfg(desktop)]
@@ -126,6 +130,7 @@ pub fn run() {
             let db = Arc::new(Mutex::new(conn));
 
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            #[cfg(desktop)]
             let audio_tx = audio::spawn_engine();
             #[cfg(desktop)]
             let current_hotkey: Arc<Mutex<Option<Shortcut>>> = Arc::new(Mutex::new(None));
@@ -234,6 +239,7 @@ pub fn run() {
             app.manage(AppState {
                 db,
                 scheduler_tx: tx,
+                #[cfg(desktop)]
                 audio_tx,
                 active_alerts: Arc::new(Mutex::new(HashMap::new())),
                 #[cfg(desktop)]
@@ -265,6 +271,7 @@ pub fn run() {
             commands::data_dir,
             #[cfg(desktop)]
             commands::set_global_hotkey,
+            #[cfg(desktop)]
             commands::preview_tone,
             commands::nl_parse,
             commands::list_peers,
@@ -274,6 +281,7 @@ pub fn run() {
             commands::device_identity,
             commands::generate_secret,
             commands::set_sync_enabled,
+            commands::sync_now,
             commands::list_discovered_peers,
             commands::start_pair_with,
             commands::approve_pair_request,

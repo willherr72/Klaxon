@@ -682,6 +682,7 @@
   .kv-input:focus { border-color: var(--klaxon); outline: none; }
   .kv-row {
     display: flex; align-items: center; gap: 10px;
+    min-width: 0;
   }
   .mono {
     font-family: var(--font-mono);
@@ -811,11 +812,15 @@
   }
   .peer-url {
     flex: 1;
+    min-width: 0;
     background: transparent;
     border: none;
     padding: 0;
     font-size: 10px;
     color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .peer-row3 {
     font-size: 9px;
@@ -1173,5 +1178,32 @@
     gap: 8px;
     padding: 14px 22px 18px;
     border-top: 1px solid var(--border);
+  }
+
+  /* ── Mobile / narrow viewports ───────────────────────────────────
+   * The kv-grid (THIS DEVICE block) and the peer cards both have
+   * fixed label columns + long mono values (52-char iroh node id)
+   * that overflow the modal at ~904px. Stack labels above values
+   * and let the row wrap so the Copy / Pairing-ticket buttons sit
+   * under the code block rather than competing for the same row.
+   */
+  @media (max-width: 1024px) {
+    .kv-grid {
+      grid-template-columns: 1fr;
+      gap: 4px 0;
+    }
+    .kv-label { font-size: 8px; }
+    .kv-row { flex-wrap: wrap; gap: 6px; }
+    .mono { flex: 1 1 100%; }
+    /* Peer card: drop the actions column to a row below the body so
+     * the PING / REMOVE buttons don't squeeze the iroh URL text and
+     * end up rendering on top of it. */
+    .peer {
+      grid-template-columns: 12px 1fr;
+    }
+    .peer-actions {
+      grid-column: 1 / -1;
+      justify-content: flex-end;
+    }
   }
 </style>

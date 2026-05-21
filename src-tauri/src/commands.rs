@@ -176,6 +176,11 @@ pub fn set_global_hotkey(
     crate::install_global_hotkey(&app, &state.current_hotkey, &combo)
 }
 
+/// Desktop only — the in-process audio engine doesn't run on Android
+/// (cpal needs the JNI context, which we don't surface). Mobile sound
+/// previews would route through the notification plugin in a future
+/// milestone.
+#[cfg(desktop)]
 #[tauri::command]
 pub fn preview_tone(state: State<'_, AppState>, tone: String) -> AppResult<()> {
     let parsed = crate::audio::TonePattern::from_str_or_default(&tone);
@@ -531,6 +536,20 @@ pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<
     cfg::set(&conn, "sync_enabled", if enabled { "true" } else { "false" })?;
     // Note: starting/stopping the actual server + mDNS requires a restart.
     // The sync TASK respects the flag immediately on its next tick.
+    Ok(())
+}
+
+/// Run one sync pass immediately. Frontend calls this when the mobile
+/// app comes back to the foreground so the user doesn't have to wait
+/// up to SYNC_INTERVAL (20s) before seeing fresh data from peers.
+#[tauri::command]
+pub async fn sync_now(app: AppHandle) -> AppResult<()> {
+    use tauri::Manager;
+    let db = {
+        let st: State<'_, AppState> = app.state();
+        st.db.clone()
+    };
+    crate::sync::task::run_one_pass(&db, &app).await;
     Ok(())
 }
 

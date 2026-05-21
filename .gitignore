@@ -30,6 +30,10 @@ Thumbs.db
 src-tauri/target/
 src-tauri/gen/
 
+# Stray Android build output left behind by tauri-mobile when copying
+# the freshly-linked .so binaries.
+src-tauri/lib/
+
 # Database
 *.db
 *.db-shm

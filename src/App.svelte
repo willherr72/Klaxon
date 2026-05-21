@@ -15,6 +15,10 @@
   import CalendarView from "./lib/components/CalendarView.svelte";
   import QuickAdd from "./lib/components/QuickAdd.svelte";
   import TasksBoard from "./lib/components/TasksBoard.svelte";
+  import {
+    isPermissionGranted as isNotifPermissionGranted,
+    requestPermission as requestNotifPermission,
+  } from "@tauri-apps/plugin-notification";
 
   let allReminders = $state<Reminder[]>([]);
   let currentView = $state<ViewMode>("reminders");
@@ -34,6 +38,50 @@
   let tagFilter = $state<string | null>(null);
   let quickAddOpen = $state(false);
   let quickAddHotkey = $state("Ctrl+KeyK");
+
+  // Android back-button handling. The Tauri webview routes the system
+  // back press to `popstate`. Strategy: every time a modal transitions
+  // from closed → open, push a history entry; popstate closes the
+  // topmost open modal. If the user closes via X, the entry stays
+  // (one harmless "no-op" back press before exit) — simpler than
+  // trying to keep history depth perfectly in sync.
+  let prevEditorOpenForBack = false;
+  let prevSettingsOpenForBack = false;
+  let prevQuickAddOpenForBack = false;
+  let prevSearchOpenForBack = false;
+  $effect(() => {
+    if (isEditorOpen && !prevEditorOpenForBack) {
+      history.pushState({ klaxonModal: "editor" }, "");
+    }
+    prevEditorOpenForBack = isEditorOpen;
+  });
+  $effect(() => {
+    if (settingsOpen && !prevSettingsOpenForBack) {
+      history.pushState({ klaxonModal: "settings" }, "");
+    }
+    prevSettingsOpenForBack = settingsOpen;
+  });
+  $effect(() => {
+    if (quickAddOpen && !prevQuickAddOpenForBack) {
+      history.pushState({ klaxonModal: "quickadd" }, "");
+    }
+    prevQuickAddOpenForBack = quickAddOpen;
+  });
+  $effect(() => {
+    if (searchOpen && !prevSearchOpenForBack) {
+      history.pushState({ klaxonModal: "search" }, "");
+    }
+    prevSearchOpenForBack = searchOpen;
+  });
+
+  function onPopState() {
+    // Close in z-index priority: editor sits on top of everything else.
+    if (isEditorOpen) { closeEditor(); return; }
+    if (settingsOpen) { settingsOpen = false; return; }
+    if (quickAddOpen) { quickAddOpen = false; return; }
+    if (searchOpen) { searchOpen = false; searchQuery = ""; return; }
+    // No modal open — let the browser/OS handle (exits app on Android).
+  }
 
   reminders.subscribe((v) => (allReminders = v));
   editingId.subscribe((v) => (currentEditingId = v));
@@ -121,6 +169,26 @@
     refresh();
     loadSort();
     loadInappHotkeys();
+    // Ask for notification permission once per install. Android 13+
+    // refuses to show notifications until POST_NOTIFICATIONS is granted
+    // — without this the app silently fails to fire any reminder on
+    // mobile. Idempotent: the OS only shows the prompt the first time;
+    // subsequent calls return cached state.
+    try {
+      const granted = await isNotifPermissionGranted();
+      if (!granted) await requestNotifPermission();
+    } catch (e) {
+      console.error("notification permission check failed", e);
+    }
+    // Sync-on-foreground. When the mobile OS brings Klaxon back from
+    // the background, kick an immediate sync pass so the user sees
+    // fresh data from peers instead of waiting up to 20s for the next
+    // periodic tick. Desktop also benefits when the window regains
+    // focus after a long idle. Errors are non-fatal — the periodic
+    // tick will retry anyway.
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("popstate", onPopState);
+
     unlistenNew = await listen("klaxon://open-new-reminder", () => {
       openNew();
     });
@@ -137,7 +205,14 @@
     if (unlistenNew) unlistenNew();
     if (unlistenChanged) unlistenChanged();
     window.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    window.removeEventListener("popstate", onPopState);
   });
+
+  function onVisibilityChange() {
+    if (document.visibilityState !== "visible") return;
+    api.syncNow().catch((e) => console.warn("syncNow failed", e));
+  }
 
   // States:
   //   Pending   — will ring at due_at
@@ -351,6 +426,8 @@
           sound_path: input.sound_path,
           repeat_rule: input.repeat_rule,
           silent: input.silent,
+          tags: input.tags,
+          task_lane_id: input.task_lane_id ?? null,
         });
       } else {
         await api.createReminder(input);
@@ -483,5 +560,34 @@
   }
   .app.editor-open {
     padding-right: var(--editor-w);
+  }
+
+  /* ── Mobile / narrow viewports ────────────────────────────────────
+   * Fold cover display is ~904px wide; phones are typically <=600px.
+   * Anything below 1024px is treated as "mobile" — sidebar collapses
+   * to a bottom nav, status bar tucks under the main area, and the
+   * editor goes full-screen instead of a side panel.
+   */
+  @media (max-width: 1024px) {
+    .app {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: var(--header-h) 1fr var(--status-h) 64px;
+      grid-template-areas:
+        "topbar"
+        "main"
+        "status"
+        "sidebar";
+      padding-top: env(safe-area-inset-top, 0);
+      padding-bottom: env(safe-area-inset-bottom, 0);
+      box-sizing: border-box;
+      overflow: hidden;
+    }
+    /* Every grid item gets `min-width: 0` so an oversized child
+     * (e.g. an unwrapping chip row) can't push the column wider than
+     * the viewport and trigger horizontal scroll. */
+    .app > * { min-width: 0; }
+    .app.editor-open {
+      padding-right: 0;
+    }
   }
 </style>

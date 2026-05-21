@@ -31,30 +31,38 @@ pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
     tick.tick().await; // first tick fires immediately; skip
     loop {
         tick.tick().await;
-        if !crate::sync::read_enabled(&db) {
-            continue;
+        run_one_pass(&db, &app).await;
+    }
+}
+
+/// Run a single sync pass against every paired peer. Extracted from the
+/// loop above so the `sync_now` command can trigger an immediate pass
+/// (used on mobile when the app comes back to the foreground — without
+/// this the user waits up to SYNC_INTERVAL to see fresh data).
+pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
+    if !crate::sync::read_enabled(db) {
+        return;
+    }
+    let peer_list = {
+        let conn = db.lock();
+        match peers::list_all(&conn) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("sync task list peers: {e}");
+                return;
+            }
         }
-        let peer_list = {
-            let conn = db.lock();
-            match peers::list_all(&conn) {
-                Ok(p) => p,
-                Err(e) => {
-                    log::warn!("sync task list peers: {e}");
-                    continue;
-                }
-            }
-        };
-        let iroh_endpoint = app
-            .try_state::<crate::AppState>()
-            .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
-        let Some(endpoint) = iroh_endpoint else {
-            log::debug!("sync tick: iroh endpoint not ready, skipping");
-            continue;
-        };
-        for peer in peer_list {
-            if let Err(e) = sync_one(&db, &app, &endpoint, &peer).await {
-                log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
-            }
+    };
+    let iroh_endpoint = app
+        .try_state::<crate::AppState>()
+        .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
+    let Some(endpoint) = iroh_endpoint else {
+        log::debug!("sync pass: iroh endpoint not ready, skipping");
+        return;
+    };
+    for peer in peer_list {
+        if let Err(e) = sync_one(db, app, &endpoint, &peer).await {
+            log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
         }
     }
 }

@@ -40,6 +40,7 @@ export const api = {
   generateSecret: () => invoke<string>("generate_secret"),
   setSyncEnabled: (enabled: boolean) =>
     invoke<void>("set_sync_enabled", { enabled }),
+  syncNow: () => invoke<void>("sync_now"),
   listPeers: () => invoke<PeerView[]>("list_peers"),
   addPeer: (input: AddPeerInput) =>
     invoke<PeerView>("add_peer", { input }),

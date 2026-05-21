@@ -1,7 +1,30 @@
 <script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { api, type Lane } from "../api";
   import { msToLocalInput, localInputToMs } from "../time";
   import type { Priority, Reminder, ReminderCreate, RepeatRule } from "../types";
   import SignalLight from "./SignalLight.svelte";
+
+  let lanes = $state<Lane[]>([]);
+  let unlistenLanes: UnlistenFn | null = null;
+  onMount(async () => {
+    try {
+      lanes = await api.listLanes();
+    } catch (e) {
+      console.error("listLanes failed in editor", e);
+    }
+    unlistenLanes = await listen("klaxon://lanes-changed", async () => {
+      try {
+        lanes = await api.listLanes();
+      } catch (e) {
+        console.error("listLanes refresh failed in editor", e);
+      }
+    });
+  });
+  onDestroy(() => {
+    if (unlistenLanes) unlistenLanes();
+  });
 
   let {
     open,
@@ -32,6 +55,10 @@
   let silent = $state(false);
   let tags = $state<string[]>([]);
   let tagDraft = $state("");
+  /// Selected lane for the task. Only meaningful when `silent` is true;
+  /// the picker is hidden otherwise. On save we forward this; on a new
+  /// task with no selection we let the backend assign the default lane.
+  let laneId = $state<string | null>(null);
   let titleInput: HTMLInputElement | null = $state(null);
 
   function normalizeTag(raw: string): string {
@@ -80,6 +107,7 @@
       }
       silent = reminder.silent;
       tags = [...reminder.tags];
+      laneId = reminder.task_lane_id;
     } else {
       title = "";
       description = "";
@@ -89,6 +117,7 @@
       intervalSecs = 3600;
       silent = defaultSilent;
       tags = [];
+      laneId = defaultLaneId;
     }
     tagDraft = "";
   });
@@ -117,9 +146,9 @@
       repeat_rule: silent ? null : buildRepeatRule(),
       silent,
       tags,
-      // Only forward defaultLaneId on a fresh create — editing an
-      // existing task keeps its lane unchanged (use DnD to move it).
-      task_lane_id: reminder ? null : silent ? defaultLaneId : null,
+      // Whichever lane the user picked in the editor (or the default
+      // we pre-seeded for a "+ Add task" from a column).
+      task_lane_id: silent ? laneId : null,
     };
     onSave(input, reminder?.id ?? null);
   }
@@ -234,6 +263,27 @@
       </div>
     </div>
 
+    {#if silent}
+      <div class="field">
+        <span class="mono-caps-faint">Lane</span>
+        <div class="lane-row">
+          {#each lanes as lane (lane.id)}
+            <button
+              type="button"
+              class="lane-chip"
+              class:active={laneId === lane.id}
+              onclick={() => (laneId = lane.id)}
+            >
+              <span class="lane-chip-name">{lane.name}</span>
+              {#if lane.is_default}
+                <span class="lane-chip-tag">DEFAULT</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     {#if !silent}
       <div class="field">
         <span class="mono-caps-faint">Priority</span>
@@ -314,6 +364,28 @@
     box-shadow: -16px 0 32px rgba(0, 0, 0, 0.5);
   }
   .editor.open { transform: translateX(0); }
+
+  /* Mobile: editor takes over the whole screen as a sheet. We cover
+     the bottom nav too — user dismisses via the editor's own
+     Cancel/Save buttons, or via Android back. Covering everything
+     avoids a z-index layering bug where a "closed" editor's header
+     bled into the sidebar row.
+     `translateY(100vh)` guarantees a fully-offscreen rest position
+     regardless of the editor's own intrinsic height. */
+  @media (max-width: 1024px) {
+    .editor {
+      top: 0;
+      right: 0;
+      left: 0;
+      bottom: 0;
+      width: auto;
+      border-left: none;
+      transform: translateY(100vh);
+      box-shadow: 0 -16px 32px rgba(0, 0, 0, 0.5);
+      z-index: 60;
+    }
+    .editor.open { transform: translateY(0); }
+  }
 
   .edge {
     position: absolute;
@@ -522,6 +594,51 @@
     box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
   }
   .prio-label { font-weight: 600; }
+
+  /* Lane picker — Klaxon-styled chip row instead of a native <select>.
+   * The native picker on Android opens an unbranded system dialog;
+   * chips stay inline and on-theme. Row wraps so any number of lanes
+   * fits without horizontal scroll. */
+  .lane-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .lane-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 120ms var(--ease);
+  }
+  .lane-chip-name { font-weight: 600; }
+  .lane-chip:hover {
+    border-color: var(--border-bright);
+    color: var(--text-2);
+  }
+  .lane-chip.active {
+    border-color: var(--klaxon);
+    color: var(--text);
+    background: var(--bg-active);
+    box-shadow: inset 0 0 14px rgba(255, 157, 0, 0.08);
+  }
+  .lane-chip-tag {
+    font-family: var(--font-mono);
+    font-size: 8px;
+    letter-spacing: 0.18em;
+    color: var(--text-faint);
+  }
+  .lane-chip.active .lane-chip-tag {
+    color: var(--klaxon);
+    opacity: 0.75;
+  }
 
   .actions {
     display: flex;
