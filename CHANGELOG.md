@@ -5,6 +5,34 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-05-20
+
+User-defined swim lanes for the Tasks panel. Same scope as rc.1 — promoted to stable after live-testing the DnD + sync paths.
+
+### Added
+
+- **Swim-lane Tasks board.** Replaces the flat Tasks list. Lanes are first-class rows the user can create / rename / reorder / delete.
+- **`Todo` is the seed lane** (deterministic UUID so two devices upgrading to v0.3.1 converge on a single row after first sync). Cannot be deleted; surfaces a muted `DEFAULT` badge in its header. Tasks orphaned by a lane-delete cascade here.
+- **Drag-and-drop** between lanes (moves the task) and on lane headers (reorders the columns). Cards within a lane sort by `updated_at desc` so a freshly-moved card pops to the top of its new column.
+- **`+ Add task` per column** opens the editor pre-set to `silent: true` and the column's lane id.
+- **Lane delete confirmation modal** — Klaxon-styled, replaces the native `confirm()` and explains the cascade-to-default behavior.
+- **`ConfirmModal` component** for future destructive flows.
+
+### Schema
+
+- Migration 008 adds the `task_lanes` table and the `reminders.task_lane_id` column. Seeds the `Todo` lane and points all existing silent reminders at it.
+
+### Sync
+
+- `ChangeSet.lanes` flows lane creates/renames/reorders through Pull/Push, last-write-wins by `updated_at`. Lane deletes ride the shared `tombstones` table. Field is `#[serde(default)]` so v0.3.0 peers ignore it gracefully — same-version peers stay in sync; cross-version pairs sync reminders but not lane definitions until both sides upgrade.
+
+### Fixed
+
+- **Tauri DnD** — set `dragDropEnabled: false` on the main window so HTML5 drag events reach the webview. Without it Tauri 2's OS-level file-drop handler eats every drag before it can fire `dragstart` in the frontend.
+- **Card user-select** — set `user-select: none` on cards and lane headers so Chromium starts an element drag instead of a text-selection drag.
+
+---
+
 ## [0.3.1-rc.1] — 2026-05-20
 
 First RC of v0.3.1. The Tasks panel is now a Kanban board with user-defined swim lanes.

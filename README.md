@@ -201,7 +201,7 @@ All sections collapse by default; click a header to expand just the one you're e
 | **v0.1** | ✅ Released | Single device. CRUD, three priority tiers, recurrence, snooze, system tray, autostart, configurable hotkey. |
 | **v0.2** | ⤴ Merged into v0.3 | Originally LAN HTTPS sync; the transport got replaced before tagging so the features (Task reminders, calendar view, search, sort, collapsible Settings, dismiss/snooze propagation) shipped under v0.3.0 instead. |
 | **v0.3** | ✅ Released | Sync over [iroh](https://www.iroh.computer/) — direct LAN when possible, hole-punched / relayed otherwise. Pairing tickets (QR + base32 string). Cross-platform verified Windows ↔ Linux. |
-| **v0.3.1** | 🟡 In `0.3.1-rc.1` | Swim-lane Tasks board — user-defined lanes with drag-and-drop, syncs over iroh. RC pending validation on a second device. |
+| **v0.3.1** | ✅ Released | Swim-lane Tasks board — user-defined lanes with drag-and-drop. Lane CRUD syncs over iroh. |
 | **v0.4 / mobile** | ⏳ Planned | Android client riding the v0.3 iroh transport. |
 | **v0.4** | ⏳ Planned | Microsoft Graph (Outlook/Teams), Google Calendar, CalDAV integrations. |
 | **v0.5** | ⏳ Planned | **Opt-in shared groups.** Reminders can belong to a group; devices that explicitly joined sync those records. Per-group encryption key so paired peers outside the group can't read the contents even if they intercept traffic. Default behavior unchanged — reminders are private until you actively share them. Needs careful threat-model work; likely a separate design doc when it lands. |

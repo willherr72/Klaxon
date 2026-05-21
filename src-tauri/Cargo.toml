@@ -1,6 +1,6 @@
 [package]
 name = "klaxon"
-version = "0.3.1-rc.1"
+version = "0.3.1"
 description = "A reminder app that gets your attention"
 authors = ["Will Herr"]
 edition = "2021"
