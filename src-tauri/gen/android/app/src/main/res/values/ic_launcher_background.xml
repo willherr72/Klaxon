@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <!-- Adaptive icon background. Black matches the klaxon-lamp
+       foreground's own backing so the masked adaptive-icon shape
+       (circle/squircle/etc. on Android 8+) reads as the same logo
+       as the legacy ic_launcher.png — no white halo around it. -->
+  <color name="ic_launcher_background">#000000</color>
+</resources>

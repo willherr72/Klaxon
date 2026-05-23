@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { dndzone, TRIGGERS } from "svelte-dnd-action";
   import { api, type Lane } from "../api";
   import type { Reminder } from "../types";
   import ConfirmModal from "./ConfirmModal.svelte";
@@ -35,112 +36,88 @@
     }
   }
 
-  // Cards per lane — newest activity first. Drop-into-column updates
-  // `updated_at`, so a freshly-moved card pops to the top of its new
-  // column without us having to track per-card ordering.
-  function cardsForLane(laneId: string): Reminder[] {
-    return reminders
-      .filter((r) => r.task_lane_id === laneId)
-      .sort((a, b) => b.updated_at - a.updated_at);
-  }
-
   function laneCardCount(laneId: string): number {
     return reminders.filter((r) => r.task_lane_id === laneId).length;
   }
 
-  // ── Drag-and-drop ────────────────────────────────────────────────
-  // We mark the payload with a custom MIME type so `ondragover` can
-  // recognize "this is a Klaxon DnD" and preventDefault the right way
-  // (which is what tells the browser the location is a valid drop
-  // target and switches the cursor from the red ✕ to a move icon).
+  // ── Drag-and-drop (svelte-dnd-action) ───────────────────────────
+  // Original HTML5 DnD didn't fire on touch devices — the Fold's
+  // Tasks board was effectively unusable for moving cards. This
+  // library bridges pointer/touch events into the same drag model
+  // and works identically on desktop + mobile.
   //
-  // We deliberately don't gate dragover on Svelte state — relying on
-  // `drag` being non-null inside the closure turned out to be flaky in
-  // Webview2 (the closure read raced with the dragstart write, leaving
-  // dragover thinking no drag was in progress and never calling
-  // preventDefault, producing the red ✕ cursor). The dataTransfer
-  // types check is what the browser already tracks for us.
-  const CARD_MIME = "application/x-klaxon-card";
-  const LANE_MIME = "application/x-klaxon-lane";
+  // Two nested zones:
+  //   1. Outer: the lanes themselves (reorder)
+  //   2. Inner: cards within each lane (move between lanes)
+  // The outer zone's items are the lanes; the inner zone's items
+  // are the cards. svelte-dnd-action drives both via `consider`
+  // (in-flight) and `finalize` (committed) events. We freeze our
+  // re-derivation effect while a drag is active so the optimistic
+  // local state doesn't get clobbered by the props update.
+  let lanesOrdered = $state<Lane[]>([]);
+  let cardsByLane = $state<Record<string, Reminder[]>>({});
+  let isDragging = $state(false);
 
-  // Local visual state — purely for hover styling. The actual drag
-  // routing reads from dataTransfer at drop time.
-  let hoveredLaneId = $state<string | null>(null);
-  let draggingCardId = $state<string | null>(null);
-  let draggingLaneId = $state<string | null>(null);
+  $effect(() => {
+    if (isDragging) return;
+    lanesOrdered = [...lanes];
+  });
 
-  function startCardDrag(reminderId: string) {
-    return (e: DragEvent) => {
-      draggingCardId = reminderId;
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData(CARD_MIME, reminderId);
-        // text/plain mirror so e.g. dragging to a text input still does
-        // something sensible (the id paste); not required for our drop
-        // routing.
-        e.dataTransfer.setData("text/plain", reminderId);
+  $effect(() => {
+    if (isDragging) return;
+    const next: Record<string, Reminder[]> = {};
+    for (const lane of lanes) next[lane.id] = [];
+    for (const r of reminders) {
+      if (r.task_lane_id && next[r.task_lane_id]) {
+        next[r.task_lane_id].push(r);
       }
+    }
+    for (const k in next) {
+      next[k].sort((a, b) => b.updated_at - a.updated_at);
+    }
+    cardsByLane = next;
+  });
+
+  function onLaneConsider(e: CustomEvent<{ items: Lane[] }>) {
+    isDragging = true;
+    lanesOrdered = e.detail.items;
+  }
+  function onLaneFinalize(
+    e: CustomEvent<{ items: Lane[]; info: { trigger: string; id: string } }>,
+  ) {
+    lanesOrdered = e.detail.items;
+    isDragging = false;
+    api
+      .reorderLanes(lanesOrdered.map((l) => l.id))
+      .catch((err) => console.error("reorderLanes failed", err));
+  }
+
+  function onCardConsider(laneId: string) {
+    return (e: CustomEvent<{ items: Reminder[] }>) => {
+      isDragging = true;
+      cardsByLane = { ...cardsByLane, [laneId]: e.detail.items };
     };
   }
-  function startLaneDrag(laneId: string) {
-    return (e: DragEvent) => {
-      draggingLaneId = laneId;
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData(LANE_MIME, laneId);
-        e.dataTransfer.setData("text/plain", `lane:${laneId}`);
+  function onCardFinalize(laneId: string) {
+    return (
+      e: CustomEvent<{
+        items: Reminder[];
+        info: { trigger: string; id: string };
+      }>,
+    ) => {
+      cardsByLane = { ...cardsByLane, [laneId]: e.detail.items };
+      isDragging = false;
+      // The TARGET zone (the one a card was dropped INTO) is the
+      // one that fires DROPPED_INTO_ZONE — that's where the actual
+      // lane-change persists. Source zones also fire finalize with
+      // DROPPED_INTO_ANOTHER but we ignore them; the target's call
+      // alone is enough.
+      if (e.detail.info.trigger === TRIGGERS.DROPPED_INTO_ZONE) {
+        const droppedId = e.detail.info.id;
+        api
+          .setTaskLane(droppedId, laneId)
+          .catch((err) => console.error("setTaskLane failed", err));
       }
-    };
-  }
-  function endDrag() {
-    draggingCardId = null;
-    draggingLaneId = null;
-    hoveredLaneId = null;
-  }
-  function isKlaxonDrag(e: DragEvent): boolean {
-    const types = e.dataTransfer?.types ?? [];
-    return types.includes(CARD_MIME) || types.includes(LANE_MIME);
-  }
-  function onLaneDragOver(laneId: string) {
-    return (e: DragEvent) => {
-      if (!isKlaxonDrag(e)) return;
-      // Critical: preventDefault is what tells the browser "this is a
-      // valid drop target". Without it the cursor stays as the red ✕.
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      hoveredLaneId = laneId;
-    };
-  }
-  function onLaneDragLeave(laneId: string) {
-    return () => {
-      if (hoveredLaneId === laneId) hoveredLaneId = null;
-    };
-  }
-  // Outer function stays SYNC. If it's `async`, Svelte binds a Promise
-  // as `ondrop` and the browser silently ignores it.
-  function onLaneDrop(targetLaneId: string) {
-    return async (e: DragEvent) => {
-      e.preventDefault();
-      const cardId = e.dataTransfer?.getData(CARD_MIME);
-      const laneId = e.dataTransfer?.getData(LANE_MIME);
-      try {
-        if (cardId) {
-          await api.setTaskLane(cardId, targetLaneId);
-        } else if (laneId && laneId !== targetLaneId) {
-          // Reorder: place dragged lane before the drop target lane.
-          const ids = lanes.map((l) => l.id);
-          const from = ids.indexOf(laneId);
-          const to = ids.indexOf(targetLaneId);
-          if (from >= 0 && to >= 0) {
-            ids.splice(from, 1);
-            ids.splice(to, 0, laneId);
-            await api.reorderLanes(ids);
-          }
-        }
-      } catch (err) {
-        console.error("drop failed", err);
-      }
-      endDrag();
     };
   }
 
@@ -258,113 +235,111 @@
 </script>
 
 <div class="board">
-  {#each lanes as lane (lane.id)}
-    <div
-      class="lane"
-      class:hovered={hoveredLaneId === lane.id}
-      class:dragging-self={draggingLaneId === lane.id}
-      ondragover={onLaneDragOver(lane.id)}
-      ondragleave={onLaneDragLeave(lane.id)}
-      ondrop={onLaneDrop(lane.id)}
-      role="region"
-      aria-label={`Lane ${lane.name}`}
-    >
-      <header
-        class="lane-head"
-        draggable={renamingLaneId !== lane.id}
-        ondragstart={startLaneDrag(lane.id)}
-        ondragend={endDrag}
-      >
-        {#if renamingLaneId === lane.id}
-          <input
-            bind:this={renameInput}
-            bind:value={renameDraft}
-            class="lane-name-input mono"
-            onblur={commitRename}
-            onkeydown={(e) => {
-              if (e.key === "Enter") commitRename();
-              if (e.key === "Escape") cancelRename();
-            }}
-          />
-        {:else}
-          <span class="lane-grip mono-caps-faint" aria-hidden="true">⋮⋮</span>
-          <!-- Span (not a button) so the parent header's mousedown isn't
-               eaten before dragstart can fire. Double-click on the
-               header bubbles up here too. -->
-          <span
-            class="lane-name"
-            ondblclick={() => startRename(lane)}
-            role="button"
-            tabindex="0"
-            onkeydown={(e) => {
-              if (e.key === "Enter") startRename(lane);
-            }}
-            title="Double-click to rename. Drag the header to reorder."
-          >{lane.name}</span>
-          {#if lane.is_default}
+  <div
+    class="lanes-zone"
+    use:dndzone={{
+      items: lanesOrdered,
+      type: "klaxon-lane",
+      flipDurationMs: 200,
+      dragDisabled: !!renamingLaneId,
+    }}
+    onconsider={onLaneConsider}
+    onfinalize={onLaneFinalize}
+  >
+    {#each lanesOrdered as lane (lane.id)}
+      <div class="lane" role="region" aria-label={`Lane ${lane.name}`}>
+        <header class="lane-head">
+          {#if renamingLaneId === lane.id}
+            <input
+              bind:this={renameInput}
+              bind:value={renameDraft}
+              class="lane-name-input mono"
+              onblur={commitRename}
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitRename();
+                if (e.key === "Escape") cancelRename();
+              }}
+            />
+          {:else}
+            <span class="lane-grip mono-caps-faint" aria-hidden="true">⋮⋮</span>
             <span
-              class="lane-default-badge mono-caps-faint"
-              title="Default lane — tasks from deleted lanes land here. Cannot be deleted."
-            >default</span>
+              class="lane-name"
+              ondblclick={() => startRename(lane)}
+              role="button"
+              tabindex="0"
+              onkeydown={(e) => {
+                if (e.key === "Enter") startRename(lane);
+              }}
+              title="Double-click to rename. Drag the header to reorder."
+            >{lane.name}</span>
+            {#if lane.is_default}
+              <span
+                class="lane-default-badge mono-caps-faint"
+                title="Default lane — tasks from deleted lanes land here. Cannot be deleted."
+              >default</span>
+            {/if}
+            <span class="lane-count mono-caps-faint">{laneCardCount(lane.id)}</span>
+            {#if !lane.is_default}
+              <button
+                class="lane-delete"
+                onclick={() => askDeleteLane(lane)}
+                title="Delete lane"
+              >×</button>
+            {/if}
           {/if}
-          <span class="lane-count mono-caps-faint">{laneCardCount(lane.id)}</span>
-          {#if !lane.is_default}
-            <button
-              class="lane-delete"
-              onclick={() => askDeleteLane(lane)}
-              title="Delete lane"
-            >×</button>
-          {/if}
-        {/if}
-      </header>
+        </header>
 
-      <div class="cards">
-        {#each cardsForLane(lane.id) as card (card.id)}
-          {@const due = dueChip(card.due_at)}
-          <!-- div + role=button instead of <button> because draggable
-               buttons have spotty behavior in Webview2 — the parent
-               button captures mousedown and the drag never starts. -->
-          <div
-            class="card"
-            class:dragging={draggingCardId === card.id}
-            role="button"
-            tabindex="0"
-            draggable="true"
-            ondragstart={startCardDrag(card.id)}
-            ondragend={endDrag}
-            onclick={() => onSelect(card)}
-            onkeydown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onSelect(card);
-              }
-            }}
-          >
-            <div class="card-title">{card.title}</div>
-            {#if card.description}
-              <div class="card-desc">{card.description}</div>
-            {/if}
-            {#if (card.tags && card.tags.length > 0) || due}
-              <div class="card-meta">
-                {#if due}
-                  <span class="card-due mono-caps-faint">{due}</span>
-                {/if}
-                {#if card.tags}
-                  {#each card.tags as tag (tag)}
-                    <span class="card-tag">#{tag}</span>
-                  {/each}
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {/each}
+        <div
+          class="cards"
+          use:dndzone={{
+            items: cardsByLane[lane.id] ?? [],
+            type: "klaxon-card",
+            flipDurationMs: 150,
+            dropTargetStyle: {},
+          }}
+          onconsider={onCardConsider(lane.id)}
+          onfinalize={onCardFinalize(lane.id)}
+        >
+          {#each cardsByLane[lane.id] ?? [] as card (card.id)}
+            {@const due = dueChip(card.due_at)}
+            <div
+              class="card"
+              role="button"
+              tabindex="0"
+              onclick={() => onSelect(card)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onSelect(card);
+                }
+              }}
+            >
+              <div class="card-title">{card.title}</div>
+              {#if card.description}
+                <div class="card-desc">{card.description}</div>
+              {/if}
+              {#if (card.tags && card.tags.length > 0) || due}
+                <div class="card-meta">
+                  {#if due}
+                    <span class="card-due mono-caps-faint">{due}</span>
+                  {/if}
+                  {#if card.tags}
+                    {#each card.tags as tag (tag)}
+                      <span class="card-tag">#{tag}</span>
+                    {/each}
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+
+        <button class="lane-add" onclick={() => onAddCardToLane(lane.id)}>
+          + Add task
+        </button>
       </div>
-
-      <button class="lane-add" onclick={() => onAddCardToLane(lane.id)}>
-        + Add task
-      </button>
-    </div>
-  {/each}
+    {/each}
+  </div>
 
   <div class="add-lane-column">
     {#if addingLane}
@@ -412,6 +387,14 @@
     padding: 16px 18px 24px;
     overflow-x: auto;
     overflow-y: hidden;
+    align-items: flex-start;
+  }
+  /* The dndzone wrapper that contains the lanes themselves. Sits as
+   * one flex child of .board so the existing horizontal-scroll layout
+   * still works, and the add-lane-column stays outside the zone. */
+  .lanes-zone {
+    display: flex;
+    gap: 12px;
     align-items: flex-start;
   }
   .lane {

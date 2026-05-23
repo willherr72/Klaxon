@@ -19,6 +19,7 @@
     isPermissionGranted as isNotifPermissionGranted,
     requestPermission as requestNotifPermission,
   } from "@tauri-apps/plugin-notification";
+  import { reconcileScheduledNotifications } from "./lib/mobile-scheduler";
 
   let allReminders = $state<Reminder[]>([]);
   let currentView = $state<ViewMode>("reminders");
@@ -92,6 +93,12 @@
     try {
       const list = await api.listReminders();
       reminders.set(list);
+      // Keep the OS-level scheduled notifications (AlarmManager on
+      // Android) in sync with whatever the canonical reminder list
+      // looks like now. No-op on desktop.
+      reconcileScheduledNotifications(list).catch((e) =>
+        console.warn("reconcileScheduledNotifications failed", e),
+      );
     } catch (e) {
       console.error("listReminders failed", e);
     }

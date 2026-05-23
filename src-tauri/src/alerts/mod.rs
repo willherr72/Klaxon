@@ -48,13 +48,15 @@ pub fn dispatch(app: &AppHandle, r: &Reminder) {
             Priority::High => fullscreen::spawn(app, r),
         }
     }
-    // Mobile path: notifications only. The "popup" and "fullscreen"
-    // tiers don't exist as concepts on Android — they collapse into
-    // notification importance levels handled by tauri-plugin-notification.
-    // For v0.4 first pass, all priorities use the toast/notification.
+    // Mobile path: the OS-level scheduler (AlarmManager via
+    // tauri-plugin-notification's `Schedule.at`) handles the actual
+    // notification post — see src/lib/mobile-scheduler.ts. Dispatch
+    // here is a no-op so we don't double-notify when the app happens
+    // to be in the foreground at fire time. The scheduler still ticks
+    // for state transitions (Fired) and recurrence rescheduling.
     #[cfg(not(desktop))]
     {
-        toast::show(app, r);
+        let _ = (app, r);
     }
 }
 
