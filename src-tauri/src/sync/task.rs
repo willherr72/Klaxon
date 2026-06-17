@@ -25,6 +25,36 @@ pub fn emit_reminders_changed(app: &AppHandle) {
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 
+/// Hard per-peer wall-clock budget for a single sync attempt. iroh's
+/// `connect` keeps trying to reach an offline node for a long time; without
+/// this cap one unreachable peer stalls the whole pass — and on mobile it
+/// holds the WorkManager background worker busy until the OS kills it.
+const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Outcome of syncing one peer under [`SYNC_PEER_TIMEOUT`].
+enum PeerSyncResult {
+    Ok,
+    Failed(crate::error::AppError),
+    TimedOut,
+}
+
+/// Run one peer's sync under a hard time budget. Dropping the future on
+/// timeout cancels the in-flight work (including a hung iroh `connect`), so
+/// an unreachable peer costs at most `budget` instead of blocking the pass.
+/// Kept generic over the future so the timeout handling is unit-testable
+/// without binding a real iroh endpoint (which can't be done under
+/// `#[cfg(test)]` on Windows — see `sync/iroh_handler.rs`).
+async fn with_peer_timeout<F>(fut: F, budget: Duration) -> PeerSyncResult
+where
+    F: std::future::Future<Output = crate::error::AppResult<()>>,
+{
+    match tokio::time::timeout(budget, fut).await {
+        Ok(Ok(())) => PeerSyncResult::Ok,
+        Ok(Err(e)) => PeerSyncResult::Failed(e),
+        Err(_) => PeerSyncResult::TimedOut,
+    }
+}
+
 pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
     log::info!("sync task online");
     let mut tick = tokio::time::interval(SYNC_INTERVAL);
@@ -61,8 +91,19 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
         return;
     };
     for peer in peer_list {
-        if let Err(e) = sync_one(db, app, &endpoint, &peer).await {
-            log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
+        match with_peer_timeout(sync_one(db, app, &endpoint, &peer), SYNC_PEER_TIMEOUT).await {
+            PeerSyncResult::Ok => {}
+            PeerSyncResult::Failed(e) => {
+                log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
+            }
+            PeerSyncResult::TimedOut => {
+                log::warn!(
+                    "sync with {} ({}) timed out after {}s — peer unreachable; skipping",
+                    peer.name,
+                    peer.id,
+                    SYNC_PEER_TIMEOUT.as_secs(),
+                );
+            }
         }
     }
 }
@@ -182,4 +223,45 @@ fn silences_alert(state: ReminderState) -> bool {
         state,
         ReminderState::Dismissed | ReminderState::Snoozed | ReminderState::Completed
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{with_peer_timeout, PeerSyncResult, SYNC_PEER_TIMEOUT};
+    use crate::error::{AppError, AppResult};
+    use std::time::Duration;
+
+    /// The whole point of the fix: a peer whose sync never completes (iroh
+    /// hanging on an offline node, modelled here by a never-resolving future)
+    /// must hit the budget rather than block forever. If `with_peer_timeout`
+    /// failed to apply the cap, this test would hang.
+    #[tokio::test]
+    async fn unreachable_peer_times_out_within_budget() {
+        let outcome = with_peer_timeout(
+            std::future::pending::<AppResult<()>>(),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(matches!(outcome, PeerSyncResult::TimedOut));
+    }
+
+    /// A peer that completes inside the budget reports success — the cap must
+    /// not penalise healthy (even if slightly slow) syncs.
+    #[tokio::test]
+    async fn successful_sync_passes_through() {
+        let outcome = with_peer_timeout(async { Ok(()) }, SYNC_PEER_TIMEOUT).await;
+        assert!(matches!(outcome, PeerSyncResult::Ok));
+    }
+
+    /// A real sync error (not a timeout) is preserved so it still gets logged
+    /// distinctly — the cap must not flatten every failure into "timed out".
+    #[tokio::test]
+    async fn sync_error_is_distinct_from_timeout() {
+        let outcome = with_peer_timeout(
+            async { Err(AppError::Invalid("boom".into())) },
+            SYNC_PEER_TIMEOUT,
+        )
+        .await;
+        assert!(matches!(outcome, PeerSyncResult::Failed(_)));
+    }
 }

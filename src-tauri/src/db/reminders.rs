@@ -171,11 +171,20 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
     let tags_json = serde_json::to_string(&tags)?;
     // Lane is patchable via DnD on the TasksBoard. Non-silent reminders
     // are forced back to `None` even if a lane was set.
+    //
+    // Invariant: a `silent` reminder must always live in a lane, or it
+    // disappears — the Tasks board buckets strictly by lane id, and the
+    // Reminders list hides silent rows. Converting a reminder to a task
+    // sends `task_lane_id: null`, which serde collapses from
+    // `Option<Option<_>>` into the outer `None` (indistinguishable from an
+    // omitted field), so we resolve chosen-or-existing and then fall back
+    // to the default lane whenever that leaves us laneless.
     let task_lane_id = if silent {
-        match patch.task_lane_id {
-            Some(v) => v.or_else(|| Some(crate::db::task_lanes::DEFAULT_LANE_ID.to_string())),
+        let chosen = match patch.task_lane_id {
+            Some(v) => v,
             None => existing.task_lane_id.clone(),
-        }
+        };
+        Some(chosen.unwrap_or_else(|| crate::db::task_lanes::DEFAULT_LANE_ID.to_string()))
     } else {
         None
     };
@@ -350,4 +359,77 @@ pub fn reschedule(conn: &Connection, id: &str, new_due_at: i64) -> AppResult<()>
         params![id, new_due_at, now],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create, update};
+    use crate::models::{Priority, ReminderCreate, ReminderUpdate};
+
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    fn blank_update() -> ReminderUpdate {
+        ReminderUpdate {
+            title: None,
+            description: None,
+            due_at: None,
+            priority: None,
+            sound_path: None,
+            repeat_rule: None,
+            silent: None,
+            tags: None,
+            task_lane_id: None,
+        }
+    }
+
+    /// Regression for the "reminder → task vanishes" bug. Converting a
+    /// reminder to a task without choosing a lane must not orphan it: the
+    /// frontend sends `task_lane_id: null`, which serde collapses from
+    /// `Option<Option<_>>` into the outer `None` (indistinguishable from an
+    /// omitted field). `update` must still guarantee a lane for a now-silent
+    /// reminder — a laneless silent reminder is invisible in both the
+    /// Reminders list and the Tasks board.
+    #[test]
+    fn converting_reminder_to_task_without_a_lane_assigns_default() {
+        let conn = test_conn();
+        let created = create(
+            &conn,
+            ReminderCreate {
+                title: "Buy milk".into(),
+                description: None,
+                due_at: 1_000,
+                priority: Priority::Normal,
+                sound_path: None,
+                repeat_rule: None,
+                silent: false,
+                tags: vec![],
+                task_lane_id: None,
+            },
+        )
+        .unwrap();
+        assert!(!created.silent);
+        assert_eq!(created.task_lane_id, None);
+
+        let updated = update(
+            &conn,
+            &created.id,
+            ReminderUpdate {
+                silent: Some(true),
+                ..blank_update()
+            },
+        )
+        .unwrap();
+
+        assert!(updated.silent);
+        assert_eq!(
+            updated.task_lane_id.as_deref(),
+            Some(crate::db::task_lanes::DEFAULT_LANE_ID),
+            "a silent task must always have a lane"
+        );
+    }
 }
