@@ -251,6 +251,11 @@ pub fn run() {
                 iroh_router: iroh_router_state,
             });
 
+            // Mobile: stash the app handle so the WorkManager background-sync
+            // worker can reach AppState via JNI. No-op / absent on desktop.
+            #[cfg(mobile)]
+            mobile_bg::register(app.handle().clone());
+
             #[cfg(desktop)]
             tray::setup(app)?;
 

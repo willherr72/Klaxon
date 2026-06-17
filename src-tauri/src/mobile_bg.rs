@@ -75,3 +75,55 @@ mod tests {
         assert_eq!(BgSyncOutcome::Ran.code(), 2);
     }
 }
+
+#[cfg(mobile)]
+mod live {
+    use super::{classify, BgSyncOutcome};
+    use tauri::{AppHandle, Manager};
+
+    /// Live app handle stashed once by `setup()` so background entry points can
+    /// reach `AppState` (DB + iroh endpoint) without the webview IPC path.
+    static BG_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+    /// Called once from `setup()`. Idempotent — a second call is ignored.
+    pub fn register(app: AppHandle) {
+        let _ = BG_APP.set(app);
+    }
+
+    /// Run one background sync pass if the process is warm and sync is enabled.
+    /// Blocks the calling (worker) thread until the pass completes so iroh has
+    /// time to connect.
+    pub fn try_background_sync() -> BgSyncOutcome {
+        let Some(app) = BG_APP.get() else {
+            return BgSyncOutcome::NotReady;
+        };
+        let state = app.state::<crate::AppState>();
+        let enabled = crate::sync::read_enabled(&state.db);
+        match classify(true, enabled) {
+            BgSyncOutcome::Ran => {
+                tauri::async_runtime::block_on(crate::sync::task::run_one_pass(
+                    &state.db, app,
+                ));
+                BgSyncOutcome::Ran
+            }
+            other => other,
+        }
+    }
+}
+
+#[cfg(mobile)]
+pub use live::register;
+
+/// JNI entry point for the Kotlin `BackgroundSyncWorker`. Returns the
+/// `BgSyncOutcome` code. `JNIEnv*` and the worker `jobject` are passed as
+/// opaque pointers we don't touch, so no `jni` crate dependency is needed.
+/// `catch_unwind` keeps a Rust panic from unwinding across the FFI boundary
+/// (undefined behavior otherwise) — a panic maps to -1.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce(
+    _env: *mut std::ffi::c_void,
+    _this: *mut std::ffi::c_void,
+) -> i32 {
+    std::panic::catch_unwind(|| live::try_background_sync().code()).unwrap_or(-1)
+}
