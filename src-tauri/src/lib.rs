@@ -1,6 +1,7 @@
 mod alerts;
 mod audio;
 mod commands;
+mod mobile_bg;
 pub mod db;
 pub mod error;
 pub mod models;
