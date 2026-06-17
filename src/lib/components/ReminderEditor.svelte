@@ -35,6 +35,7 @@
     onClose,
     onSave,
     onDelete,
+    onComplete,
   }: {
     open: boolean;
     reminder: Reminder | null;
@@ -44,6 +45,7 @@
     onClose: () => void;
     onSave: (input: ReminderCreate, id: string | null) => void;
     onDelete: (id: string) => void;
+    onComplete: (id: string) => void;
   } = $props();
 
   let title = $state("");
@@ -338,6 +340,14 @@
       >
         Delete
       </button>
+      {#if reminder.state !== "completed"}
+        <button
+          class="btn ghost done"
+          onclick={() => reminder && onComplete(reminder.id)}
+        >
+          ✓ Done
+        </button>
+      {/if}
     {/if}
     <div class="spacer"></div>
     <button class="btn ghost" onclick={onClose}>Cancel</button>
@@ -679,6 +689,11 @@
   .btn.danger { color: var(--signal-high); border-color: var(--signal-high); }
   .btn.danger:hover {
     background: var(--signal-high);
+    color: var(--bg);
+  }
+  .btn.done { color: var(--ok); border-color: var(--ok); }
+  .btn.done:hover {
+    background: var(--ok);
     color: var(--bg);
   }
 </style>

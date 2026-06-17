@@ -3223,7 +3223,7 @@ dependencies = [
 
 [[package]]
 name = "klaxon"
-version = "0.4.0-rc.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "env_logger",
@@ -6189,8 +6189,6 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-notification"
 version = "2.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01fc2c5ff41105bd1f7242d8201fdf3efd70749b82fa013a17f2126357d194cc"
 dependencies = [
  "log",
  "notify-rust",

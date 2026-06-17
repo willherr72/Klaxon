@@ -5,6 +5,41 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-06-17
+
+Klaxon goes **mobile**. v0.4 brings the app to Android (Tauri 2 mobile), reusing the Rust scheduler + iroh sync core under a touch-friendly Svelte UI — plus native notification action buttons, a warm-only background sync, and a batch of fixes.
+
+> Roadmap note: mobile was originally slated for v1.0; it was pulled forward to v0.4. Calendar integrations (the previous v0.4 plan) move to a later release.
+
+### Added
+
+- **Android app (Tauri 2 mobile).** The full Klaxon UI runs on Android, reusing the Rust scheduler, recurrence, and iroh sync core under a touch-first Svelte UI.
+- **Native notifications with action buttons.** Scheduled reminders post through per-priority OS notification channels (low / normal / high importance, heads-up for high). Each notification carries **Snooze 10m** and **Dismiss** buttons, and tapping the body deep-links into the editor for that reminder. Ships with a vendored fork of `tauri-plugin-notification` 2.3.3 that fixes an upstream bug where action-button titles rendered empty.
+- **Warm-only background sync (Android).** A WorkManager job runs one iroh pull/push pass roughly every 25 minutes while the app's process is resident, so paired-device data stays fresh without the app in the foreground. A Kotlin worker calls a JNI entry point into Rust that reuses the existing sync pass. (Cold-process sync and arming alarms in the background are intentionally out of scope for this step.)
+- **Sync-on-foreground.** Returning the app to the foreground triggers an immediate sync pass.
+- **Touch drag-and-drop** on the Tasks board (via `svelte-dnd-action`) so cards and lanes move on mobile, not just desktop.
+- **Editor lane picker** — a Klaxon-styled chip row replaces the native `<select>` for a task's lane.
+- **Mobile editor sheet, Android back-button handling, klaxon-lamp app icons, and Settings polish.**
+
+### Changed
+
+- **Editor "Done" action.** The reminder/task editor now has a **✓ Done** button (next to Delete) to complete the item directly.
+- **Per-priority notification channels** drive importance, heads-up display, vibration, and lights on Android.
+
+### Fixed
+
+- **Per-peer sync timeout.** Each peer's sync attempt is bounded to 10 seconds; an unreachable peer can no longer stall the whole pass (which previously hung the sync loop and, on mobile, held the background worker until the OS killed it). Shared by the desktop loop, the foreground loop, and the mobile background worker.
+- **Tasks can be completed, not only deleted** — via the editor's new Done button.
+- **Converting a reminder to a task no longer makes it vanish.** A silent reminder saved without an explicit lane is now assigned the default (Todo) lane, instead of becoming laneless and invisible in both the Reminders list and the Tasks board. (Root cause: a serde `Option<Option<_>>` collapse made the update path treat an explicit `null` lane as "unchanged.")
+- **The Upcoming filter now shows everything still to come** — items due later today plus all future days — instead of only strictly-future days, which often looked empty.
+- **Reminder-row action buttons stay visible** instead of revealing on hover, eliminating a touch misclick where an invisible-but-hit-testable button swallowed taps.
+
+### Schema / sync
+
+- No schema changes; the `ChangeSet` wire format is unchanged, so mobile and desktop peers sync identically.
+
+---
+
 ## [0.3.1] — 2026-05-20
 
 User-defined swim lanes for the Tasks panel. Same scope as rc.1 — promoted to stable after live-testing the DnD + sync paths.

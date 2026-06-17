@@ -19,7 +19,10 @@
     isPermissionGranted as isNotifPermissionGranted,
     requestPermission as requestNotifPermission,
   } from "@tauri-apps/plugin-notification";
-  import { reconcileScheduledNotifications } from "./lib/mobile-scheduler";
+  import {
+    reconcileScheduledNotifications,
+    setupMobileNotifications,
+  } from "./lib/mobile-scheduler";
 
   let allReminders = $state<Reminder[]>([]);
   let currentView = $state<ViewMode>("reminders");
@@ -176,6 +179,13 @@
     refresh();
     loadSort();
     loadInappHotkeys();
+    // Mobile: register notification channels + action buttons + tap
+    // handler. No-op on desktop. The tap handler routes through
+    // openReminderById so a notification body tap deep-links into
+    // the editor for that reminder.
+    setupMobileNotifications({ onOpenReminder: openReminderById }).catch(
+      (e) => console.warn("setupMobileNotifications failed", e),
+    );
     // Ask for notification permission once per install. Android 13+
     // refuses to show notifications until POST_NOTIFICATIONS is granted
     // — without this the app silently fails to fire any reminder on
@@ -241,6 +251,7 @@
   }
 
   let filtered = $derived.by(() => {
+    const nowMs = Date.now();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = today.getTime() + 86_400_000;
@@ -275,7 +286,11 @@
           });
           break;
         case "upcoming":
-          result = result.filter((r) => effectiveTime(r) >= tomorrow);
+          // "Everything still to come": anything not yet due, from now
+          // onward — includes later today and all future days, and excludes
+          // past-due items. (Completed items are already filtered out by the
+          // active-view step above.)
+          result = result.filter((r) => effectiveTime(r) >= nowMs);
           break;
         case "recurring":
           result = result.filter((r) => r.repeat_rule != null);
@@ -414,6 +429,24 @@
     editorOpen.set(true);
   }
 
+  /// Open the editor for a reminder by id. Used by the mobile
+  /// notification deep-link (body-tap) — the OS hands us only the
+  /// reminder UUID via `extra`, so we look up the full reminder
+  /// either from the current in-memory list (synced reload may have
+  /// dropped it) or from the backend as a fallback.
+  async function openReminderById(id: string) {
+    let r = allReminders.find((x) => x.id === id) ?? null;
+    if (!r) {
+      try {
+        r = await api.getReminder(id);
+      } catch (e) {
+        console.warn("openReminderById: getReminder failed", e);
+        return;
+      }
+    }
+    if (r) openEdit(r);
+  }
+
   function closeEditor() {
     editorOpen.set(false);
     editingId.set(null);
@@ -459,6 +492,19 @@
   async function handleComplete(r: Reminder) {
     try {
       await api.completeReminder(r.id);
+      await refresh();
+    } catch (e) {
+      console.error("complete failed", e);
+    }
+  }
+
+  /// Complete from inside the editor (e.g. marking a task done). Unlike the
+  /// list's inline complete, this also closes the editor since the item
+  /// leaves the active view.
+  async function handleEditorComplete(id: string) {
+    try {
+      await api.completeReminder(id);
+      closeEditor();
       await refresh();
     } catch (e) {
       console.error("complete failed", e);
@@ -532,6 +578,7 @@
     onClose={closeEditor}
     onSave={handleSave}
     onDelete={handleDelete}
+    onComplete={handleEditorComplete}
   />
   <SettingsModal
     open={settingsOpen}

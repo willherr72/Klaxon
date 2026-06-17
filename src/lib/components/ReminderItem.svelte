@@ -238,15 +238,19 @@
   .actions {
     display: flex;
     gap: 4px;
-    opacity: 0;
-    transition: opacity 120ms var(--ease);
   }
-  .item:hover .actions { opacity: 1; }
+  /* Buttons stay visible at all times. The previous reveal-on-hover
+   * pattern leaked clicks: an opacity:0 button is still hit-testable,
+   * and `pointer-events: none` doesn't help on touch because the row
+   * picks up :hover mid-press, flipping pointer-events back on before
+   * the touchend fires. Always-visible + muted-by-default avoids the
+   * misclick entirely. */
   .action {
     width: 26px;
     height: 26px;
-    border: 1px solid var(--border-strong);
-    color: var(--text-2);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-muted);
     font-size: 14px;
     line-height: 1;
     transition: all 100ms var(--ease);

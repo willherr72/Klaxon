@@ -1,6 +1,6 @@
 [package]
 name = "klaxon"
-version = "0.4.0-rc.1"
+version = "0.4.0"
 description = "A reminder app that gets your attention"
 authors = ["Will Herr"]
 edition = "2021"
@@ -59,3 +59,13 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
+
+# Vendored fork of tauri-plugin-notification 2.3.3 with a one-line
+# fix to NotificationStorage.writeActionGroup — upstream stores
+# action titles under the wrong SharedPreferences keys, so every
+# scheduled notification's action buttons render with empty titles
+# and do nothing. See vendor/tauri-plugin-notification/.../
+# NotificationStorage.kt for the patch. Remove once upstream merges
+# the fix and we bump past 2.3.3.
+[patch.crates-io]
+tauri-plugin-notification = { path = "../vendor/tauri-plugin-notification" }

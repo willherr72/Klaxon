@@ -2,8 +2,8 @@
 
 > A self-hosted, open-source reminder app that actually gets your attention.
 
-**Status:** v0.2 in development on `main`. v0.1 released as a tagged binary.
-**Last updated:** 2026-05-12
+**Status:** v0.4.0 released — Android mobile milestone (Tauri 2 mobile). v0.1–v0.3.1 released as tagged binaries.
+**Last updated:** 2026-06-17
 
 ---
 
@@ -448,7 +448,9 @@ Still pending before tagging v0.2.0:
 - Pairing flow: replace mDNS+SAS with NodeId QR codes or short paste-able tokens
 - Keep the existing protocol (ChangeSet wire format) — just swap the transport layer
 
-## 11. v0.4 Roadmap — Calendar Integrations
+## 11. Calendar Integrations — deferred (was the original v0.4 plan)
+
+> **Roadmap change:** v0.4 shipped as the **Mobile** milestone (Android — see §13), pulled forward from v1.0. Calendar integrations move to a later release.
 
 - Microsoft Graph (Outlook + Teams)
 - Google Calendar
@@ -467,11 +469,13 @@ Still pending before tagging v0.2.0:
 
 This needs careful threat-model work before implementation — it's the highest-leakage-risk feature in the roadmap. Likely a separate design doc when it lands.
 
-## 13. v1.0 Roadmap — Mobile
+## 13. Mobile — Android shipped in v0.4.0
 
-- Tauri 2 mobile (iOS + Android)
-- Reuse Rust scheduler + sync core, port Svelte UI
-- Mobile-specific work: native push for high-priority alerts (since mobile OSes restrict background audio loops)
+- **Android: shipped in v0.4.0.** Tauri 2 mobile reusing the Rust scheduler + iroh sync core under the Svelte UI; native notifications with Snooze/Dismiss actions; warm-only WorkManager background sync (~25 min while the process is resident).
+- **Still ahead:**
+  - **iOS** — only Android is generated today (`src-tauri/gen/android`).
+  - **Cold-process background sync** — the v0.4 worker is warm-only; it stops once Android fully kills the process. Arming alarms from a background sync is also deferred.
+  - **Native push** for high-priority alerts (mobile OSes restrict background audio loops).
 
 ---
 
