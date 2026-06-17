@@ -60,6 +60,14 @@ tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 
+# v0.4: Android-only. We initialize the global ndk-context (JavaVM + Android
+# Context) ourselves from MainActivity — Tauri/wry never set it, but crates
+# that read it (hickory-resolver via iroh's DNS; cpal) panic with "android
+# context was not initialized" and abort the process in a release build.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 # Vendored fork of tauri-plugin-notification 2.3.3 with a one-line
 # fix to NotificationStorage.writeActionGroup — upstream stores
 # action titles under the wrong SharedPreferences keys, so every

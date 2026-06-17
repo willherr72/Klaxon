@@ -1,5 +1,6 @@
 package com.klaxon.app
 
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.enableEdgeToEdge
 import androidx.work.Constraints
@@ -11,10 +12,18 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
+    // Initialize the global ndk-context BEFORE super.onCreate() boots
+    // Tauri → iroh. hickory-resolver (iroh's DNS) and cpal read it and abort
+    // the process if it's unset. applicationContext is valid here —
+    // attachBaseContext has already run.
+    System.loadLibrary("klaxon_lib")
+    nativeInitAndroidContext(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     scheduleBackgroundSync()
   }
+
+  private external fun nativeInitAndroidContext(context: Context)
 
   /**
    * Register the ~25-minute background sync job. KEEP policy means relaunches

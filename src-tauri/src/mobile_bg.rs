@@ -133,3 +133,41 @@ pub extern "C" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce(
 ) -> i32 {
     std::panic::catch_unwind(|| live::try_background_sync().code()).unwrap_or(-1)
 }
+
+/// JNI entry point called from `MainActivity.onCreate` (before Tauri's
+/// `setup()` runs) to initialize the global `ndk-context`. Tauri/wry never
+/// set it, but crates that read it — `hickory-resolver` (iroh's DNS resolver)
+/// and `cpal` — panic with "android context was not initialized" the instant
+/// they run, which aborts the process in a release build. We stash the
+/// JavaVM and a leaked global ref to the application Context so both pointers
+/// stay valid for the whole process lifetime.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_klaxon_app_MainActivity_nativeInitAndroidContext<'local>(
+    env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    context: jni::objects::JObject<'local>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    // `initialize_android_context` asserts it's called exactly once; Android
+    // re-runs onCreate on activity recreation, so guard against re-init.
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // A panic must not unwind across the JNI boundary; AssertUnwindSafe is
+    // fine because we abandon `env`/`context` on the unwind path.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let Ok(vm) = env.get_java_vm() else { return };
+        let Ok(ctx) = env.new_global_ref(context) else { return };
+        // Safety: the JavaVM is process-global and the Context is kept alive
+        // by leaking its global ref below; init runs once (guarded above).
+        unsafe {
+            ndk_context::initialize_android_context(
+                vm.get_java_vm_pointer() as *mut std::ffi::c_void,
+                ctx.as_obj().as_raw() as *mut std::ffi::c_void,
+            );
+        }
+        std::mem::forget(ctx);
+    }));
+}

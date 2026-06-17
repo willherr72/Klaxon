@@ -57,7 +57,14 @@ android {
             }
         }
         getByName("release") {
-            isMinifyEnabled = true
+            // Minification disabled: R8 strips the wry/tao Android glue that
+            // initializes the ndk-context, so a minified release panics with
+            // "android context was not initialized" the instant native code
+            // (iroh networking, once sync is enabled) touches the Android
+            // context. The debug build (minify off) is unaffected; we match it
+            // here. The native .so is still release-stripped, so size stays
+            // reasonable.
+            isMinifyEnabled = false
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
