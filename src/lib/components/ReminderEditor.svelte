@@ -345,7 +345,7 @@
           class="btn ghost done"
           onclick={() => reminder && onComplete(reminder.id)}
         >
-          ✓ Done
+          Done
         </button>
       {/if}
     {/if}
