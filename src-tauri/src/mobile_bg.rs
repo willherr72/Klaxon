@@ -21,9 +21,9 @@ pub enum BgSyncOutcome {
     Ran,
 }
 
-#[allow(dead_code)]
 impl BgSyncOutcome {
     /// Stable integer code handed back across the JNI boundary.
+    #[allow(dead_code)]
     pub fn code(self) -> i32 {
         match self {
             BgSyncOutcome::NotReady => 0,
@@ -36,6 +36,7 @@ impl BgSyncOutcome {
 /// Pure decision kernel: given whether the live app handle exists and (when it
 /// does) whether sync is enabled, decide the outcome. Free of Tauri/JNI types
 /// so it is unit-testable on the desktop dev host.
+// Used on mobile + in tests; dead on the desktop host — see BgSyncOutcome above.
 #[allow(dead_code)]
 pub(crate) fn classify(handle_present: bool, sync_enabled: bool) -> BgSyncOutcome {
     if !handle_present {
@@ -93,6 +94,11 @@ mod live {
     /// Run one background sync pass if the process is warm and sync is enabled.
     /// Blocks the calling (worker) thread until the pass completes so iroh has
     /// time to connect.
+    ///
+    /// Complements the resident 20s `sync::task::run` loop: that loop fires while
+    /// the process is truly resident, but Android's cached-app freezer suspends the
+    /// tokio threads when the app is backgrounded. This WorkManager-driven pass
+    /// provides a periodic execution slot while the process is resident-but-frozen.
     pub fn try_background_sync() -> BgSyncOutcome {
         let Some(app) = BG_APP.get() else {
             return BgSyncOutcome::NotReady;

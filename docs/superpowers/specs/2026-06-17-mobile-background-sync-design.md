@@ -44,7 +44,7 @@ Within WorkManager, **warm-only** (sync only while the process is resident) was 
 
 ## 4. Architecture
 
-Four small pieces, reusing the existing `run_one_pass` end to end. No change to the sync protocol, wire types, or the sync pass itself.
+Four small pieces, reusing the existing `run_one_pass` end to end. No change to the sync protocol, wire types, or the sync pass itself. The WorkManager job coexists with the resident 20s `sync::task::run` loop; its distinct value is covering the window where the process is resident but the OS has frozen the tokio loop (Doze/cached-app freezer) — so it is not redundant in the case that matters.
 
 ```
 ┌─────────────────────── Android app process ───────────────────────┐
