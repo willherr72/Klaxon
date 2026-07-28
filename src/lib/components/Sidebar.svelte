@@ -20,7 +20,8 @@
     onOpenSettings,
   }: {
     current: ViewMode;
-    counts: Record<ViewMode, number>;
+    /** Partial by design — a channel with no entry renders no badge. */
+    counts: Partial<Record<ViewMode, number>>;
     onSelect: (k: ViewMode) => void;
     onNew: () => void;
     onOpenSettings: () => void;
@@ -31,6 +32,9 @@
     { key: "tasks", label: "Tasks" },
     { key: "calendar", label: "Calendar" },
     { key: "completed", label: "Completed" },
+    // No badge: the other channels count items awaiting action, while the
+    // thought feed is a permanent archive whose size isn't a call to one.
+    { key: "thoughts", label: "Thoughts" },
   ];
 </script>
 
@@ -56,7 +60,9 @@
           >
             <span class="nav-bar"></span>
             <span class="nav-label-text">{item.label}</span>
-            <span class="nav-count">{counts[item.key]}</span>
+            {#if counts[item.key] !== undefined}
+              <span class="nav-count">{counts[item.key]}</span>
+            {/if}
           </button>
         </li>
       {/each}

@@ -60,5 +60,42 @@ export interface ReminderUpdate {
   task_lane_id?: string | null;
 }
 
-export type ViewMode = "reminders" | "tasks" | "calendar" | "completed";
+export type ViewMode =
+  | "reminders"
+  | "tasks"
+  | "calendar"
+  | "completed"
+  | "thoughts";
 export type TimeFilter = "all" | "today" | "upcoming" | "recurring";
+
+// ── Thoughts (v0.5) ──────────────────────────────────────────────────
+
+export interface Thought {
+  id: string;
+  body: string;
+  tags: string[];
+  created_at: number;
+  updated_at: number;
+  dirty: boolean;
+}
+
+export interface ThoughtCreate {
+  body: string;
+  tags: string[];
+}
+
+export interface ThoughtUpdate {
+  body?: string;
+  tags?: string[];
+}
+
+export interface ThoughtHit {
+  thought: Thought;
+  /** FTS5 excerpt with matched terms wrapped in <mark>. */
+  snippet: string;
+}
+
+export interface TagCount {
+  tag: string;
+  count: number;
+}

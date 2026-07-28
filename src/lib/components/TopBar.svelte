@@ -25,6 +25,7 @@
     tasks: "TASKS",
     calendar: "CALENDAR",
     completed: "COMPLETED",
+    thoughts: "THOUGHTS",
   };
 
   const filterChips: { key: TimeFilter; label: string }[] = [

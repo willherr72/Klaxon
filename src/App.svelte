@@ -348,7 +348,9 @@
     return candidates[0];
   });
 
-  let counts = $derived.by<Record<ViewMode, number>>(() => ({
+  // Partial: the Thoughts channel deliberately carries no badge — see
+  // the note on `items` in Sidebar.svelte.
+  let counts = $derived.by<Partial<Record<ViewMode, number>>>(() => ({
     reminders: allReminders.filter((r) => !r.silent && isActive(r)).length,
     tasks: allReminders.filter((r) => r.silent && isActive(r)).length,
     calendar: allReminders.filter(isActive).length,
