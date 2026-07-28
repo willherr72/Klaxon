@@ -42,7 +42,11 @@
   let dataDirPath = $state("");
   let globalHotkey = $state("Ctrl+Alt+KeyN");
   let quickAddHotkey = $state("Ctrl+KeyK");
-  type HotkeySlot = "global" | "quickadd" | null;
+  // Trailing underscore deliberately: `captureHotkey` is already the name
+  // of the combo-recording function below, and shadowing it would break
+  // every hotkey field in this modal without an error.
+  let captureHotkey_ = $state("Ctrl+Alt+KeyT");
+  type HotkeySlot = "global" | "quickadd" | "capture" | null;
   let recordingSlot = $state<HotkeySlot>(null);
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let busy = $state(false);
@@ -105,6 +109,7 @@
       };
       globalHotkey = settings["global_hotkey_new"] ?? "Ctrl+Alt+KeyN";
       quickAddHotkey = settings["inapp_hotkey_quickadd"] ?? "Ctrl+KeyK";
+      captureHotkey_ = settings["global_hotkey_capture"] ?? "Ctrl+Alt+KeyT";
       recordingSlot = null;
       sortOrder = settings["list_sort_order"] === "date_desc" ? "date_desc" : "date_asc";
       if (isMobile) {
@@ -162,6 +167,12 @@
           console.error("hotkey save failed", e);
           error = `Could not register hotkey: ${e}`;
         }
+        try {
+          await api.setCaptureHotkey(captureHotkey_ ?? "");
+        } catch (e) {
+          console.error("capture hotkey save failed", e);
+          error = `Could not register capture hotkey: ${e}`;
+        }
       }
       savedFlash = true;
       setTimeout(() => (savedFlash = false), 1200);
@@ -188,6 +199,7 @@
     highCfg = { count: 30, intervalSecs: 4, tone: "siren" };
     globalHotkey = "Ctrl+Alt+KeyN";
     quickAddHotkey = "Ctrl+KeyK";
+    captureHotkey_ = "Ctrl+Alt+KeyT";
     recordingSlot = null;
     sortOrder = "date_asc";
   }
@@ -214,6 +226,7 @@
       e.stopPropagation();
       if (slot === "global") globalHotkey = "";
       else if (slot === "quickadd") quickAddHotkey = "";
+      else if (slot === "capture") captureHotkey_ = "";
       recordingSlot = null;
       return;
     }
@@ -223,6 +236,7 @@
       e.stopPropagation();
       if (slot === "global") globalHotkey = combo;
       else if (slot === "quickadd") quickAddHotkey = combo;
+      else if (slot === "capture") captureHotkey_ = combo;
       recordingSlot = null;
     }
   }
@@ -440,6 +454,29 @@
                   class="hotkey-clear"
                   onclick={() => { globalHotkey = ""; recordingSlot = null; }}
                   disabled={!globalHotkey}
+                >
+                  Clear
+                </button>
+              </div>
+
+              <div class="hotkey-row">
+                <span class="hotkey-label-text">Global · Capture Thought</span>
+                <button
+                  class="hotkey-btn"
+                  class:recording={recordingSlot === "capture"}
+                  onclick={() => (recordingSlot = recordingSlot === "capture" ? null : "capture")}
+                >
+                  {#if recordingSlot === "capture"}
+                    <span class="rec-dot"></span>
+                    <span>Press combo… (Esc cancel · Del clear)</span>
+                  {:else}
+                    <span class="hotkey-value">{prettyShortcut(captureHotkey_)}</span>
+                  {/if}
+                </button>
+                <button
+                  class="hotkey-clear"
+                  onclick={() => { captureHotkey_ = ""; recordingSlot = null; }}
+                  disabled={!captureHotkey_}
                 >
                   Clear
                 </button>

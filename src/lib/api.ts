@@ -36,6 +36,8 @@ export const api = {
   dataDir: () => invoke<string>("data_dir"),
   setGlobalHotkey: (combo: string) =>
     invoke<void>("set_global_hotkey", { combo }),
+  setCaptureHotkey: (combo: string) =>
+    invoke<void>("set_capture_hotkey", { combo }),
   previewTone: (tone: string) =>
     invoke<void>("preview_tone", { tone }),
   nlParse: (input: string) =>
