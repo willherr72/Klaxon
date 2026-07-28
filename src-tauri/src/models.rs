@@ -163,3 +163,64 @@ pub fn normalize_tags(input: impl IntoIterator<Item = String>) -> Vec<String> {
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
+
+/// Hard ceiling on a thought body. An Android share can carry an entire
+/// article, and the whole ChangeSet is held in memory under the 16 MiB
+/// frame cap in `sync/proto.rs` — 64 K characters is generous for a
+/// thought and far below that even in bulk.
+pub const MAX_THOUGHT_CHARS: usize = 65_536;
+
+/// Trim surrounding whitespace and clamp to `MAX_THOUGHT_CHARS`.
+/// Counts characters, not bytes — slicing bytes would panic mid-codepoint.
+pub fn truncate_body(raw: &str) -> String {
+    raw.trim().chars().take(MAX_THOUGHT_CHARS).collect()
+}
+
+/// A captured thought: free text, no time, no lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thought {
+    pub id: String,
+    pub body: String,
+    /// Free-form labels sharing the reminder tag vocabulary. Persisted as
+    /// a JSON array of lowercase strings.
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThoughtCreate {
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThoughtUpdate {
+    pub body: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_body, MAX_THOUGHT_CHARS};
+
+    #[test]
+    fn short_bodies_pass_through_untouched() {
+        assert_eq!(truncate_body("  an idea  "), "an idea");
+    }
+
+    #[test]
+    fn long_bodies_are_capped_at_the_char_limit() {
+        let huge = "x".repeat(MAX_THOUGHT_CHARS + 500);
+        assert_eq!(truncate_body(&huge).chars().count(), MAX_THOUGHT_CHARS);
+    }
+
+    #[test]
+    fn truncation_counts_chars_not_bytes() {
+        // A naive byte-slice would panic here by splitting a multi-byte char.
+        let huge = "é".repeat(MAX_THOUGHT_CHARS + 10);
+        assert_eq!(truncate_body(&huge).chars().count(), MAX_THOUGHT_CHARS);
+    }
+}
