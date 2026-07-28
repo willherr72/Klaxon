@@ -23,6 +23,22 @@
   let editing = $state(false);
   let draft = $state("");
   let expanded = $state(false);
+  let editEl: HTMLTextAreaElement | null = $state(null);
+
+  // Tapping outside a live edit commits it. Mobile has no Esc key, so
+  // otherwise Enter would be the only way out of edit mode. Saving rather
+  // than discarding means a stray tap never throws typing away — the
+  // thought is still there to re-edit. Esc still cancels on desktop.
+  $effect(() => {
+    if (!editing) return;
+    function onPointerDown(e: PointerEvent) {
+      const target = e.target as Node | null;
+      if (editEl && target && editEl.contains(target)) return;
+      void commit();
+    }
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  });
 
   let lines = $derived(thought.body.split("\n"));
   let heading = $derived(lines[0]);
@@ -36,7 +52,16 @@
 
   async function commit() {
     const text = draft.trim();
-    if (!text) return; // Refuse to blank a thought via edit.
+    if (!text) {
+      // Refuse to blank a thought via edit. Leaving edit mode here would
+      // silently discard whatever the user cleared, so stay put.
+      return;
+    }
+    if (text === thought.body) {
+      // Nothing changed — close without a pointless write and sync push.
+      editing = false;
+      return;
+    }
     await onEdit(thought.id, text);
     editing = false;
   }
@@ -56,8 +81,13 @@
   <div class="body" class:expanded>
     {#if editing}
       <!-- svelte-ignore a11y_autofocus -->
-      <textarea bind:value={draft} onkeydown={onKeydown} autofocus></textarea>
-      <div class="hint mono-caps-faint">Enter saves · Esc cancels</div>
+      <textarea
+        bind:this={editEl}
+        bind:value={draft}
+        onkeydown={onKeydown}
+        autofocus
+      ></textarea>
+      <div class="hint mono-caps-faint">Enter or tap away saves · Esc cancels</div>
     {:else if snippet}
       <!-- The <mark> tags come from SQLite's FTS5 snippet() function, not
            from user input — SQLite escapes the stored text before
