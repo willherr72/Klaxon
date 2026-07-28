@@ -11,7 +11,9 @@ use rusqlite::{params, Connection, Row};
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
-use crate::models::{normalize_tags, now_ms, truncate_body, Thought, ThoughtCreate, ThoughtUpdate};
+use crate::models::{
+    extract_tags, normalize_tags, now_ms, truncate_body, Thought, ThoughtCreate, ThoughtUpdate,
+};
 use crate::sync::types::RemoteThought;
 
 fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
@@ -30,12 +32,29 @@ fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
 
 const COLUMNS: &str = "id, body, tags, created_at, updated_at, dirty";
 
+/// A thought's tags are whatever `#tag`s appear in its body, plus any the
+/// caller passed explicitly (the Android share-target will want that).
+///
+/// The body is the source of truth: deleting `#idea` from the text while
+/// editing removes the tag. There is no way to attach a tag that isn't
+/// written in the body, which is what makes the round trip predictable —
+/// what you see in the text is what you get in the chips.
+fn tags_for(body: &str, explicit: Vec<String>) -> Vec<String> {
+    let mut all = normalize_tags(explicit);
+    for tag in extract_tags(body) {
+        if !all.contains(&tag) {
+            all.push(tag);
+        }
+    }
+    all
+}
+
 pub fn create(conn: &Connection, input: ThoughtCreate) -> AppResult<Thought> {
     let body = truncate_body(&input.body);
     if body.is_empty() {
         return Err(AppError::Invalid("thought body required".into()));
     }
-    let tags = normalize_tags(input.tags);
+    let tags = tags_for(&body, input.tags);
     let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_ms();
@@ -89,10 +108,9 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
         }
         None => current.body,
     };
-    let tags = match patch.tags {
-        Some(t) => normalize_tags(t),
-        None => current.tags,
-    };
+    // Re-derive from the (possibly edited) body so removing a #tag while
+    // editing actually drops the chip.
+    let tags = tags_for(&body, patch.tags.unwrap_or_default());
     let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
 
     conn.execute(
@@ -310,6 +328,72 @@ mod tests {
         let fetched = get_by_id(&conn, &made.id).unwrap();
         assert_eq!(fetched.body, made.body);
         assert_eq!(fetched.tags, made.tags);
+    }
+
+    #[test]
+    fn inline_hashtags_in_the_body_become_tags() {
+        let conn = test_conn();
+        let made = create(
+            &conn,
+            ThoughtCreate {
+                body: "book idea about #lighthouses #Writing".into(),
+                tags: vec![],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            made.tags,
+            vec!["lighthouses".to_string(), "writing".to_string()],
+            "inline #tags should be extracted and lowercased"
+        );
+        assert!(
+            made.body.contains("#lighthouses"),
+            "the #tag text must stay in the body — nothing the user typed is rewritten"
+        );
+    }
+
+    #[test]
+    fn editing_out_a_hashtag_drops_the_tag() {
+        let conn = test_conn();
+        let made = create(
+            &conn,
+            ThoughtCreate { body: "ship it #urgent".into(), tags: vec![] },
+        )
+        .unwrap();
+        assert_eq!(made.tags, vec!["urgent".to_string()]);
+
+        let edited = update(
+            &conn,
+            &made.id,
+            ThoughtUpdate { body: Some("ship it".into()), tags: None },
+        )
+        .unwrap();
+        assert!(edited.tags.is_empty(), "body is the source of truth for tags");
+    }
+
+    #[test]
+    fn a_bare_hash_is_not_a_tag() {
+        let conn = test_conn();
+        let made = create(
+            &conn,
+            ThoughtCreate { body: "the # sign alone".into(), tags: vec![] },
+        )
+        .unwrap();
+        assert!(made.tags.is_empty());
+    }
+
+    #[test]
+    fn inline_tags_are_searchable() {
+        let conn = test_conn();
+        create(
+            &conn,
+            ThoughtCreate { body: "sourdough notes #recipe".into(), tags: vec![] },
+        )
+        .unwrap();
+        // The tag was never typed as a standalone word, so this only works
+        // if extraction ran before the row hit the FTS triggers.
+        assert_eq!(search(&conn, "recipe", None, 50, 0).unwrap().len(), 1);
     }
 
     #[test]

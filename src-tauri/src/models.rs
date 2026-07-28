@@ -146,6 +146,45 @@ pub fn normalize_tag(raw: &str) -> Option<String> {
     }
 }
 
+/// The `#tag` rule, in one place: a token must start with `#` and have
+/// something after it; the remainder keeps only alphanumerics, `-` and `_`,
+/// lowercased. Returns `None` for anything that isn't a usable tag.
+///
+/// Shared by the natural-language parser (which strips the token from the
+/// title) and the Thoughts feed (which leaves it in the body) so the two
+/// can never drift on what counts as a tag.
+pub fn tag_from_token(token: &str) -> Option<String> {
+    if !token.starts_with('#') || token.len() <= 1 {
+        return None;
+    }
+    let cleaned: String = token[1..]
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect::<String>()
+        .to_lowercase();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Every `#tag` mentioned in free text, deduplicated, first-seen order.
+/// The text itself is left alone — callers that want the tags removed do
+/// that separately.
+pub fn extract_tags(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for token in text.split_whitespace() {
+        if let Some(tag) = tag_from_token(token) {
+            if seen.insert(tag.clone()) {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
 /// Normalize + dedupe a list of tags, preserving first-seen order.
 pub fn normalize_tags(input: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
