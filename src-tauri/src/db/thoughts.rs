@@ -8,6 +8,7 @@
 //! on `dirty` — see issue #1.
 
 use rusqlite::{params, Connection, Row};
+use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{normalize_tags, now_ms, truncate_body, Thought, ThoughtCreate, ThoughtUpdate};
@@ -106,6 +107,108 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+/// A search result: the thought plus an FTS5-generated excerpt with the
+/// matched terms wrapped in `<mark>`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThoughtHit {
+    pub thought: Thought,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TagCount {
+    pub tag: String,
+    pub count: i64,
+}
+
+/// Full-text search, optionally narrowed to a single tag.
+///
+/// Ordered by FTS5 `rank` (best match first) rather than recency — when
+/// you are searching you want relevance; the unsearched feed is the place
+/// for chronology. Returns an empty vec when the query has no usable
+/// tokens; callers show the plain feed in that case.
+pub fn search(
+    conn: &Connection,
+    query: &str,
+    tag: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ThoughtHit>> {
+    let Some(match_query) = crate::search::to_match_query(query) else {
+        return Ok(Vec::new());
+    };
+
+    // `?4` is the tag filter: NULL means "no filter". Tags are a JSON array
+    // of normalized lowercase strings, so an exact element match via
+    // json_each is precise — no LIKE substring false positives.
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.body, t.tags, t.created_at, t.updated_at, t.dirty,
+                snippet(thoughts_fts, 0, '<mark>', '</mark>', '…', 12) AS snip
+           FROM thoughts_fts
+           JOIN thoughts t ON t.rowid = thoughts_fts.rowid
+          WHERE thoughts_fts MATCH ?1
+            AND (?4 IS NULL OR EXISTS (
+                  SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?4
+                ))
+          ORDER BY rank
+          LIMIT ?2 OFFSET ?3",
+    )?;
+    let rows = stmt.query_map(params![match_query, limit, offset, tag], |row| {
+        Ok(ThoughtHit {
+            thought: row_to_thought(row)?,
+            snippet: row.get("snip")?,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// The feed filtered to one tag, with no search query. Newest first,
+/// matching `list`.
+pub fn list_by_tag(
+    conn: &Connection,
+    tag: &str,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<Thought>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM thoughts t
+          WHERE EXISTS (
+                SELECT 1 FROM json_each(t.tags) WHERE json_each.value = ?1
+              )
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?2 OFFSET ?3"
+    ))?;
+    let rows = stmt.query_map(params![tag, limit, offset], row_to_thought)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// Every tag in use on a thought, with how many thoughts carry it.
+/// Most-used first, then alphabetical — drives the tag browser.
+pub fn tag_counts(conn: &Connection) -> AppResult<Vec<TagCount>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_each.value AS tag, COUNT(*) AS n
+           FROM thoughts, json_each(thoughts.tags)
+          GROUP BY json_each.value
+          ORDER BY n DESC, tag ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(TagCount { tag: r.get("tag")?, count: r.get("n")? })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -208,5 +311,131 @@ mod tests {
             create(&conn, ThoughtCreate { body: "gone".into(), tags: vec![] }).unwrap();
         delete(&conn, &made.id).unwrap();
         assert!(get_by_id(&conn, &made.id).is_err());
+    }
+
+    use super::{list_by_tag, search, tag_counts};
+
+    fn seed(conn: &rusqlite::Connection) {
+        create(
+            conn,
+            ThoughtCreate {
+                body: "sourdough starter needs feeding".into(),
+                tags: vec!["recipe".into()],
+            },
+        )
+        .unwrap();
+        create(
+            conn,
+            ThoughtCreate {
+                body: "book idea about lighthouses".into(),
+                tags: vec!["writing".into(), "idea".into()],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn search_matches_body_text() {
+        let conn = test_conn();
+        seed(&conn);
+        let hits = search(&conn, "sourdough", None, 50, 0).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].thought.body, "sourdough starter needs feeding");
+        assert!(
+            hits[0].snippet.contains("<mark>"),
+            "snippet should mark the match, got {:?}",
+            hits[0].snippet
+        );
+    }
+
+    #[test]
+    fn search_matches_tags_too() {
+        let conn = test_conn();
+        seed(&conn);
+        let hits = search(&conn, "writing", None, 50, 0).unwrap();
+        assert_eq!(hits.len(), 1, "a tag-only match should still be found");
+        assert_eq!(hits[0].thought.body, "book idea about lighthouses");
+    }
+
+    #[test]
+    fn search_matches_on_a_prefix_as_you_type() {
+        let conn = test_conn();
+        seed(&conn);
+        assert_eq!(search(&conn, "sour", None, 50, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn search_treats_operators_as_literal_text() {
+        let conn = test_conn();
+        seed(&conn);
+        // Must not raise an FTS5 syntax error, and must not be read as an
+        // OR query (which would match both seeded rows).
+        let hits = search(&conn, "cats OR dogs", None, 50, 0).unwrap();
+        assert!(hits.is_empty(), "no thought contains that literal phrase");
+
+        assert!(search(&conn, "\"", None, 50, 0).is_ok(), "lone quote must not error");
+        assert!(search(&conn, "foo-bar", None, 50, 0).is_ok(), "hyphen must not error");
+    }
+
+    #[test]
+    fn search_reflects_edits_and_deletes() {
+        let conn = test_conn();
+        seed(&conn);
+        let hit = search(&conn, "sourdough", None, 50, 0).unwrap().remove(0);
+
+        update(
+            &conn,
+            &hit.thought.id,
+            ThoughtUpdate { body: Some("bread machine broke".into()), tags: None },
+        )
+        .unwrap();
+        assert!(search(&conn, "sourdough", None, 50, 0).unwrap().is_empty());
+        assert_eq!(search(&conn, "bread", None, 50, 0).unwrap().len(), 1);
+
+        delete(&conn, &hit.thought.id).unwrap();
+        assert!(search(&conn, "bread", None, 50, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_composes_with_a_tag_filter() {
+        let conn = test_conn();
+        seed(&conn);
+        create(
+            &conn,
+            ThoughtCreate {
+                body: "another lighthouse thought".into(),
+                tags: vec!["recipe".into()],
+            },
+        )
+        .unwrap();
+
+        let all = search(&conn, "lighthouse", None, 50, 0).unwrap();
+        assert_eq!(all.len(), 2);
+
+        let filtered = search(&conn, "lighthouse", Some("writing"), 50, 0).unwrap();
+        assert_eq!(filtered.len(), 1, "tag filter should narrow the search");
+        assert_eq!(filtered[0].thought.body, "book idea about lighthouses");
+    }
+
+    #[test]
+    fn list_by_tag_returns_only_that_tag() {
+        let conn = test_conn();
+        seed(&conn);
+        let rows = list_by_tag(&conn, "idea", 50, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].body, "book idea about lighthouses");
+    }
+
+    #[test]
+    fn tag_counts_are_aggregated_and_ordered() {
+        let conn = test_conn();
+        seed(&conn);
+        create(&conn, ThoughtCreate { body: "third".into(), tags: vec!["idea".into()] })
+            .unwrap();
+
+        let counts = tag_counts(&conn).unwrap();
+        let idea = counts.iter().find(|c| c.tag == "idea").unwrap();
+        assert_eq!(idea.count, 2);
+        assert_eq!(counts[0].tag, "idea", "most-used tag comes first");
     }
 }
