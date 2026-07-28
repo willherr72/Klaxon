@@ -9,6 +9,7 @@
   import TopBar from "./lib/components/TopBar.svelte";
   import ReminderList from "./lib/components/ReminderList.svelte";
   import ReminderEditor from "./lib/components/ReminderEditor.svelte";
+  import ThoughtsView from "./lib/components/ThoughtsView.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import SettingsModal from "./lib/components/SettingsModal.svelte";
   import IncomingPairModal from "./lib/components/IncomingPairModal.svelte";
@@ -36,6 +37,10 @@
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let editorDefaultDueAt = $state<number | null>(null);
   let editorDefaultSilent = $state(false);
+  // Seeds the title when promoting a thought into a task or reminder.
+  // Cleared by every other editor-opening path so a promoted thought
+  // can't leak into the next "New reminder".
+  let editorDefaultTitle = $state("");
   // v0.3.1: when the user hits `+ Add task` on a swim-lane column, this
   // pre-seeds the editor so the saved task lands in the right lane.
   let editorDefaultLaneId = $state<string | null>(null);
@@ -399,6 +404,7 @@
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
     editorDefaultLaneId = null;
+    editorDefaultTitle = "";
     editingId.set(null);
     editorOpen.set(true);
   }
@@ -409,6 +415,22 @@
     editorDefaultDueAt = ms;
     editorDefaultSilent = silent;
     editorDefaultLaneId = null;
+    editorDefaultTitle = "";
+    editingId.set(null);
+    editorOpen.set(true);
+  }
+
+  /** Open the editor for a brand-new task or reminder seeded from a
+   * thought's text. The thought itself is untouched — this is a copy, not
+   * a move, so acting on an idea never puts a hole in the archive.
+   *
+   * Only the first line becomes the title: a title field shouldn't hold a
+   * paragraph, and the rest of the thought stays available in the feed. */
+  function openNewFromThought(body: string, silent: boolean) {
+    editorDefaultDueAt = null;
+    editorDefaultSilent = silent;
+    editorDefaultLaneId = null;
+    editorDefaultTitle = body.split("\n")[0].slice(0, 200);
     editingId.set(null);
     editorOpen.set(true);
   }
@@ -419,6 +441,7 @@
     editorDefaultDueAt = null;
     editorDefaultSilent = true;
     editorDefaultLaneId = laneId;
+    editorDefaultTitle = "";
     editingId.set(null);
     editorOpen.set(true);
   }
@@ -427,6 +450,7 @@
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
     editorDefaultLaneId = null;
+    editorDefaultTitle = "";
     editingId.set(r.id);
     editorOpen.set(true);
   }
@@ -455,6 +479,7 @@
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
     editorDefaultLaneId = null;
+    editorDefaultTitle = "";
   }
 
   async function handleSave(input: ReminderCreate, id: string | null) {
@@ -552,6 +577,11 @@
       onSelect={openEdit}
       onAddCardToLane={openNewInLane}
     />
+  {:else if currentView === "thoughts"}
+    <ThoughtsView
+      onMakeTask={(body) => openNewFromThought(body, true)}
+      onMakeReminder={(body) => openNewFromThought(body, false)}
+    />
   {:else}
     <ReminderList
       reminders={filtered}
@@ -577,6 +607,7 @@
     defaultDueAt={editorDefaultDueAt}
     defaultSilent={editorDefaultSilent}
     defaultLaneId={editorDefaultLaneId}
+    defaultTitle={editorDefaultTitle}
     onClose={closeEditor}
     onSave={handleSave}
     onDelete={handleDelete}
