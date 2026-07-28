@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability for the main and alert windows",
-  "windows": ["main", "alert-*"],
+  "description": "Default capability for the main, alert and capture windows",
+  "windows": ["main", "alert-*", "capture"],
   "permissions": [
     "core:default",
     "core:window:allow-close",

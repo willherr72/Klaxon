@@ -122,6 +122,20 @@ pub fn run() {
                     let _ = window.hide();
                 }
             }
+            // The capture box dismisses when it loses focus, the way
+            // Spotlight-style launchers do. This lives in Rust on purpose:
+            // it is the escape hatch that still works when the webview
+            // can't close itself. The window is frameless and hidden from
+            // the taskbar, so without a hatch outside the webview a failed
+            // close leaves an always-on-top window only Task Manager can
+            // kill — which is exactly what a missing capability caused
+            // once already.
+            #[cfg(desktop)]
+            if let tauri::WindowEvent::Focused(false) = event {
+                if window.label() == capture::LABEL {
+                    let _ = window.close();
+                }
+            }
             #[cfg(not(desktop))]
             {
                 let _ = (window, event);

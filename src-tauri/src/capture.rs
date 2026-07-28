@@ -8,7 +8,11 @@
 
 use tauri::{AppHandle, Manager, Monitor, WebviewUrl, WebviewWindowBuilder};
 
-const LABEL: &str = "capture";
+/// Also matched in `lib.rs`'s window-event handler to dismiss the box on
+/// focus loss, and listed in `capabilities/default.json` — a window label
+/// absent from that file gets *no* permissions, so it cannot even close
+/// itself. Keep the three in step.
+pub const LABEL: &str = "capture";
 const W: f64 = 560.0;
 const H: f64 = 190.0;
 
