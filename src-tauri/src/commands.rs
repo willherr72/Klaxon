@@ -177,7 +177,33 @@ pub fn set_global_hotkey(
         let conn = state.db.lock();
         cfg::set(&conn, "global_hotkey_new", &combo)?;
     }
-    crate::install_global_hotkey(&app, &state.current_hotkey, &combo)
+    crate::install_global_hotkey(
+        &app,
+        &state.current_hotkey,
+        &combo,
+        crate::HotkeyAction::NewReminder,
+    )
+}
+
+/// Re-register the thought-capture hotkey. An empty string clears it.
+/// Desktop only, same as `set_global_hotkey`.
+#[cfg(desktop)]
+#[tauri::command]
+pub fn set_capture_hotkey(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    combo: String,
+) -> AppResult<()> {
+    {
+        let conn = state.db.lock();
+        cfg::set(&conn, "global_hotkey_capture", &combo)?;
+    }
+    crate::install_global_hotkey(
+        &app,
+        &state.capture_hotkey,
+        &combo,
+        crate::HotkeyAction::CaptureThought,
+    )
 }
 
 /// Desktop only — the in-process audio engine doesn't run on Android

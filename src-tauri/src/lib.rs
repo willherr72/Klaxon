@@ -1,5 +1,7 @@
 mod alerts;
 mod audio;
+#[cfg(desktop)]
+mod capture;
 mod commands;
 mod mobile_bg;
 pub mod db;
@@ -41,6 +43,10 @@ pub struct AppState {
     pub active_alerts: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     #[cfg(desktop)]
     pub current_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    /// Separate slot from `current_hotkey` so the two global hotkeys can
+    /// be re-registered independently.
+    #[cfg(desktop)]
+    pub capture_hotkey: Arc<Mutex<Option<Shortcut>>>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::PendingPairs,
     /// v0.3 iroh transport. `None` until setup completes or if sync is
@@ -56,6 +62,9 @@ pub struct AppState {
 
 #[cfg(desktop)]
 const DEFAULT_GLOBAL_HOTKEY: &str = "Ctrl+Alt+KeyN";
+
+#[cfg(desktop)]
+const DEFAULT_CAPTURE_HOTKEY: &str = "Ctrl+Alt+KeyT";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -136,6 +145,8 @@ pub fn run() {
             let audio_tx = audio::spawn_engine();
             #[cfg(desktop)]
             let current_hotkey: Arc<Mutex<Option<Shortcut>>> = Arc::new(Mutex::new(None));
+            #[cfg(desktop)]
+            let capture_hotkey: Arc<Mutex<Option<Shortcut>>> = Arc::new(Mutex::new(None));
 
             let scheduler_db = db.clone();
             let scheduler_handle = app.handle().clone();
@@ -231,10 +242,29 @@ pub fn run() {
                         .flatten()
                         .unwrap_or_else(|| DEFAULT_GLOBAL_HOTKEY.to_string())
                 };
-                if let Err(e) =
-                    install_global_hotkey(&app.handle().clone(), &current_hotkey, &stored)
-                {
+                if let Err(e) = install_global_hotkey(
+                    &app.handle().clone(),
+                    &current_hotkey,
+                    &stored,
+                    HotkeyAction::NewReminder,
+                ) {
                     log::warn!("could not register global hotkey {stored:?}: {e}");
+                }
+
+                let stored_capture = {
+                    let conn = db.lock();
+                    cfg::get(&conn, "global_hotkey_capture")
+                        .ok()
+                        .flatten()
+                        .unwrap_or_else(|| DEFAULT_CAPTURE_HOTKEY.to_string())
+                };
+                if let Err(e) = install_global_hotkey(
+                    &app.handle().clone(),
+                    &capture_hotkey,
+                    &stored_capture,
+                    HotkeyAction::CaptureThought,
+                ) {
+                    log::warn!("could not register capture hotkey {stored_capture:?}: {e}");
                 }
             }
 
@@ -246,6 +276,8 @@ pub fn run() {
                 active_alerts: Arc::new(Mutex::new(HashMap::new())),
                 #[cfg(desktop)]
                 current_hotkey,
+                #[cfg(desktop)]
+                capture_hotkey,
                 discovery: discovery_handle,
                 pending_pairs,
                 iroh_node: iroh_node_state,
@@ -279,6 +311,8 @@ pub fn run() {
             #[cfg(desktop)]
             commands::set_global_hotkey,
             #[cfg(desktop)]
+            commands::set_capture_hotkey,
+            #[cfg(desktop)]
             commands::preview_tone,
             commands::nl_parse,
             commands::list_peers,
@@ -310,12 +344,26 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Replace the currently-registered global hotkey with one parsed from `combo`.
+/// What a registered global hotkey does when pressed.
+#[cfg(desktop)]
+#[derive(Debug, Clone, Copy)]
+pub enum HotkeyAction {
+    /// Raise the main window and open the new-reminder editor.
+    NewReminder,
+    /// Open the standalone thought-capture box, leaving the main window
+    /// alone — the whole point is not to interrupt what's on screen.
+    CaptureThought,
+}
+
+/// Replace the shortcut registered in `current` with one parsed from
+/// `combo`, bound to `action`. Each caller owns its own slot, so the two
+/// hotkeys can be re-registered independently.
 #[cfg(desktop)]
 pub fn install_global_hotkey(
     app: &AppHandle,
     current: &Mutex<Option<Shortcut>>,
     combo: &str,
+    action: HotkeyAction,
 ) -> AppResult<()> {
     let mut guard = current.lock();
     if let Some(old) = guard.take() {
@@ -332,14 +380,20 @@ pub fn install_global_hotkey(
         .map_err(|e| crate::error::AppError::Invalid(format!("hotkey {combo:?}: {e}")))?;
 
     app.global_shortcut()
-        .on_shortcut(shortcut, |app, _sc, event| {
-            if event.state() == ShortcutState::Pressed {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.unminimize();
-                    let _ = w.set_focus();
+        .on_shortcut(shortcut, move |app, _sc, event| {
+            if event.state() != ShortcutState::Pressed {
+                return;
+            }
+            match action {
+                HotkeyAction::NewReminder => {
+                    if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                    let _ = app.emit(tray::EVT_OPEN_NEW, ());
                 }
-                let _ = app.emit(tray::EVT_OPEN_NEW, ());
+                HotkeyAction::CaptureThought => crate::capture::spawn(app),
             }
         })
         .map_err(|e| crate::error::AppError::Invalid(format!("register {combo:?}: {e}")))?;

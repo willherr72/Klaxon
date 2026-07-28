@@ -21,6 +21,7 @@ pub fn ensure_defaults(conn: &Connection) -> AppResult<()> {
         ("autostart_enabled", "false"),
         ("theme", "industrial"),
         ("global_hotkey_new", "Ctrl+Alt+KeyN"),
+        ("global_hotkey_capture", "Ctrl+Alt+KeyT"),
         ("inapp_hotkey_quickadd", "Ctrl+KeyK"),
         ("sync_enabled", "false"),
         ("sync_port", "7124"),
