@@ -1,13 +1,23 @@
 <script lang="ts">
   import SignalLight from "./SignalLight.svelte";
+
+  // Defaults reproduce the original hardcoded copy, so existing call
+  // sites are unaffected by this becoming configurable.
+  let {
+    primary = "No Reminders",
+    secondary = "All Clear · System Idle",
+  }: {
+    primary?: string;
+    secondary?: string;
+  } = $props();
 </script>
 
 <div class="empty">
   <div class="halo">
     <SignalLight priority="low" size={14} pulse />
   </div>
-  <div class="primary mono-caps">No Reminders</div>
-  <div class="secondary mono-caps-faint">All Clear · System Idle</div>
+  <div class="primary mono-caps">{primary}</div>
+  <div class="secondary mono-caps-faint">{secondary}</div>
   <div class="rule"></div>
 </div>
 
