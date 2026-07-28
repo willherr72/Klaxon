@@ -25,7 +25,7 @@
 
 <div class="capture">
   <div class="bar mono-caps-faint">Capture a thought</div>
-  <ThoughtComposer onCreate={save} />
+  <ThoughtComposer onCreate={save} autofocus />
 </div>
 
 <style>

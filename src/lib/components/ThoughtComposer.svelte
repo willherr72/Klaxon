@@ -1,8 +1,13 @@
 <script lang="ts">
   let {
     onCreate,
+    autofocus = false,
   }: {
     onCreate: (body: string) => Promise<void> | void;
+    /** Take keyboard focus as soon as the textarea exists. Used by the
+     * hotkey capture window, where the whole point is to type
+     * immediately without reaching for the mouse. */
+    autofocus?: boolean;
   } = $props();
 
   let body = $state("");
@@ -46,6 +51,11 @@
   }
 
   let highlighted = $derived(highlight(body));
+
+  // Runs once `el` is bound, which is what we actually want to wait for.
+  $effect(() => {
+    if (autofocus && el) el.focus();
+  });
 
   // Grow with the content instead of scrolling. A thought is usually one
   // line, but pasting a paragraph shouldn't hide most of it.

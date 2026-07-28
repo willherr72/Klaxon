@@ -40,8 +40,16 @@ pub fn spawn(app: &AppHandle) {
         .visible(true)
         .build();
 
-    if let Err(e) = result {
-        log::error!("failed to spawn capture window: {e}");
+    match result {
+        // `.focused(true)` at build time is not enough on Windows: a
+        // window spawned from a global shortcut often comes up without
+        // foreground focus, so keystrokes keep going to whatever the user
+        // was in. That breaks Esc, and it also disables the close-on-blur
+        // hatch below — a window that never gains focus never loses it.
+        Ok(w) => {
+            let _ = w.set_focus();
+        }
+        Err(e) => log::error!("failed to spawn capture window: {e}"),
     }
 }
 
