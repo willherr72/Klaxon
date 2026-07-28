@@ -3,6 +3,7 @@ pub mod peers;
 pub mod reminders;
 pub mod settings;
 pub mod task_lanes;
+pub mod thoughts;
 pub mod tombstones;
 
 use std::path::Path;
