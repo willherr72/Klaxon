@@ -105,8 +105,19 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
     get_by_id(conn, id)
 }
 
+/// Delete a thought and record a tombstone so paired devices drop their
+/// copy too. Mirrors `reminders::delete` — the tombstone lives here rather
+/// than in the command so no future caller can forget it.
+///
+/// Not used by the sync-apply path: an incoming tombstone is handled by
+/// `tombstones::apply_remote`, which drops the row without writing a
+/// fresh, dirty tombstone that would echo straight back.
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
-    conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
+    let n = conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("thought {id}")));
+    }
+    super::tombstones::create(conn, id, now_ms())?;
     Ok(())
 }
 
@@ -359,12 +370,29 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_the_row() {
+    fn delete_removes_the_row_and_writes_a_tombstone() {
         let conn = test_conn();
         let made =
             create(&conn, ThoughtCreate { body: "gone".into(), tags: vec![] }).unwrap();
         delete(&conn, &made.id).unwrap();
         assert!(get_by_id(&conn, &made.id).is_err());
+
+        // Without the tombstone, a paired device would resurrect the row on
+        // the next sync instead of dropping its copy.
+        let tombstoned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tombstones WHERE id = ?1",
+                rusqlite::params![made.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstoned, 1);
+    }
+
+    #[test]
+    fn deleting_a_missing_thought_is_an_error() {
+        let conn = test_conn();
+        assert!(delete(&conn, "nope").is_err());
     }
 
     use super::{list_by_tag, search, tag_counts};

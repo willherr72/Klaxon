@@ -299,6 +299,12 @@ pub fn run() {
             commands::delete_lane,
             commands::reorder_lanes,
             commands::set_task_lane,
+            commands::list_thoughts,
+            commands::search_thoughts,
+            commands::create_thought,
+            commands::update_thought,
+            commands::delete_thought,
+            commands::thought_tag_counts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,9 +4,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::alerts;
-use crate::db::{peers as peer_repo, reminders as repo, settings as cfg};
+use crate::db::thoughts::{TagCount, ThoughtHit};
+use crate::db::{peers as peer_repo, reminders as repo, settings as cfg, thoughts};
 use crate::error::{AppError, AppResult};
-use crate::models::{now_ms, Reminder, ReminderCreate, ReminderState, ReminderUpdate};
+use crate::models::{
+    now_ms, Reminder, ReminderCreate, ReminderState, ReminderUpdate, Thought, ThoughtCreate,
+    ThoughtUpdate,
+};
 use crate::scheduler::SchedulerMsg;
 use crate::sync;
 use crate::sync::types::PingResponse;
@@ -695,4 +699,84 @@ pub fn decline_pair_request(
             "pair request {request_id} expired or unknown"
         )))
     }
+}
+
+// ── Thoughts (v0.5) ──────────────────────────────────────────────────
+
+/// The feed, newest first. `tag` narrows to a single tag when present.
+#[tauri::command]
+pub fn list_thoughts(
+    state: State<'_, AppState>,
+    tag: Option<String>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<Thought>> {
+    let conn = state.db.lock();
+    match tag.as_deref() {
+        Some(t) => thoughts::list_by_tag(&conn, t, limit, offset),
+        None => thoughts::list(&conn, limit, offset),
+    }
+}
+
+#[tauri::command]
+pub fn search_thoughts(
+    state: State<'_, AppState>,
+    query: String,
+    tag: Option<String>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ThoughtHit>> {
+    let conn = state.db.lock();
+    thoughts::search(&conn, &query, tag.as_deref(), limit, offset)
+}
+
+#[tauri::command]
+pub fn create_thought(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    input: ThoughtCreate,
+) -> AppResult<Thought> {
+    let thought = {
+        let conn = state.db.lock();
+        thoughts::create(&conn, input)?
+    };
+    let _ = app.emit("klaxon://thoughts-changed", ());
+    Ok(thought)
+}
+
+#[tauri::command]
+pub fn update_thought(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+    patch: ThoughtUpdate,
+) -> AppResult<Thought> {
+    let thought = {
+        let conn = state.db.lock();
+        thoughts::update(&conn, &id, patch)?
+    };
+    let _ = app.emit("klaxon://thoughts-changed", ());
+    Ok(thought)
+}
+
+/// `thoughts::delete` writes the tombstone, so paired devices drop their
+/// copy on the next sync.
+#[tauri::command]
+pub fn delete_thought(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+) -> AppResult<()> {
+    {
+        let conn = state.db.lock();
+        thoughts::delete(&conn, &id)?;
+    }
+    let _ = app.emit("klaxon://thoughts-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn thought_tag_counts(state: State<'_, AppState>) -> AppResult<Vec<TagCount>> {
+    let conn = state.db.lock();
+    thoughts::tag_counts(&conn)
 }
