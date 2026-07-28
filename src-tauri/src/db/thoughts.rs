@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{normalize_tags, now_ms, truncate_body, Thought, ThoughtCreate, ThoughtUpdate};
+use crate::sync::types::RemoteThought;
 
 fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
     let tags_json: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
@@ -107,6 +108,59 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+/// Apply a thought that arrived over sync. Last-write-wins by
+/// `updated_at`; older incoming rows are ignored. Returns whether anything
+/// changed. Remote rows land with `dirty = 0`.
+pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT updated_at FROM thoughts WHERE id = ?1",
+            params![t.id],
+            |r| r.get(0),
+        )
+        .ok();
+    if let Some(existing) = existing {
+        if t.updated_at <= existing {
+            return Ok(false);
+        }
+    }
+
+    let tags = normalize_tags(t.tags.clone());
+    let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
+
+    conn.execute(
+        "INSERT INTO thoughts (id, body, tags, created_at, updated_at, dirty)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)
+         ON CONFLICT(id) DO UPDATE SET
+            body = excluded.body,
+            tags = excluded.tags,
+            updated_at = excluded.updated_at,
+            dirty = 0",
+        params![t.id, truncate_body(&t.body), tags_json, t.created_at, t.updated_at],
+    )?;
+    Ok(true)
+}
+
+/// Rows to push to a peer, by the per-peer high-water mark.
+///
+/// Deliberately does NOT filter on `dirty`, matching `reminders`. Lanes
+/// and tombstones do filter, which is why a row learned from one peer
+/// never reaches a second — issue #1. The cost here is that a row echoes
+/// back once to the peer it came from, which is idempotent under LWW.
+pub fn updated_since(conn: &Connection, since: i64) -> AppResult<Vec<Thought>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM thoughts
+          WHERE updated_at > ?1
+          ORDER BY updated_at ASC"
+    ))?;
+    let rows = stmt.query_map(params![since], row_to_thought)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
 }
 
 /// A search result: the thought plus an FTS5-generated excerpt with the
@@ -424,6 +478,83 @@ mod tests {
         let rows = list_by_tag(&conn, "idea", 50, 0).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].body, "book idea about lighthouses");
+    }
+
+    use super::{apply_remote, updated_since};
+    use crate::sync::types::RemoteThought;
+
+    fn remote(id: &str, body: &str, updated_at: i64) -> RemoteThought {
+        RemoteThought {
+            id: id.into(),
+            body: body.into(),
+            tags: vec!["synced".into()],
+            created_at: 1,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn apply_remote_inserts_a_new_thought() {
+        let conn = test_conn();
+        assert!(apply_remote(&conn, &remote("r1", "from the phone", 100)).unwrap());
+        assert_eq!(get_by_id(&conn, "r1").unwrap().body, "from the phone");
+    }
+
+    #[test]
+    fn apply_remote_is_last_write_wins() {
+        let conn = test_conn();
+        apply_remote(&conn, &remote("r1", "older", 100)).unwrap();
+
+        assert!(apply_remote(&conn, &remote("r1", "newer", 200)).unwrap());
+        assert_eq!(get_by_id(&conn, "r1").unwrap().body, "newer");
+
+        assert!(
+            !apply_remote(&conn, &remote("r1", "stale", 150)).unwrap(),
+            "an older incoming row must be ignored"
+        );
+        assert_eq!(get_by_id(&conn, "r1").unwrap().body, "newer");
+    }
+
+    #[test]
+    fn apply_remote_keeps_the_search_index_current() {
+        let conn = test_conn();
+        apply_remote(&conn, &remote("r1", "remote sourdough note", 100)).unwrap();
+        assert_eq!(search(&conn, "sourdough", None, 50, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn updated_since_ignores_the_dirty_flag() {
+        let conn = test_conn();
+        // A row received from a peer lands with dirty = 0. It must still be
+        // forwardable to a third device — see issue #1.
+        apply_remote(&conn, &remote("r1", "from peer A", 100)).unwrap();
+        let pending = updated_since(&conn, 50).unwrap();
+        assert_eq!(pending.len(), 1, "clean rows must still be pushed onward");
+        assert!(!pending[0].dirty);
+
+        assert!(
+            updated_since(&conn, 100).unwrap().is_empty(),
+            "high-water mark is exclusive"
+        );
+    }
+
+    #[test]
+    fn tombstone_apply_removes_a_thought_and_its_index_entry() {
+        let conn = test_conn();
+        let made = create(
+            &conn,
+            ThoughtCreate { body: "delete me sourdough".into(), tags: vec![] },
+        )
+        .unwrap();
+
+        crate::db::tombstones::apply_remote(&conn, &made.id, crate::models::now_ms())
+            .unwrap();
+
+        assert!(get_by_id(&conn, &made.id).is_err(), "row should be gone");
+        assert!(
+            search(&conn, "sourdough", None, 50, 0).unwrap().is_empty(),
+            "FTS index should be gone too"
+        );
     }
 
     #[test]

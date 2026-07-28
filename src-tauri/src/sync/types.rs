@@ -43,6 +43,17 @@ pub struct RemoteTombstone {
     pub deleted_at: i64,
 }
 
+/// A thought as it travels over the wire. No `dirty` — that's local-only
+/// bookkeeping, same as `RemoteReminder` omitting `source`/`external_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteThought {
+    pub id: String,
+    pub body: String,
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeSet {
     pub server_time_ms: i64,
@@ -53,6 +64,18 @@ pub struct ChangeSet {
     /// format compatible with v0.3.0 peers — they just ignore the field.
     #[serde(default)]
     pub lanes: Vec<Lane>,
+    /// v0.5: the Thoughts feed. Appended last so an older peer decoding
+    /// this ChangeSet reads the fields it knows and ignores the trailing
+    /// bytes.
+    ///
+    /// NOTE: the reverse does *not* hold. postcard is not self-describing,
+    /// so `#[serde(default)]` has nothing to trigger on — a newer peer
+    /// decoding an older ChangeSet runs out of buffer here and fails the
+    /// whole frame, not just this field. Accepted risk: upgrade all paired
+    /// devices together. See the spec's §7 and the warning in
+    /// `proto::read_frame`.
+    #[serde(default)]
+    pub thoughts: Vec<RemoteThought>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +85,8 @@ pub struct PushResponse {
     pub accepted_tombstones: usize,
     #[serde(default)]
     pub accepted_lanes: usize,
+    #[serde(default)]
+    pub accepted_thoughts: usize,
 }
 
 // ── Tap-to-pair handshake ────────────────────────────────────────────
@@ -108,6 +133,18 @@ impl From<&crate::models::Reminder> for RemoteReminder {
             silent: r.silent,
             tags: r.tags.clone(),
             task_lane_id: r.task_lane_id.clone(),
+        }
+    }
+}
+
+impl From<&crate::models::Thought> for RemoteThought {
+    fn from(t: &crate::models::Thought) -> Self {
+        Self {
+            id: t.id.clone(),
+            body: t.body.clone(),
+            tags: t.tags.clone(),
+            created_at: t.created_at,
+            updated_at: t.updated_at,
         }
     }
 }

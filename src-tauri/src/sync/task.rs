@@ -11,16 +11,23 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::alerts;
-use crate::db::{peers, reminders as repo, task_lanes, tombstones};
+use crate::db::{peers, reminders as repo, task_lanes, thoughts, tombstones};
 use crate::models::ReminderState;
 use crate::sync::iroh_client;
-use crate::sync::types::{ChangeSet, RemoteReminder, RemoteTombstone};
+use crate::sync::types::{ChangeSet, RemoteReminder, RemoteThought, RemoteTombstone};
 
 /// Emit a "something changed about the reminders table" event so the
 /// frontend re-fetches. Called from anywhere the backend mutates reminders
 /// without a user-initiated command (sync push/pull, scheduler fire).
 pub fn emit_reminders_changed(app: &AppHandle) {
     let _ = app.emit("klaxon://reminders-changed", ());
+}
+
+/// Separate from `emit_reminders_changed` because the Thoughts feed is its
+/// own view with its own paging state — it reloads on this event alone, so
+/// a sync that only carried thoughts still refreshes it.
+pub fn emit_thoughts_changed(app: &AppHandle) {
+    let _ = app.emit("klaxon://thoughts-changed", ());
 }
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(20);
@@ -147,6 +154,12 @@ async fn sync_one(
                 max_pulled = r.updated_at;
             }
         }
+        for t in &pulled.thoughts {
+            let _ = thoughts::apply_remote(&conn, t);
+            if t.updated_at > max_pulled {
+                max_pulled = t.updated_at;
+            }
+        }
         for t in &pulled.tombstones {
             let _ = tombstones::apply_remote(&conn, &t.id, t.deleted_at);
             // Tombstones unconditionally cancel — the reminder is gone, no
@@ -169,20 +182,26 @@ async fn sync_one(
     if !pulled.reminders.is_empty() || !pulled.tombstones.is_empty() || !pulled.lanes.is_empty() {
         emit_reminders_changed(app);
     }
+    if !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty() {
+        emit_thoughts_changed(app);
+    }
 
     // Push
-    let (rems, tombs, lanes) = {
+    let (rems, tombs, lanes, thts) = {
         let conn = db.lock();
         let rs = repo::updated_since(&conn, peer.last_push_at)?;
         let ts = tombstones::dirty_since(&conn, peer.last_push_at)?;
         let ls = task_lanes::dirty_since(&conn, peer.last_push_at)?;
+        // No `dirty` filter — see issue #1.
+        let th = thoughts::updated_since(&conn, peer.last_push_at)?;
         (
             rs.iter().map(RemoteReminder::from).collect::<Vec<_>>(),
             ts.iter().map(RemoteTombstone::from).collect::<Vec<_>>(),
             ls,
+            th.iter().map(RemoteThought::from).collect::<Vec<_>>(),
         )
     };
-    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() {
+    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() && thts.is_empty() {
         return Ok(());
     }
     let max_pushed = rems
@@ -190,6 +209,7 @@ async fn sync_one(
         .map(|r| r.updated_at)
         .chain(tombs.iter().map(|t| t.deleted_at))
         .chain(lanes.iter().map(|l| l.updated_at))
+        .chain(thts.iter().map(|t| t.updated_at))
         .max()
         .unwrap_or(peer.last_push_at);
     let set = ChangeSet {
@@ -197,6 +217,7 @@ async fn sync_one(
         reminders: rems,
         tombstones: tombs,
         lanes,
+        thoughts: thts,
     };
     let resp = iroh_client::push(endpoint, node_id, &peer.shared_secret, set).await?;
     {
@@ -205,14 +226,16 @@ async fn sync_one(
         peers::mark_pushed(&conn, &peer.id, watermark)?;
     }
     log::debug!(
-        "synced with {}: pulled {}r/{}t/{}l, pushed {}r/{}t/{}l",
+        "synced with {}: pulled {}r/{}t/{}l/{}th, pushed {}r/{}t/{}l/{}th",
         peer.name,
         pulled.reminders.len(),
         pulled.tombstones.len(),
         pulled.lanes.len(),
+        pulled.thoughts.len(),
         resp.accepted_reminders,
         resp.accepted_tombstones,
         resp.accepted_lanes,
+        resp.accepted_thoughts,
     );
     Ok(())
 }

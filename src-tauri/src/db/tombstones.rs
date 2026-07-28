@@ -55,5 +55,11 @@ pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<(
         "DELETE FROM reminders WHERE id = ?1 AND updated_at <= ?2",
         params![id, deleted_at],
     )?;
+    // The tombstones table is shared across entity types — a tombstone id
+    // may name a reminder, a lane, or a thought.
+    conn.execute(
+        "DELETE FROM thoughts WHERE id = ?1 AND updated_at <= ?2",
+        params![id, deleted_at],
+    )?;
     Ok(())
 }

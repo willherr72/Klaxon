@@ -15,11 +15,11 @@ use rusqlite::Connection;
 use tauri::AppHandle;
 
 use crate::alerts;
-use crate::db::{reminders as repo, task_lanes, tombstones};
+use crate::db::{reminders as repo, task_lanes, thoughts, tombstones};
 use crate::error::AppResult;
 use crate::models::{now_ms, ReminderState};
 use crate::sync::types::{
-    ChangeSet, PingResponse, PushResponse, RemoteReminder, RemoteTombstone,
+    ChangeSet, PingResponse, PushResponse, RemoteReminder, RemoteThought, RemoteTombstone,
 };
 use crate::sync::DeviceIdentity;
 
@@ -43,11 +43,17 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .map(RemoteTombstone::from)
         .collect();
     let lanes = task_lanes::dirty_since(&conn, since)?;
+    // No `dirty` filter here, unlike lanes/tombstones — see issue #1.
+    let thoughts = thoughts::updated_since(&conn, since)?
+        .iter()
+        .map(RemoteThought::from)
+        .collect();
     Ok(ChangeSet {
         server_time_ms: now_ms(),
         reminders,
         tombstones: ts,
         lanes,
+        thoughts,
     })
 }
 
@@ -64,6 +70,7 @@ pub fn push(
     let mut accepted_reminders = 0usize;
     let mut accepted_tombstones = 0usize;
     let mut accepted_lanes = 0usize;
+    let mut accepted_thoughts = 0usize;
     let mut to_cancel: Vec<String> = Vec::new();
 
     {
@@ -99,15 +106,23 @@ pub fn push(
             }
         }
 
+        for t in &set.thoughts {
+            match thoughts::apply_remote(&conn, t) {
+                Ok(true) => accepted_thoughts += 1,
+                Ok(false) => {}
+                Err(e) => log::warn!("apply remote thought {}: {e}", t.id),
+            }
+        }
+
         for t in &set.tombstones {
             match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
                 Ok(()) => {
                     accepted_tombstones += 1;
                     to_cancel.push(t.id.clone());
-                    // A tombstone may refer to either a reminder or a
-                    // lane (both share the tombstones table). For lanes
-                    // we just delete the row — sync apply already drops
-                    // the row when tombstone is newer.
+                    // A tombstone may refer to a reminder, a lane, or a
+                    // thought (all three share the tombstones table).
+                    // `tombstones::apply_remote` handles reminders and
+                    // thoughts; lanes we drop here.
                     let _ = task_lanes::delete(&conn, &t.id);
                 }
                 Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
@@ -119,8 +134,15 @@ pub fn push(
         for id in to_cancel {
             alerts::cancel_alert(app, &id);
         }
-        if accepted_reminders > 0 || accepted_tombstones > 0 || accepted_lanes > 0 {
+        if accepted_reminders > 0
+            || accepted_tombstones > 0
+            || accepted_lanes > 0
+            || accepted_thoughts > 0
+        {
             crate::sync::task::emit_reminders_changed(app);
+        }
+        if accepted_thoughts > 0 || accepted_tombstones > 0 {
+            crate::sync::task::emit_thoughts_changed(app);
         }
     }
 
@@ -129,5 +151,6 @@ pub fn push(
         accepted_reminders,
         accepted_tombstones,
         accepted_lanes,
+        accepted_thoughts,
     })
 }
