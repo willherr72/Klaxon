@@ -11,6 +11,7 @@ mod nl;
 mod recurrence;
 mod scheduler;
 pub mod search;
+pub mod share;
 pub mod sync;
 #[cfg(desktop)]
 mod tray;
