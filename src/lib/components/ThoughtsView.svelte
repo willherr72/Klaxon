@@ -26,6 +26,10 @@
   let hasMore = $state(true);
   let loading = $state(false);
   let sentinel: HTMLDivElement | null = $state(null);
+  // Which thought is open for editing. A single value here is what makes
+  // "only one editor at a time" structural — opening one necessarily
+  // closes the last, with nothing to keep in step.
+  let editingId = $state<string | null>(null);
 
   let searching = $derived(query.trim().length > 0);
 
@@ -93,6 +97,18 @@
   async function edit(id: string, body: string) {
     await api.updateThought(id, { body });
     await loadFirstPage();
+  }
+
+  function startEdit(t: Thought) {
+    editingId = t.id;
+  }
+
+  /// Only clear if this item is still the open one. A tap on another
+  /// thought's edit button commits the first *and* opens the second, and
+  /// the commit finishes last — without this guard it would close the
+  /// editor the user just opened.
+  function endEdit(id: string) {
+    if (editingId === id) editingId = null;
   }
 
   async function remove(t: Thought) {
@@ -171,7 +187,10 @@
         <ThoughtItem
           thought={hit.thought}
           snippet={hit.snippet}
+          editing={editingId === hit.thought.id}
           onEdit={edit}
+          onStartEdit={startEdit}
+          onEndEdit={endEdit}
           onDelete={remove}
           onMakeTask={(t) => onMakeTask(t.body)}
           onMakeReminder={(t) => onMakeReminder(t.body)}
@@ -187,7 +206,10 @@
       {#each rows as t (t.id)}
         <ThoughtItem
           thought={t}
+          editing={editingId === t.id}
           onEdit={edit}
+          onStartEdit={startEdit}
+          onEndEdit={endEdit}
           onDelete={remove}
           onMakeTask={(x) => onMakeTask(x.body)}
           onMakeReminder={(x) => onMakeReminder(x.body)}

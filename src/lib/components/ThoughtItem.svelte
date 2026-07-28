@@ -5,7 +5,10 @@
   let {
     thought,
     snippet,
+    editing = false,
     onEdit,
+    onStartEdit,
+    onEndEdit,
     onDelete,
     onMakeTask,
     onMakeReminder,
@@ -13,17 +16,25 @@
   }: {
     thought: Thought;
     snippet?: string;
+    /** Owned by the parent so only one editor can be open at a time. */
+    editing?: boolean;
     onEdit: (id: string, body: string) => Promise<void> | void;
+    onStartEdit: (t: Thought) => void;
+    onEndEdit: (id: string) => void;
     onDelete: (t: Thought) => void;
     onMakeTask: (t: Thought) => void;
     onMakeReminder: (t: Thought) => void;
     onTagClick?: (tag: string) => void;
   } = $props();
 
-  let editing = $state(false);
   let draft = $state("");
   let expanded = $state(false);
   let editEl: HTMLTextAreaElement | null = $state(null);
+
+  // Seed the draft whenever this item becomes the open editor.
+  $effect(() => {
+    if (editing) draft = thought.body;
+  });
 
   // Tapping outside a live edit commits it. Mobile has no Esc key, so
   // otherwise Enter would be the only way out of edit mode. Saving rather
@@ -45,25 +56,17 @@
   let rest = $derived(lines.slice(1).join("\n"));
   let isLong = $derived(lines.length > 6 || thought.body.length > 400);
 
-  function startEdit() {
-    draft = thought.body;
-    editing = true;
-  }
-
   async function commit() {
     const text = draft.trim();
-    if (!text) {
-      // Refuse to blank a thought via edit. Leaving edit mode here would
-      // silently discard whatever the user cleared, so stay put.
-      return;
-    }
-    if (text === thought.body) {
-      // Nothing changed — close without a pointless write and sync push.
-      editing = false;
+    // A thought can't be blank — there is a delete action for that. Close
+    // rather than refusing, or an emptied box traps you in edit mode with
+    // no way out on mobile.
+    if (!text || text === thought.body) {
+      onEndEdit(thought.id);
       return;
     }
     await onEdit(thought.id, text);
-    editing = false;
+    onEndEdit(thought.id);
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -72,7 +75,7 @@
       void commit();
     } else if (e.key === "Escape") {
       e.preventDefault();
-      editing = false;
+      onEndEdit(thought.id);
     }
   }
 </script>
@@ -121,7 +124,7 @@
   </div>
 
   <div class="actions">
-    <button class="action" title="Edit" onclick={startEdit}>✎</button>
+    <button class="action" title="Edit" onclick={() => onStartEdit(thought)}>✎</button>
     <button class="action" title="Make a task" onclick={() => onMakeTask(thought)}>
       ○
     </button>
