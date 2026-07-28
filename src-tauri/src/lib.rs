@@ -8,6 +8,7 @@ pub mod models;
 mod nl;
 mod recurrence;
 mod scheduler;
+pub mod search;
 pub mod sync;
 #[cfg(desktop)]
 mod tray;
