@@ -57,6 +57,24 @@
     if (autofocus && el) el.focus();
   });
 
+  // Tapping anywhere outside the box gives up focus, which is what
+  // dismisses the Android soft keyboard. Mobile has no Esc key, so
+  // without this the keyboard has nothing to dismiss it but the system
+  // back gesture. Typed text is kept — this only drops focus.
+  //
+  // Capture phase, so it still fires if something between here and the
+  // document stops propagation.
+  $effect(() => {
+    function onPointerDown(e: PointerEvent) {
+      if (!el || document.activeElement !== el) return;
+      const target = e.target as Node | null;
+      if (target && el.contains(target)) return;
+      el.blur();
+    }
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  });
+
   // Grow with the content instead of scrolling. A thought is usually one
   // line, but pasting a paragraph shouldn't hide most of it.
   function autoGrow() {
