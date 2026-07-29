@@ -504,6 +504,10 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         created_at: now_ms(),
         last_seen_at: None,
         iroh_node_id: Some(input.iroh_node_id.trim().to_string()),
+        endpoint_addrs_json: None,
+        last_sync_ok_at: None,
+        last_sync_error: None,
+        last_sync_error_at: None,
     };
     {
         let conn = state.db.lock();
@@ -692,6 +696,10 @@ pub async fn start_pair_with(
                     created_at: now_ms(),
                     last_seen_at: Some(now_ms()),
                     iroh_node_id: Some(responder_node_id.clone()),
+                    endpoint_addrs_json: None,
+                    last_sync_ok_at: None,
+                    last_sync_error: None,
+                    last_sync_error_at: None,
                 };
                 peer_repo::upsert(&conn, &peer)?;
             }

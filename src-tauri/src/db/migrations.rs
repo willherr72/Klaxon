@@ -188,6 +188,23 @@ const MIGRATIONS: &[&str] = &[
         VALUES (new.rowid, new.body, new.tags);
     END;
     "#,
+    // 010 — sync reliability (v0.5.1 M1).
+    //
+    // `endpoint_addrs` is the peer's last-known-good iroh addresses
+    // (JSON Vec<TransportAddr>: direct socket addrs + relay URL), seeded
+    // into Endpoint::connect() so the first dial after launch aims at a
+    // concrete target instead of waiting on iroh's address lookup — which
+    // we have watched fail ("Address Lookup failed" in the logs).
+    //
+    // `last_sync_ok_at` / `last_sync_error{,_at}` drive the per-peer
+    // status in Sync settings: evidence, not vibes.
+    r#"
+    ALTER TABLE peers ADD COLUMN endpoint_addrs TEXT;
+    ALTER TABLE peers ADD COLUMN addrs_updated_at INTEGER;
+    ALTER TABLE peers ADD COLUMN last_sync_ok_at INTEGER;
+    ALTER TABLE peers ADD COLUMN last_sync_error TEXT;
+    ALTER TABLE peers ADD COLUMN last_sync_error_at INTEGER;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -234,6 +251,39 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    /// Migration 010: the sync loop records per-peer outcomes and
+    /// last-known-good addresses. A success must clear a previous error —
+    /// stale failure text in Settings would read as "still broken".
+    #[test]
+    fn migration_010_peer_sync_state_roundtrips() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO peers (id, name, shared_secret, created_at)
+             VALUES ('p1', 'Phone', 's3cret', 1)",
+            [],
+        )
+        .unwrap();
+
+        crate::db::peers::record_sync_err(&conn, "p1", "dial timed out", 100).unwrap();
+        let p = crate::db::peers::list_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "p1")
+            .unwrap();
+        assert_eq!(p.last_sync_error.as_deref(), Some("dial timed out"));
+        assert_eq!(p.last_sync_error_at, Some(100));
+
+        crate::db::peers::record_sync_ok(&conn, "p1", Some("[\"fake-addr\"]"), 200).unwrap();
+        let p = crate::db::peers::list_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "p1")
+            .unwrap();
+        assert_eq!(p.last_sync_ok_at, Some(200));
+        assert_eq!(p.endpoint_addrs_json.as_deref(), Some("[\"fake-addr\"]"));
+        assert!(p.last_sync_error.is_none(), "success must clear the error");
     }
 
     /// The FTS index is external-content, so it only stays correct if the
