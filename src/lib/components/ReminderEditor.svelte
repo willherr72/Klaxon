@@ -32,6 +32,7 @@
     defaultDueAt = null,
     defaultSilent = false,
     defaultLaneId = null,
+    defaultTitle = "",
     onClose,
     onSave,
     onDelete,
@@ -42,6 +43,9 @@
     defaultDueAt?: number | null;
     defaultSilent?: boolean;
     defaultLaneId?: string | null;
+    /** Pre-fill the title for a brand-new item. Used when promoting a
+     * thought into a task or reminder. */
+    defaultTitle?: string;
     onClose: () => void;
     onSave: (input: ReminderCreate, id: string | null) => void;
     onDelete: (id: string) => void;
@@ -111,7 +115,7 @@
       tags = [...reminder.tags];
       laneId = reminder.task_lane_id;
     } else {
-      title = "";
+      title = defaultTitle;
       description = "";
       dueLocal = msToLocalInput(defaultDueAt ?? Date.now() + 3600_000);
       priority = "normal";

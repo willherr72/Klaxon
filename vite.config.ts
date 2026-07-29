@@ -10,11 +10,13 @@ export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
   server: {
-    port: 1420,
+    // 1430 rather than Tauri's default 1420: another Tauri project on this
+    // machine already claims 1420, and strictPort means no silent fallback.
+    port: 1430,
     strictPort: true,
     host: host || false,
     hmr: host
-      ? { protocol: "ws", host, port: 1421 }
+      ? { protocol: "ws", host, port: 1431 }
       : undefined,
     watch: { ignored: ["**/src-tauri/**"] },
   },
@@ -23,6 +25,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         alert: resolve(__dirname, "alert.html"),
+        capture: resolve(__dirname, "capture.html"),
       },
     },
   },

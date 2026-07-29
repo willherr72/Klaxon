@@ -3,6 +3,11 @@ import type {
   Reminder,
   ReminderCreate,
   ReminderUpdate,
+  TagCount,
+  Thought,
+  ThoughtCreate,
+  ThoughtHit,
+  ThoughtUpdate,
 } from "./types";
 
 export const api = {
@@ -31,6 +36,8 @@ export const api = {
   dataDir: () => invoke<string>("data_dir"),
   setGlobalHotkey: (combo: string) =>
     invoke<void>("set_global_hotkey", { combo }),
+  setCaptureHotkey: (combo: string) =>
+    invoke<void>("set_capture_hotkey", { combo }),
   previewTone: (tone: string) =>
     invoke<void>("preview_tone", { tone }),
   nlParse: (input: string) =>
@@ -68,6 +75,21 @@ export const api = {
     invoke<void>("reorder_lanes", { ids }),
   setTaskLane: (reminderId: string, laneId: string) =>
     invoke<Reminder>("set_task_lane", { reminderId, laneId }),
+  // Thoughts (v0.5)
+  listThoughts: (tag: string | null, limit: number, offset: number) =>
+    invoke<Thought[]>("list_thoughts", { tag, limit, offset }),
+  searchThoughts: (
+    query: string,
+    tag: string | null,
+    limit: number,
+    offset: number,
+  ) => invoke<ThoughtHit[]>("search_thoughts", { query, tag, limit, offset }),
+  createThought: (input: ThoughtCreate) =>
+    invoke<Thought>("create_thought", { input }),
+  updateThought: (id: string, patch: ThoughtUpdate) =>
+    invoke<Thought>("update_thought", { id, patch }),
+  deleteThought: (id: string) => invoke<void>("delete_thought", { id }),
+  thoughtTagCounts: () => invoke<TagCount[]>("thought_tag_counts"),
 };
 
 export interface Lane {

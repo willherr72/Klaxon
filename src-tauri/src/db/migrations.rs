@@ -134,6 +134,60 @@ const MIGRATIONS: &[&str] = &[
        SET task_lane_id = '00000000-0000-4000-8000-000000000001'
      WHERE silent = 1;
     "#,
+    // 009 — Thoughts: a permanent, tag-organized, searchable idea feed.
+    //
+    // Deliberately its own table rather than a third mode on `reminders`:
+    // a thought has no time and no lifecycle, and keeping it out of
+    // `reminders` means the scheduler structurally cannot ring one.
+    //
+    // `thoughts_fts` is an FTS5 external-content index — it stores no copy
+    // of the text, just the inverted index, and the three triggers below
+    // keep it in step with the base table. Because they are SQL triggers
+    // rather than Rust code, writes applied by sync maintain the index
+    // exactly as local edits do.
+    //
+    // `dirty` is carried for symmetry with reminders/lanes and set on
+    // write, but no query filters on it: the push path selects on the
+    // per-peer high-water mark. See issue #1 — lanes and tombstones do
+    // filter on `dirty`, which stops rows forwarding past the peer that
+    // received them. Thoughts deliberately do not inherit that.
+    r#"
+    CREATE TABLE thoughts (
+        id          TEXT PRIMARY KEY,
+        body        TEXT NOT NULL,
+        tags        TEXT NOT NULL DEFAULT '[]',
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL,
+        dirty       INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE INDEX idx_thoughts_created ON thoughts(created_at DESC);
+    CREATE INDEX idx_thoughts_dirty   ON thoughts(updated_at) WHERE dirty = 1;
+
+    CREATE VIRTUAL TABLE thoughts_fts USING fts5(
+        body,
+        tags,
+        content='thoughts',
+        content_rowid='rowid'
+    );
+
+    CREATE TRIGGER thoughts_ai AFTER INSERT ON thoughts BEGIN
+        INSERT INTO thoughts_fts(rowid, body, tags)
+        VALUES (new.rowid, new.body, new.tags);
+    END;
+
+    CREATE TRIGGER thoughts_ad AFTER DELETE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, body, tags)
+        VALUES ('delete', old.rowid, old.body, old.tags);
+    END;
+
+    CREATE TRIGGER thoughts_au AFTER UPDATE ON thoughts BEGIN
+        INSERT INTO thoughts_fts(thoughts_fts, rowid, body, tags)
+        VALUES ('delete', old.rowid, old.body, old.tags);
+        INSERT INTO thoughts_fts(rowid, body, tags)
+        VALUES (new.rowid, new.body, new.tags);
+    END;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -163,4 +217,54 @@ pub fn run(conn: &Connection) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        conn
+    }
+
+    fn fts_hits(conn: &rusqlite::Connection, term: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM thoughts_fts WHERE thoughts_fts MATCH ?1",
+            [term],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// The FTS index is external-content, so it only stays correct if the
+    /// triggers fire on every write. Insert, update, and delete through the
+    /// base table and confirm the index agrees each time.
+    #[test]
+    fn migration_009_fts_triggers_track_the_base_table() {
+        let conn = test_conn();
+
+        conn.execute(
+            "INSERT INTO thoughts (id, body, tags, created_at, updated_at)
+             VALUES ('t1', 'sourdough starter needs feeding', '[\"recipe\"]', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(fts_hits(&conn, "sourdough"), 1, "insert should populate the index");
+        // Tags are indexed too — the JSON punctuation tokenizes away.
+        assert_eq!(fts_hits(&conn, "recipe"), 1, "tags column should be searchable");
+
+        conn.execute(
+            "UPDATE thoughts SET body = 'bread machine broke' WHERE id = 't1'",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(fts_hits(&conn, "sourdough"), 0, "update must remove old terms");
+        assert_eq!(fts_hits(&conn, "bread"), 1, "update must index new terms");
+
+        conn.execute("DELETE FROM thoughts WHERE id = 't1'", []).unwrap();
+
+        assert_eq!(fts_hits(&conn, "bread"), 0, "delete must clear the index row");
+    }
 }

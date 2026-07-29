@@ -54,17 +54,11 @@ pub fn parse(input: &str, now: DateTime<Local>) -> Result<Parsed, ParseError> {
     let mut seen_tags = std::collections::HashSet::new();
     for slot in tokens.iter_mut() {
         let Some(tok) = slot.as_ref() else { continue };
-        if !tok.starts_with('#') || tok.len() <= 1 {
+        // Rule lives in models::tag_from_token so the Thoughts feed and
+        // this parser agree on what a tag is.
+        let Some(cleaned) = crate::models::tag_from_token(tok) else {
             continue;
-        }
-        let cleaned = tok[1..]
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect::<String>()
-            .to_lowercase();
-        if cleaned.is_empty() {
-            continue;
-        }
+        };
         if seen_tags.insert(cleaned.clone()) {
             tags.push(cleaned);
         }

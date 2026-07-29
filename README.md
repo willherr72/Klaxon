@@ -136,6 +136,28 @@ sudo apt install -y \
 
 (For Fedora / Arch see the [Tauri prerequisites page](https://tauri.app/start/prerequisites/#linux).)
 
+**Android** (only needed for mobile builds):
+
+- Android SDK + NDK, with `ANDROID_HOME` and `NDK_HOME` set
+- **JDK 17–21.** Not newer: the Android Gradle Plugin pinned in
+  `src-tauri/gen/android/buildSrc` fails to configure under JDK 25 with a bare
+  `A problem occurred configuring project ':buildSrc'. > 25.0.2`, which doesn't
+  name Java as the cause. If Android Studio is installed, its bundled runtime is
+  a suitable JDK 21 and needs no separate download.
+
+```bash
+# Point Gradle at a supported JDK for the build only, leaving your
+# system-wide JAVA_HOME alone.
+export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
+export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
+export NDK_HOME="$ANDROID_HOME/ndk/<version>"
+npm run tauri android build -- --debug
+```
+
+Note the Rust side compiles before Gradle runs, so a `Finished dev profile`
+line followed by a Gradle failure means the Rust cross-compile succeeded and
+only packaging failed.
+
 ### Run in development
 
 ```bash

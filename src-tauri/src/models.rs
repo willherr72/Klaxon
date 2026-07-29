@@ -146,6 +146,45 @@ pub fn normalize_tag(raw: &str) -> Option<String> {
     }
 }
 
+/// The `#tag` rule, in one place: a token must start with `#` and have
+/// something after it; the remainder keeps only alphanumerics, `-` and `_`,
+/// lowercased. Returns `None` for anything that isn't a usable tag.
+///
+/// Shared by the natural-language parser (which strips the token from the
+/// title) and the Thoughts feed (which leaves it in the body) so the two
+/// can never drift on what counts as a tag.
+pub fn tag_from_token(token: &str) -> Option<String> {
+    if !token.starts_with('#') || token.len() <= 1 {
+        return None;
+    }
+    let cleaned: String = token[1..]
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect::<String>()
+        .to_lowercase();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Every `#tag` mentioned in free text, deduplicated, first-seen order.
+/// The text itself is left alone — callers that want the tags removed do
+/// that separately.
+pub fn extract_tags(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for token in text.split_whitespace() {
+        if let Some(tag) = tag_from_token(token) {
+            if seen.insert(tag.clone()) {
+                out.push(tag);
+            }
+        }
+    }
+    out
+}
+
 /// Normalize + dedupe a list of tags, preserving first-seen order.
 pub fn normalize_tags(input: impl IntoIterator<Item = String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -162,4 +201,65 @@ pub fn normalize_tags(input: impl IntoIterator<Item = String>) -> Vec<String> {
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+/// Hard ceiling on a thought body. An Android share can carry an entire
+/// article, and the whole ChangeSet is held in memory under the 16 MiB
+/// frame cap in `sync/proto.rs` — 64 K characters is generous for a
+/// thought and far below that even in bulk.
+pub const MAX_THOUGHT_CHARS: usize = 65_536;
+
+/// Trim surrounding whitespace and clamp to `MAX_THOUGHT_CHARS`.
+/// Counts characters, not bytes — slicing bytes would panic mid-codepoint.
+pub fn truncate_body(raw: &str) -> String {
+    raw.trim().chars().take(MAX_THOUGHT_CHARS).collect()
+}
+
+/// A captured thought: free text, no time, no lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thought {
+    pub id: String,
+    pub body: String,
+    /// Free-form labels sharing the reminder tag vocabulary. Persisted as
+    /// a JSON array of lowercase strings.
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThoughtCreate {
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThoughtUpdate {
+    pub body: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{truncate_body, MAX_THOUGHT_CHARS};
+
+    #[test]
+    fn short_bodies_pass_through_untouched() {
+        assert_eq!(truncate_body("  an idea  "), "an idea");
+    }
+
+    #[test]
+    fn long_bodies_are_capped_at_the_char_limit() {
+        let huge = "x".repeat(MAX_THOUGHT_CHARS + 500);
+        assert_eq!(truncate_body(&huge).chars().count(), MAX_THOUGHT_CHARS);
+    }
+
+    #[test]
+    fn truncation_counts_chars_not_bytes() {
+        // A naive byte-slice would panic here by splitting a multi-byte char.
+        let huge = "é".repeat(MAX_THOUGHT_CHARS + 10);
+        assert_eq!(truncate_body(&huge).chars().count(), MAX_THOUGHT_CHARS);
+    }
 }

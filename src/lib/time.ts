@@ -73,3 +73,28 @@ export function msToLocalInput(ms: number): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * Human-scaled age for the Thoughts feed: "just now", "12m ago", "3h ago",
+ * "5d ago", then an absolute date once it's older than a week. The year is
+ * only shown when it differs from the current one.
+ */
+export function relativeTime(ms: number, nowMs: number = Date.now()): string {
+  const minutes = Math.floor(Math.max(0, nowMs - ms) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+
+  const then = new Date(ms);
+  const sameYear = then.getFullYear() === new Date(nowMs).getFullYear();
+  return then.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  });
+}

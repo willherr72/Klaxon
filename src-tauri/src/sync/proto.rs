@@ -128,8 +128,19 @@ where
     r.read_exact(&mut buf)
         .await
         .map_err(|e| AppError::Invalid(format!("read frame body: {e}")))?;
-    postcard::from_bytes(&buf)
-        .map_err(|e| AppError::Invalid(format!("postcard decode: {e}")))
+    postcard::from_bytes(&buf).map_err(|e| {
+        // postcard is not self-describing, so a peer running an older
+        // Klaxon sends a ChangeSet with fewer trailing fields than we
+        // expect and the decoder simply runs out of buffer. Between two
+        // devices that were previously syncing fine, that is far and away
+        // the likeliest cause — say so instead of leaking a bare postcard
+        // error the user can do nothing with.
+        log::warn!(
+            "frame decode failed ({e}) — if this peer was previously syncing, \
+             it is most likely running an older Klaxon; upgrade both devices"
+        );
+        AppError::Invalid(format!("postcard decode: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -148,6 +159,39 @@ mod tests {
         let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
         assert_eq!(got.secret, "deadbeef");
         assert!(matches!(got.request, RpcRequest::Ping));
+    }
+
+    #[tokio::test]
+    async fn roundtrip_changeset_with_thoughts() {
+        use crate::sync::types::{ChangeSet, RemoteThought};
+
+        let (mut a, mut b) = duplex(64 * 1024);
+        let sent = RpcEnvelope {
+            secret: "deadbeef".into(),
+            request: RpcRequest::Push(ChangeSet {
+                server_time_ms: 42,
+                reminders: vec![],
+                tombstones: vec![],
+                lanes: vec![],
+                thoughts: vec![RemoteThought {
+                    id: "t1".into(),
+                    body: "an idea worth keeping".into(),
+                    tags: vec!["idea".into()],
+                    created_at: 1,
+                    updated_at: 2,
+                }],
+            }),
+        };
+        write_frame(&mut a, &sent).await.unwrap();
+        let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
+        match got.request {
+            RpcRequest::Push(set) => {
+                assert_eq!(set.thoughts.len(), 1);
+                assert_eq!(set.thoughts[0].body, "an idea worth keeping");
+                assert_eq!(set.thoughts[0].tags, vec!["idea".to_string()]);
+            }
+            _ => panic!("expected a Push"),
+        }
     }
 
     #[tokio::test]
