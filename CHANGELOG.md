@@ -5,6 +5,39 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 0.5.1
+
+Sync reliability, milestone 1: sync is **event-driven**, and dials aim at
+known addresses instead of waiting on discovery. The goal: a change leaves
+the device within seconds of the write, and every awake-window gets used —
+instead of sync only happening when both apps were open simultaneously.
+
+### Added
+
+- **Push-on-write.** Every local mutation nudges the sync loop; nudges
+  within 1.5s coalesce into one pass, and a failed pass retries at
+  5s/15s/45s before going quiet until the next trigger.
+- **Eager launch pass** — syncing starts seconds after Klaxon starts
+  (including autostart at login), covering short PC sessions.
+- **Windows suspend/resume hooks.** Waking the machine triggers an
+  immediate catch-up pass; suspend fires one best-effort nudge.
+- **Seeded dials.** Connects carry the peer's last-known-good addresses
+  (persisted per peer, migration 010) plus mDNS-fresh LAN addresses, so
+  dialing skips iroh's address-lookup stage — the failure our own logs
+  showed. The mDNS record now advertises the *real* iroh QUIC port; the
+  old advertised port was cosmetic and undialable.
+- **Dial diagnostics.** Every dial logs duration and direct-vs-relay, and
+  Settings shows each peer's most recent sync outcome ("✓ synced 2m ago"
+  / "✗ 5m ago · timed out").
+
+### Schema / sync
+
+- **Migration 010** — five new nullable columns on `peers` (last-known
+  addresses + sync evidence). The `ChangeSet` wire format is **unchanged**:
+  0.5.0 peers sync with 0.5.1 normally, but a 0.5.0 peer doesn't advertise
+  its iroh port over mDNS, so the full LAN fast-dial benefit needs both
+  sides on 0.5.1.
+
 ## [0.5.0] — 2026-07-28
 
 **Thoughts** — a permanent, tagged, full-text-searchable feed for the ideas that
