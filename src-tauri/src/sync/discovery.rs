@@ -7,7 +7,7 @@
 //! the iroh `nid` (EndpointId).
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -30,6 +30,11 @@ pub struct DiscoveredPeer {
     /// Iroh EndpointId from the mDNS TXT record. `None` would mean the
     /// peer is on a pre-v0.3 build; v0.3 will refuse to pair without it.
     pub node_id: Option<String>,
+    /// v0.5.1: the peer's dialable iroh addresses (LAN IP + real QUIC
+    /// port) from the TXT `addrs` key. Seeded into dials; the frontend
+    /// pairing list doesn't need them.
+    #[serde(skip)]
+    pub sock_addrs: Vec<SocketAddr>,
 }
 
 #[derive(Clone)]
@@ -38,9 +43,23 @@ pub struct DiscoveryHandle {
     _daemon: Arc<ServiceDaemon>,
 }
 
+impl DiscoveryHandle {
+    /// Dialable iroh addresses for a peer, by its iroh node id — fresh from
+    /// the LAN right now, or empty if the peer isn't currently visible.
+    pub fn addrs_for_node(&self, node_id: &str) -> Vec<SocketAddr> {
+        self.peers
+            .lock()
+            .values()
+            .find(|p| p.node_id.as_deref() == Some(node_id))
+            .map(|p| p.sock_addrs.clone())
+            .unwrap_or_default()
+    }
+}
+
 pub fn start(
     identity: DeviceIdentity,
     node_id: Option<String>,
+    iroh_port: Option<u16>,
 ) -> AppResult<DiscoveryHandle> {
     let daemon =
         ServiceDaemon::new().map_err(|e| AppError::Invalid(format!("mDNS daemon: {e}")))?;
@@ -69,6 +88,11 @@ pub fn start(
     // (~52 chars) fits comfortably.
     if let Some(nid) = node_id.as_deref() {
         props.insert("nid".to_string(), nid.to_string());
+    }
+    // The A-record port above is cosmetic; this is the port that matters —
+    // it makes the discovered addresses actually dialable by iroh.
+    if let Some(port) = iroh_port {
+        props.insert("addrs".to_string(), compose_addrs_txt(&local_ips, port));
     }
 
     let info = ServiceInfo::new(
@@ -129,6 +153,10 @@ pub fn start(
                             },
                             last_seen_ms: now_ms(),
                             node_id,
+                            sock_addrs: props
+                                .get_property_val_str("addrs")
+                                .map(parse_addrs_txt)
+                                .unwrap_or_default(),
                         };
                         log::info!(
                             "mDNS discovered: {} ({})",
@@ -154,6 +182,26 @@ pub fn start(
         peers,
         _daemon: Arc::new(daemon),
     })
+}
+
+/// Compose the TXT `addrs` value: our LAN IPs each paired with the iroh
+/// QUIC port. The mDNS A-record port (`ADVERTISED_PORT`) is cosmetic —
+/// this key is what makes discovered peers actually dialable.
+/// TXT values are capped at 255 bytes; cap at 6 addresses to stay under.
+fn compose_addrs_txt(ips: &[IpAddr], iroh_port: u16) -> String {
+    ips.iter()
+        .take(6)
+        .map(|ip| SocketAddr::new(*ip, iroh_port).to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Parse a peer's TXT `addrs` value. Malformed entries are skipped —
+/// a peer on a future version with a different format must not break us.
+fn parse_addrs_txt(raw: &str) -> Vec<SocketAddr> {
+    raw.split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect()
 }
 
 /// Strip everything except alphanumerics + dashes. mDNS hostnames must be
@@ -183,5 +231,34 @@ fn sanitize_instance(name: &str, id: &str) -> String {
         format!("Klaxon-{suffix}")
     } else {
         format!("{trimmed} ({suffix})")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compose_addrs_txt, parse_addrs_txt};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn addrs_txt_roundtrips() {
+        let ips = vec![
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+        ];
+        let txt = compose_addrs_txt(&ips, 54321);
+        let parsed = parse_addrs_txt(&txt);
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed.iter().all(|sa| sa.port() == 54321));
+    }
+
+    #[test]
+    fn garbage_addrs_are_skipped_not_fatal() {
+        let parsed = parse_addrs_txt("not-an-addr,192.168.1.7:4444,,999.9.9.9:1");
+        assert_eq!(parsed.len(), 1, "only the valid entry survives");
+    }
+
+    #[test]
+    fn empty_txt_parses_to_empty() {
+        assert!(parse_addrs_txt("").is_empty());
     }
 }

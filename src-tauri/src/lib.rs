@@ -251,7 +251,12 @@ pub fn run() {
                 }
 
                 let node_id_for_mdns = iroh_node_opt.as_ref().map(|n| n.node_id.clone());
-                match sync::discovery::start(identity, node_id_for_mdns) {
+                // The iroh QUIC port, so peers can dial our discovered LAN
+                // IPs directly instead of going through address lookup.
+                let iroh_port = iroh_node_opt
+                    .as_ref()
+                    .and_then(|n| n.endpoint.bound_sockets().first().map(|sa| sa.port()));
+                match sync::discovery::start(identity, node_id_for_mdns, iroh_port) {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
                 }
