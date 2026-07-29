@@ -10,10 +10,13 @@ use parking_lot::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager};
 
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
 use crate::alerts;
 use crate::db::{peers, reminders as repo, task_lanes, thoughts, tombstones};
 use crate::models::ReminderState;
 use crate::sync::iroh_client;
+use crate::sync::trigger::{next_retry_delay, Nudge, DEBOUNCE};
 use crate::sync::types::{ChangeSet, RemoteReminder, RemoteThought, RemoteTombstone};
 
 /// Emit a "something changed about the reminders table" event so the
@@ -62,13 +65,65 @@ where
     }
 }
 
-pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
-    log::info!("sync task online");
+/// Outcome of one pass: how many peers we attempted and how many failed.
+/// The trigger loop uses `failed > 0` to decide whether to schedule a retry.
+pub struct PassOutcome {
+    pub attempted: usize,
+    pub failed: usize,
+}
+
+pub async fn run(
+    db: Arc<Mutex<Connection>>,
+    app: AppHandle,
+    mut nudges: UnboundedReceiver<Nudge>,
+    nudge_tx: UnboundedSender<Nudge>,
+) {
+    log::info!("sync task online (event-driven)");
     let mut tick = tokio::time::interval(SYNC_INTERVAL);
     tick.tick().await; // first tick fires immediately; skip
     loop {
-        tick.tick().await;
-        run_one_pass(&db, &app).await;
+        let triggered: Option<Nudge> = tokio::select! {
+            _ = tick.tick() => None,
+            n = nudges.recv() => match n {
+                Some(n) => Some(n),
+                None => return, // channel closed — app shutting down
+            },
+        };
+
+        let retry_attempt = if let Some(nudge) = triggered {
+            // Coalesce the burst: wait out the debounce window, then drain
+            // whatever else arrived. Retry nudges skip the debounce — their
+            // delay already happened.
+            if !matches!(nudge, Nudge::Retry(_)) {
+                tokio::time::sleep(DEBOUNCE).await;
+            }
+            let mut latest = nudge;
+            while let Ok(n) = nudges.try_recv() {
+                latest = n;
+            }
+            match latest {
+                Nudge::Retry(n) => n,
+                _ => 0,
+            }
+        } else {
+            0
+        };
+
+        let outcome = run_one_pass(&db, &app).await;
+
+        // Only nudge-triggered passes retry; the 20s tick is its own retry.
+        if triggered.is_some() && outcome.failed > 0 {
+            if let Some(delay) = next_retry_delay(retry_attempt) {
+                let tx = nudge_tx.clone();
+                let next = retry_attempt + 1;
+                tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let _ = tx.send(Nudge::Retry(next));
+                });
+            } else {
+                log::debug!("sync retries exhausted; waiting for next trigger");
+            }
+        }
     }
 }
 
@@ -76,9 +131,10 @@ pub async fn run(db: Arc<Mutex<Connection>>, app: AppHandle) {
 /// loop above so the `sync_now` command can trigger an immediate pass
 /// (used on mobile when the app comes back to the foreground — without
 /// this the user waits up to SYNC_INTERVAL to see fresh data).
-pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
+pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassOutcome {
+    const NONE: PassOutcome = PassOutcome { attempted: 0, failed: 0 };
     if !crate::sync::read_enabled(db) {
-        return;
+        return NONE;
     }
     let peer_list = {
         let conn = db.lock();
@@ -86,7 +142,7 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("sync task list peers: {e}");
-                return;
+                return NONE;
             }
         }
     };
@@ -95,15 +151,20 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
         .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
     let Some(endpoint) = iroh_endpoint else {
         log::debug!("sync pass: iroh endpoint not ready, skipping");
-        return;
+        return NONE;
     };
+    let mut attempted = 0usize;
+    let mut failed = 0usize;
     for peer in peer_list {
+        attempted += 1;
         match with_peer_timeout(sync_one(db, app, &endpoint, &peer), SYNC_PEER_TIMEOUT).await {
             PeerSyncResult::Ok => {}
             PeerSyncResult::Failed(e) => {
+                failed += 1;
                 log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
             }
             PeerSyncResult::TimedOut => {
+                failed += 1;
                 log::warn!(
                     "sync with {} ({}) timed out after {}s — peer unreachable; skipping",
                     peer.name,
@@ -113,6 +174,7 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) {
             }
         }
     }
+    PassOutcome { attempted, failed }
 }
 
 async fn sync_one(

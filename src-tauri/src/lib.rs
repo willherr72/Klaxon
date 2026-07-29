@@ -48,6 +48,10 @@ pub struct AppState {
     /// be re-registered independently.
     #[cfg(desktop)]
     pub capture_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    /// Pokes the sync loop. Send on every local mutation (push-on-write),
+    /// at launch, and on Windows resume. Cheap, unbounded, coalesced by
+    /// the receiver.
+    pub sync_nudge: tokio::sync::mpsc::UnboundedSender<sync::trigger::Nudge>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::PendingPairs,
     /// v0.3 iroh transport. `None` until setup completes or if sync is
@@ -171,10 +175,18 @@ pub fn run() {
 
             // Sync server + task: started unconditionally; sync task no-ops while
             // sync_enabled is false. Server respects the same flag at startup.
+            //
+            // The nudge channel makes the loop event-driven: local writes,
+            // launch, and Windows resume poke it instead of waiting for the
+            // 20s tick. The task also gets a sender clone so it can schedule
+            // its own bounded retries.
+            let (nudge_tx, nudge_rx) =
+                tokio::sync::mpsc::unbounded_channel::<sync::trigger::Nudge>();
             let sync_db = db.clone();
             let sync_app = app.handle().clone();
+            let sync_retry_tx = nudge_tx.clone();
             tauri::async_runtime::spawn(async move {
-                sync::task::run(sync_db, sync_app).await;
+                sync::task::run(sync_db, sync_app, nudge_rx, sync_retry_tx).await;
             });
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
@@ -243,6 +255,14 @@ pub fn run() {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
                 }
+
+                // Eager launch pass — the short-session fix. Klaxon
+                // autostarts at login; this makes "boot → synced" take
+                // seconds instead of waiting for the first 20s tick. Only
+                // worth sending when the endpoint actually came up.
+                if iroh_node_opt.is_some() {
+                    let _ = nudge_tx.send(sync::trigger::Nudge::Launch);
+                }
             }
 
             // Desktop-only: global hotkey + system tray. On mobile the OS
@@ -293,6 +313,7 @@ pub fn run() {
                 current_hotkey,
                 #[cfg(desktop)]
                 capture_hotkey,
+                sync_nudge: nudge_tx.clone(),
                 discovery: discovery_handle,
                 pending_pairs,
                 iroh_node: iroh_node_state,
