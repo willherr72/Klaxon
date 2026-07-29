@@ -8,6 +8,8 @@ pub mod db;
 pub mod error;
 pub mod models;
 mod nl;
+#[cfg(windows)]
+mod power;
 mod recurrence;
 mod scheduler;
 pub mod search;
@@ -188,6 +190,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 sync::task::run(sync_db, sync_app, nudge_rx, sync_retry_tx).await;
             });
+
+            // Windows suspend/resume → nudges. Losing these events just
+            // degrades to tick-driven catch-up, so failure is non-fatal.
+            #[cfg(windows)]
+            power::spawn_power_watcher(nudge_tx.clone());
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));
