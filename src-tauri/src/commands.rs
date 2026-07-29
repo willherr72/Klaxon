@@ -452,6 +452,10 @@ pub struct PeerView {
     pub last_push_at: i64,
     pub last_seen_at: Option<i64>,
     pub iroh_node_id: Option<String>,
+    /// v0.5.1 sync evidence — drives the per-peer status row in Settings.
+    pub last_sync_ok_at: Option<i64>,
+    pub last_sync_error: Option<String>,
+    pub last_sync_error_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -475,6 +479,9 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
             last_push_at: p.last_push_at,
             last_seen_at: p.last_seen_at,
             iroh_node_id: p.iroh_node_id,
+            last_sync_ok_at: p.last_sync_ok_at,
+            last_sync_error: p.last_sync_error,
+            last_sync_error_at: p.last_sync_error_at,
         })
         .collect())
 }
@@ -520,6 +527,9 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_push_at: peer.last_push_at,
         last_seen_at: peer.last_seen_at,
         iroh_node_id: peer.iroh_node_id,
+        last_sync_ok_at: None,
+        last_sync_error: None,
+        last_sync_error_at: None,
     })
 }
 

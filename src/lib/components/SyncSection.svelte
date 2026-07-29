@@ -385,6 +385,18 @@
             <div class="peer-row3 mono-caps-faint">
               pull {relativeTime(p.last_pull_at)} · push {relativeTime(p.last_push_at)}
             </div>
+            <!-- v0.5.1 sync evidence. Freshest outcome wins: an old error
+                 must not outrank a newer success, or Settings reads as
+                 "still broken" after recovery. -->
+            {#if p.last_sync_error && (!p.last_sync_ok_at || (p.last_sync_error_at ?? 0) > p.last_sync_ok_at)}
+              <div class="peer-sync err mono-caps-faint" title={p.last_sync_error}>
+                ✗ {relativeTime(p.last_sync_error_at ?? 0)} · {p.last_sync_error}
+              </div>
+            {:else if p.last_sync_ok_at}
+              <div class="peer-sync ok mono-caps-faint">
+                ✓ synced {relativeTime(p.last_sync_ok_at)}
+              </div>
+            {/if}
           </div>
           <div class="peer-actions">
             {#if pingStatus[p.id] === "pending"}
@@ -825,6 +837,21 @@
   .peer-row3 {
     font-size: 9px;
     letter-spacing: 0.16em;
+  }
+  .peer-sync {
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 340px;
+  }
+  .peer-sync.ok {
+    color: var(--ok);
+  }
+  .peer-sync.err {
+    color: var(--signal-high);
   }
   .peer-actions {
     display: flex; gap: 6px;
