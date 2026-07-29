@@ -97,10 +97,10 @@ anything left to flush. Implementation detail (message hook vs.
 
 - Feed mDNS-discovered peer addresses into iroh via `add_node_addr` as
   they are observed, so LAN dials go direct immediately.
-- Persist last-known-good direct addresses per peer (new columns on
-  `peers`, **migration 010**) and seed the endpoint with them at startup,
-  so the first dial after launch has a concrete target before discovery
-  warms up.
+- Persist last-known-good direct addresses **and the peer's relay URL**
+  per peer (new columns on `peers`, **migration 010**) and seed the
+  endpoint with them at startup, so the first dial after launch — LAN or
+  cross-network — has a concrete target before discovery warms up.
 
 ### 4.3 Diagnostics
 
@@ -137,6 +137,7 @@ Pre-existing limitation, unchanged by this work.
 | Scenario | Target |
 | --- | --- |
 | Both awake, same LAN, local write | Visible on peer ≤ 3s |
+| Both awake, cross-network (iroh relay/holepunch), local write | Visible on peer ≤ 10s — inside the existing 10s per-peer dial budget. Relay-only fallback (failed holepunch) is acceptable; the relay carries ciphertext only. |
 | Login / resume, peer reachable | Catch-up pass completes ≤ 30s |
 | Phone cold, laptop awake (M2) | Propagation ≤ ~20 min (WorkManager floor + jitter) |
 | Android share, app closed (M2) | Propagation within minutes |
