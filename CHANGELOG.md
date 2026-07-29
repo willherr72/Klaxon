@@ -5,6 +5,76 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-28
+
+**Thoughts** — a permanent, tagged, full-text-searchable feed for the ideas that
+aren't reminders. Capture in the app, from a global hotkey without leaving what
+you're doing, or from the Android share sheet without leaving the app you're
+sharing from. Everything syncs peer-to-peer over the existing iroh transport;
+nothing touches a server.
+
+> **Upgrade every paired device together.** A 0.4.0 device cannot decode a
+> ChangeSet from 0.5.0 — the frame fails to parse, and **all** sync between that
+> pair stops, not just thoughts. The wire format is postcard, which is not
+> self-describing, so an older peer has no way to skip an unknown trailing
+> field. The failure is silent apart from a log line, so upgrade both sides.
+
+### Added
+
+- **The Thoughts feed.** Free text with no due date, no state and no lane — a
+  thought is simply a thing you wanted to keep. Permanent by default, deletable
+  when you want. Reverse-chronological, paged at 50.
+- **Full-text search** over bodies and tags, powered by SQLite FTS5 with matched
+  terms highlighted. Everything you type is treated as literal text, so `can't`,
+  `foo-bar` and `cats OR dogs` search for themselves instead of erroring or
+  quietly becoming query operators.
+- **Inline `#tags`**, sharing one vocabulary with reminders and tasks — `#idea`
+  means the same thing everywhere. Tags colour orange as you type, and the
+  sidebar tag bar filters the feed; search narrows within a filter.
+- **Promotion.** "Make a task" / "Make a reminder" opens the editor pre-filled
+  from a thought. It's a copy — acting on an idea never puts a hole in the
+  archive.
+- **Desktop global hotkey** (default `Ctrl+Alt+T`, configurable in Settings)
+  opens a small always-on-top capture box. Enter saves, Esc discards, clicking
+  away dismisses. The main window is never touched.
+- **Android share target.** Klaxon appears in the share sheet for text; sharing
+  a link saves the page title and URL and shows a toast, leaving you in the app
+  you shared from. Works from a cold process — it writes to the database
+  directly rather than needing the app running.
+
+### Changed
+
+- **`EmptyState`** takes optional copy instead of being hardcoded to "No
+  Reminders".
+- **Sidebar channel counts** are now optional per channel; Thoughts shows no
+  badge, since the other channels count items awaiting action and an archive's
+  size isn't one.
+- **Dev server moved to port 1430.** 1420 is Tauri's default, so every Tauri
+  project on a machine claims it.
+
+### Fixed
+
+- **SQLite busy timeout.** Connections had none, so a concurrent write failed
+  instantly with `SQLITE_BUSY` instead of waiting. Reachable now that the
+  Android share activity writes the same file as the app.
+
+### Schema / sync
+
+- **Migration 009** adds `thoughts` plus an FTS5 external-content index kept
+  current by SQL triggers, so writes applied by sync maintain it exactly as
+  local edits do.
+- **`ChangeSet` gains a `thoughts` field.** See the upgrade warning above.
+- Thought deletes reuse the shared `tombstones` table.
+
+### Known issues
+
+- A thought shared on Android does not live-update a feed already open in
+  another process; it appears when you next enter the Thoughts view.
+- Lanes and tombstones still don't forward past the peer that received them
+  ([#1](https://github.com/willherr72/Klaxon/issues/1)). Thoughts deliberately
+  don't inherit this.
+- **Android builds require JDK 17–21**; JDK 25 fails at Gradle configure.
+
 ## [0.4.0] — 2026-06-17
 
 Klaxon goes **mobile**. v0.4 brings the app to Android (Tauri 2 mobile), reusing the Rust scheduler + iroh sync core under a touch-friendly Svelte UI — plus native notification action buttons, a warm-only background sync, and a batch of fixes.
