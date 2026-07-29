@@ -557,7 +557,7 @@ pub async fn ping_peer(
         .as_ref()
         .map(|n| n.endpoint.clone())
         .ok_or_else(|| AppError::Invalid("local iroh endpoint not started".into()))?;
-    sync::iroh_client::ping(&endpoint, &node_id, &secret).await
+    sync::iroh_client::ping(&endpoint, &node_id, &[], &secret).await
 }
 
 #[tauri::command]

@@ -162,6 +162,13 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
             PeerSyncResult::Failed(e) => {
                 failed += 1;
                 log::debug!("sync with {} ({}) failed: {e}", peer.name, peer.id);
+                let conn = db.lock();
+                let _ = peers::record_sync_err(
+                    &conn,
+                    &peer.id,
+                    &e.to_string(),
+                    crate::models::now_ms(),
+                );
             }
             PeerSyncResult::TimedOut => {
                 failed += 1;
@@ -170,6 +177,13 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
                     peer.name,
                     peer.id,
                     SYNC_PEER_TIMEOUT.as_secs(),
+                );
+                let conn = db.lock();
+                let _ = peers::record_sync_err(
+                    &conn,
+                    &peer.id,
+                    "timed out after 10s — peer unreachable",
+                    crate::models::now_ms(),
                 );
             }
         }
@@ -191,9 +205,29 @@ async fn sync_one(
         return Ok(());
     };
 
+    // Seed = persisted last-known-good ∪ mDNS-fresh LAN addresses. Either
+    // source alone is enough to skip iroh's address lookup; both together
+    // cover "same LAN as yesterday" and "network changed since last sync".
+    let mut seed: Vec<iroh::TransportAddr> = peer
+        .endpoint_addrs_json
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    if let Some(st) = app.try_state::<crate::AppState>() {
+        if let Some(disc) = st.discovery.lock().as_ref() {
+            for sa in disc.addrs_for_node(node_id) {
+                let addr = iroh::TransportAddr::Ip(sa);
+                if !seed.contains(&addr) {
+                    seed.push(addr);
+                }
+            }
+        }
+    }
+
     // Pull
-    let pulled =
-        iroh_client::pull(endpoint, node_id, &peer.shared_secret, peer.last_pull_at).await?;
+    let (pulled, dial) =
+        iroh_client::pull(endpoint, node_id, &seed, &peer.shared_secret, peer.last_pull_at)
+            .await?;
     let mut max_pulled = peer.last_pull_at;
     let mut to_cancel: Vec<String> = Vec::new();
     {
@@ -236,6 +270,14 @@ async fn sync_one(
         // Trust the peer's clock for the watermark.
         let watermark = pulled.server_time_ms.max(max_pulled);
         peers::mark_pulled(&conn, &peer.id, watermark)?;
+        // The dial succeeded — record it, and persist the connection's
+        // live remote addresses as the next dial's seed.
+        let _ = peers::record_sync_ok(
+            &conn,
+            &peer.id,
+            dial.remote_addrs_json.as_deref(),
+            crate::models::now_ms(),
+        );
     }
     // Cancel local alerts after dropping the DB lock.
     for id in to_cancel {
@@ -281,7 +323,8 @@ async fn sync_one(
         lanes,
         thoughts: thts,
     };
-    let resp = iroh_client::push(endpoint, node_id, &peer.shared_secret, set).await?;
+    let (resp, _push_dial) =
+        iroh_client::push(endpoint, node_id, &seed, &peer.shared_secret, set).await?;
     {
         let conn = db.lock();
         let watermark = resp.server_time_ms.max(max_pushed);
