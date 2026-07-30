@@ -414,6 +414,8 @@ pub fn run() {
             commands::thought_tag_counts,
             backup::commands::export_backup,
             backup::commands::stage_restore,
+            backup::commands::restore_inbox_status,
+            backup::commands::stage_restore_inbox,
             backup::commands::snapshot_status,
         ])
         .run(tauri::generate_context!())

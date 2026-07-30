@@ -91,17 +91,32 @@
   }
 
   async function pickRestoreFile() {
-    backupMsg = null;
     backupErr = null;
+    backupMsg = null;
+    if (isMobile) {
+      // No picker on Android: the dialog plugin resolves null without
+      // showing UI on some devices (activity-result plumbing vs the
+      // singleTask activity). RestoreActivity parks the file in an inbox
+      // instead — opening a .klaxonbak "with Klaxon" from Files/Drive.
+      try {
+        const size = await api.restoreInboxStatus();
+        if (size != null) {
+          restorePath = "inbox";
+          backupFlow = "restore-confirm";
+        } else {
+          backupMsg =
+            "Open your .klaxonbak file in Files or Drive and choose " +
+            "“Open with Klaxon” — then come back here.";
+        }
+      } catch (e) {
+        backupErr = String(e);
+      }
+      return;
+    }
     try {
-      // No extension filter on Android: SAF resolves filters via MIME
-      // types, and a custom extension like .klaxonbak maps to nothing —
-      // the picker either errors or shows an empty, unselectable list.
       const picked = await openFileDialog({
         multiple: false,
-        ...(isMobile
-          ? {}
-          : { filters: [{ name: "Klaxon backup", extensions: ["klaxonbak"] }] }),
+        filters: [{ name: "Klaxon backup", extensions: ["klaxonbak"] }],
       });
       if (typeof picked === "string") {
         restorePath = picked;
@@ -119,7 +134,10 @@
     backupBusy = true;
     backupErr = null;
     try {
-      const from = await api.stageRestore(restorePath, restorePw);
+      const from =
+        restorePath === "inbox"
+          ? await api.stageRestoreInbox(restorePw)
+          : await api.stageRestore(restorePath, restorePw);
       backupMsg = `Backup from ${from} staged. Restart Klaxon to finish restoring.`;
       resetBackupFlow();
     } catch (e) {

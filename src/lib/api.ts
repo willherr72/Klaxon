@@ -96,6 +96,9 @@ export const api = {
   stageRestore: (path: string, passphrase: string) =>
     invoke<string>("stage_restore", { path, passphrase }),
   snapshotStatus: () => invoke<number | null>("snapshot_status"),
+  restoreInboxStatus: () => invoke<number | null>("restore_inbox_status"),
+  stageRestoreInbox: (passphrase: string) =>
+    invoke<string>("stage_restore_inbox", { passphrase }),
 };
 
 export interface Lane {

@@ -209,6 +209,65 @@ pub async fn stage_restore(
     Ok(format!("{} · {}", payload.manifest.device_name, when))
 }
 
+const RESTORE_INBOX: &str = "restore-inbox.klaxonbak";
+
+/// Whether RestoreActivity has parked a backup file for us (Android's
+/// picker-free import path). Returns its size so the UI can show
+/// something concrete.
+#[tauri::command]
+pub fn restore_inbox_status(app: AppHandle) -> AppResult<Option<u64>> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Invalid(format!("app dir: {e}")))?;
+    Ok(std::fs::metadata(app_dir.join(RESTORE_INBOX))
+        .ok()
+        .map(|m| m.len()))
+}
+
+/// Unseal + stage the inbox file (see `RestoreActivity`). The inbox is in
+/// our own data dir, so plain std::fs — no content-URI machinery. The
+/// file is consumed on success and on definitive failure kept, so a
+/// mistyped passphrase doesn't force re-sending the backup.
+#[tauri::command]
+pub async fn stage_restore_inbox(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    passphrase: String,
+) -> AppResult<String> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Invalid(format!("app dir: {e}")))?;
+    let inbox = app_dir.join(RESTORE_INBOX);
+    let bytes = std::fs::read(&inbox)
+        .map_err(|e| AppError::Invalid(format!("read inbox: {e}")))?;
+
+    let payload = container::unseal(&bytes, &passphrase)?;
+
+    let current_schema: i64 = {
+        let conn = state.db.lock();
+        conn.query_row(
+            "SELECT COALESCE(MAX(version),0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?
+    };
+    if payload.manifest.schema_version > current_schema {
+        return Err(AppError::Invalid(
+            "this backup came from a newer Klaxon — update the app first".into(),
+        ));
+    }
+
+    crate::backup::restore::stage(&app_dir, &payload)?;
+    let _ = std::fs::remove_file(&inbox);
+
+    let when = chrono::DateTime::from_timestamp_millis(payload.manifest.created_ms)
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default();
+    Ok(format!("{} · {}", payload.manifest.device_name, when))
+}
+
 #[tauri::command]
 pub fn snapshot_status(app: AppHandle) -> AppResult<Option<i64>> {
     let app_dir = app
