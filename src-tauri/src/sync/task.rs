@@ -191,36 +191,77 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
     PassOutcome { attempted, failed }
 }
 
+/// App-process side effects a completed pass wants performed. In the app
+/// they cancel alerts and refresh the UI; the headless worker (cold
+/// Android process) drops them — nothing is ringing and there is no
+/// webview to refresh.
+#[derive(Default)]
+pub struct PassEffects {
+    pub to_cancel: Vec<String>,
+    pub reminders_changed: bool,
+    pub thoughts_changed: bool,
+}
+
+/// App-process wrapper: gather mDNS-fresh seeds, run the core, apply the
+/// effects (cancel alerts, poke the webview).
 async fn sync_one(
     db: &Arc<Mutex<Connection>>,
     app: &AppHandle,
     endpoint: &Endpoint,
     peer: &crate::db::peers::Peer,
 ) -> crate::error::AppResult<()> {
+    let mut extra: Vec<iroh::TransportAddr> = Vec::new();
+    if let Some(node_id) = peer.iroh_node_id.as_deref() {
+        if let Some(st) = app.try_state::<crate::AppState>() {
+            if let Some(disc) = st.discovery.lock().as_ref() {
+                extra.extend(
+                    disc.addrs_for_node(node_id)
+                        .into_iter()
+                        .map(iroh::TransportAddr::Ip),
+                );
+            }
+        }
+    }
+    let effects = sync_one_core(db, endpoint, &extra, peer).await?;
+    for id in &effects.to_cancel {
+        alerts::cancel_alert(app, id);
+    }
+    if effects.reminders_changed {
+        emit_reminders_changed(app);
+    }
+    if effects.thoughts_changed {
+        emit_thoughts_changed(app);
+    }
+    Ok(())
+}
+
+/// The sync pass proper — pull, apply, push — with no app-process
+/// dependencies, so the cold Android worker can run it headless.
+async fn sync_one_core(
+    db: &Arc<Mutex<Connection>>,
+    endpoint: &Endpoint,
+    extra_seeds: &[iroh::TransportAddr],
+    peer: &crate::db::peers::Peer,
+) -> crate::error::AppResult<PassEffects> {
     let Some(node_id) = peer.iroh_node_id.as_deref() else {
         log::debug!(
             "skipping sync with {} — no iroh_node_id (re-pair required)",
             peer.name
         );
-        return Ok(());
+        return Ok(PassEffects::default());
     };
 
-    // Seed = persisted last-known-good ∪ mDNS-fresh LAN addresses. Either
-    // source alone is enough to skip iroh's address lookup; both together
-    // cover "same LAN as yesterday" and "network changed since last sync".
+    // Seed = persisted last-known-good ∪ caller-supplied extras (the app
+    // passes mDNS-fresh LAN addresses; the headless worker has none).
+    // Either source alone is enough to skip iroh's address lookup.
     let mut seed: Vec<iroh::TransportAddr> = peer
         .endpoint_addrs_json
         .as_deref()
         .and_then(|j| serde_json::from_str(j).ok())
         .unwrap_or_default();
-    if let Some(st) = app.try_state::<crate::AppState>() {
-        if let Some(disc) = st.discovery.lock().as_ref() {
-            for sa in disc.addrs_for_node(node_id) {
-                let addr = iroh::TransportAddr::Ip(sa);
-                if !seed.contains(&addr) {
-                    seed.push(addr);
-                }
-            }
+    for addr in extra_seeds {
+        if !seed.contains(addr) {
+            seed.push(addr.clone());
         }
     }
 
@@ -279,16 +320,15 @@ async fn sync_one(
             crate::models::now_ms(),
         );
     }
-    // Cancel local alerts after dropping the DB lock.
-    for id in to_cancel {
-        alerts::cancel_alert(app, &id);
-    }
-    if !pulled.reminders.is_empty() || !pulled.tombstones.is_empty() || !pulled.lanes.is_empty() {
-        emit_reminders_changed(app);
-    }
-    if !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty() {
-        emit_thoughts_changed(app);
-    }
+    // Side effects are the caller's job — the app cancels alerts and pokes
+    // the webview; the headless worker drops these.
+    let effects = PassEffects {
+        to_cancel,
+        reminders_changed: !pulled.reminders.is_empty()
+            || !pulled.tombstones.is_empty()
+            || !pulled.lanes.is_empty(),
+        thoughts_changed: !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty(),
+    };
 
     // Push
     let (rems, tombs, lanes, thts) = {
@@ -306,7 +346,7 @@ async fn sync_one(
         )
     };
     if rems.is_empty() && tombs.is_empty() && lanes.is_empty() && thts.is_empty() {
-        return Ok(());
+        return Ok(effects);
     }
     let max_pushed = rems
         .iter()
@@ -342,7 +382,65 @@ async fn sync_one(
         resp.accepted_lanes,
         resp.accepted_thoughts,
     );
-    Ok(())
+    Ok(effects)
+}
+
+/// One pass with no app process: same peer walk, same per-peer budget,
+/// effects dropped. Used by the cold Android WorkManager path — and by
+/// nothing else, so it lives behind the same rules (sync_enabled gate,
+/// error recording) as the app loop. Compiled on the host too so it
+/// breaks loudly instead of rotting behind a cfg.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub async fn run_one_pass_headless(
+    db: &Arc<Mutex<Connection>>,
+    endpoint: &Endpoint,
+) -> PassOutcome {
+    const NONE: PassOutcome = PassOutcome { attempted: 0, failed: 0 };
+    if !crate::sync::read_enabled(db) {
+        return NONE;
+    }
+    let peer_list = {
+        let conn = db.lock();
+        match peers::list_all(&conn) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("headless sync list peers: {e}");
+                return NONE;
+            }
+        }
+    };
+    let mut attempted = 0usize;
+    let mut failed = 0usize;
+    for peer in peer_list {
+        attempted += 1;
+        let fut = async { sync_one_core(db, endpoint, &[], &peer).await.map(|_| ()) };
+        match with_peer_timeout(fut, SYNC_PEER_TIMEOUT).await {
+            PeerSyncResult::Ok => {}
+            PeerSyncResult::Failed(e) => {
+                failed += 1;
+                log::debug!("headless sync with {} failed: {e}", peer.name);
+                let conn = db.lock();
+                let _ = peers::record_sync_err(
+                    &conn,
+                    &peer.id,
+                    &e.to_string(),
+                    crate::models::now_ms(),
+                );
+            }
+            PeerSyncResult::TimedOut => {
+                failed += 1;
+                log::warn!("headless sync with {} timed out", peer.name);
+                let conn = db.lock();
+                let _ = peers::record_sync_err(
+                    &conn,
+                    &peer.id,
+                    "timed out after 10s — peer unreachable",
+                    crate::models::now_ms(),
+                );
+            }
+        }
+    }
+    PassOutcome { attempted, failed }
 }
 
 /// Reminders in these states should silence any local alert that's still ringing.
