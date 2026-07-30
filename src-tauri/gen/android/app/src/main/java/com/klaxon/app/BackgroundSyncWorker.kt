@@ -8,30 +8,39 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Periodic background sync. WorkManager wakes us roughly every 25 min while the
- * app process is resident; we call into Rust to run one iroh pull/push pass.
+ * Background sync. WorkManager wakes us roughly every 25 min (periodic), or
+ * immediately after an Android share (expedited one-shot from ShareActivity);
+ * we call into Rust to run one iroh pull/push pass.
  *
- * Warm-only: if the process is cold the native side returns 0 (NotReady) and we
- * simply succeed and wait for the next period. Outcome codes:
- *   0 = NotReady (cold process), 1 = Disabled (sync off), 2 = Ran, -1 = error.
+ * v0.5.1: cold-capable. A warm process uses the app's own endpoint; a cold
+ * one opens the database and binds a short-lived headless endpoint from the
+ * persisted identity. Outcome codes:
+ *   0 = NotReady, 1 = Disabled (sync off), 2 = Ran (warm),
+ *   3 = RanCold (headless), -1 = error.
  */
 class BackgroundSyncWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
 
-    private external fun nativeSyncOnce(): Int
+    private external fun nativeInitAndroidContext(context: Context)
+    private external fun nativeSyncOnce(dataDir: String): Int
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val outcome = try {
-            nativeSyncOnce()
+            // A cold process never ran MainActivity.onCreate, so the
+            // ndk-context (needed by iroh's DNS resolver) must be
+            // initialized here. Guarded native-side: re-init is a no-op.
+            nativeInitAndroidContext(applicationContext)
+            nativeSyncOnce(applicationContext.dataDir.absolutePath)
         } catch (t: Throwable) {
             Log.w(TAG, "background sync threw", t)
             -1
         }
         Log.i(TAG, "background sync outcome=$outcome")
-        // Always success: this is a periodic job, so we rely on the next period
-        // rather than WorkManager retry/backoff.
+        // Always success: periodic jobs rely on the next period, and the
+        // expedited one-shot gets its retry from the next write or
+        // foreground rather than WorkManager backoff.
         Result.success()
     }
 
