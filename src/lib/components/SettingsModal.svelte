@@ -8,6 +8,8 @@
     isEnabled as autostartIsEnabled,
   } from "@tauri-apps/plugin-autostart";
   import { openPath } from "@tauri-apps/plugin-opener";
+  import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+  import { relativeTime } from "../time";
   import SignalLight from "./SignalLight.svelte";
   import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
@@ -47,6 +49,74 @@
   // every hotkey field in this modal without an error.
   let captureHotkey_ = $state("Ctrl+Alt+KeyT");
   type HotkeySlot = "global" | "quickadd" | "capture" | null;
+
+  // ── Backups (v0.5.2) ────────────────────────────────────────────────
+  let snapshotMs = $state<number | null>(null);
+  type BackupFlow = null | "export" | "restore-confirm";
+  let backupFlow = $state<BackupFlow>(null);
+  let exportPw1 = $state("");
+  let exportPw2 = $state("");
+  let backupBusy = $state(false);
+  let backupMsg = $state<string | null>(null);
+  let backupErr = $state<string | null>(null);
+  let restorePath = $state<string | null>(null);
+  let restorePw = $state("");
+
+  let exportReady = $derived(
+    exportPw1.length >= 8 && exportPw1 === exportPw2 && !backupBusy,
+  );
+
+  function resetBackupFlow() {
+    backupFlow = null;
+    exportPw1 = "";
+    exportPw2 = "";
+    restorePath = null;
+    restorePw = "";
+    backupErr = null;
+  }
+
+  async function doExport() {
+    backupBusy = true;
+    backupErr = null;
+    try {
+      const out = await api.exportBackup(exportPw1);
+      backupMsg =
+        out === "shared" ? "Handed to the share sheet." : `Saved: ${out}`;
+      resetBackupFlow();
+    } catch (e) {
+      backupErr = String(e);
+    } finally {
+      backupBusy = false;
+    }
+  }
+
+  async function pickRestoreFile() {
+    backupMsg = null;
+    backupErr = null;
+    const picked = await openFileDialog({
+      multiple: false,
+      filters: [{ name: "Klaxon backup", extensions: ["klaxonbak"] }],
+    });
+    if (typeof picked === "string") {
+      restorePath = picked;
+      backupFlow = "restore-confirm";
+    }
+  }
+
+  async function doRestore() {
+    if (!restorePath) return;
+    backupBusy = true;
+    backupErr = null;
+    try {
+      const from = await api.stageRestore(restorePath, restorePw);
+      backupMsg = `Backup from ${from} staged. Restart Klaxon to finish restoring.`;
+      resetBackupFlow();
+    } catch (e) {
+      backupErr = String(e);
+    } finally {
+      backupBusy = false;
+    }
+  }
   let recordingSlot = $state<HotkeySlot>(null);
   let sortOrder = $state<"date_asc" | "date_desc">("date_asc");
   let busy = $state(false);
@@ -110,6 +180,7 @@
       globalHotkey = settings["global_hotkey_new"] ?? "Ctrl+Alt+KeyN";
       quickAddHotkey = settings["inapp_hotkey_quickadd"] ?? "Ctrl+KeyK";
       captureHotkey_ = settings["global_hotkey_capture"] ?? "Ctrl+Alt+KeyT";
+      api.snapshotStatus().then((ms) => (snapshotMs = ms)).catch(() => {});
       recordingSlot = null;
       sortOrder = settings["list_sort_order"] === "date_desc" ? "date_desc" : "date_asc";
       if (isMobile) {
@@ -564,7 +635,86 @@
               </div>
               <span class="mono-caps-faint">Version</span>
               <span class="meta-value">v{appVersion || "…"} · industrial</span>
+              <span class="mono-caps-faint">Last snapshot</span>
+              <span class="meta-value">
+                {snapshotMs ? relativeTime(snapshotMs) : "never"}
+              </span>
             </div>
+
+            <!-- Backups (v0.5.2) -->
+            <div class="backup-row">
+              <button
+                class="btn ghost"
+                onclick={() => { backupMsg = null; backupErr = null; backupFlow = backupFlow === "export" ? null : "export"; }}
+                disabled={backupBusy}
+              >
+                Export backup…
+              </button>
+              <button class="btn ghost" onclick={pickRestoreFile} disabled={backupBusy}>
+                Restore backup…
+              </button>
+            </div>
+
+            {#if backupFlow === "export"}
+              <div class="backup-panel">
+                <div class="backup-warn mono-caps-faint">
+                  There is no recovery. If you lose this passphrase, this
+                  backup is unreadable.
+                </div>
+                <input
+                  class="backup-input"
+                  type="password"
+                  placeholder="Passphrase (min 8 characters)"
+                  bind:value={exportPw1}
+                />
+                <input
+                  class="backup-input"
+                  type="password"
+                  placeholder="Repeat passphrase"
+                  bind:value={exportPw2}
+                />
+                <div class="backup-actions">
+                  <button class="btn ghost" onclick={resetBackupFlow}>Cancel</button>
+                  <button class="btn primary" onclick={doExport} disabled={!exportReady}>
+                    {backupBusy ? "Encrypting…" : "Encrypt & Save"}
+                  </button>
+                </div>
+              </div>
+            {/if}
+
+            {#if backupFlow === "restore-confirm"}
+              <div class="backup-panel">
+                <!-- Guardrail wording is verbatim from the design spec. -->
+                <div class="backup-warn danger">
+                  Restore this only onto a device replacing the old one.
+                  Never onto a second device while the original still runs —
+                  two devices sharing one identity will corrupt sync.
+                </div>
+                <input
+                  class="backup-input"
+                  type="password"
+                  placeholder="Backup passphrase"
+                  bind:value={restorePw}
+                />
+                <div class="backup-actions">
+                  <button class="btn ghost" onclick={resetBackupFlow}>Cancel</button>
+                  <button
+                    class="btn primary"
+                    onclick={doRestore}
+                    disabled={backupBusy || restorePw.length === 0}
+                  >
+                    {backupBusy ? "Staging…" : "Stage Restore"}
+                  </button>
+                </div>
+              </div>
+            {/if}
+
+            {#if backupMsg}
+              <div class="backup-msg ok mono-caps-faint">{backupMsg}</div>
+            {/if}
+            {#if backupErr}
+              <div class="backup-msg err mono-caps-faint">{backupErr}</div>
+            {/if}
           {/if}
         </section>
       </div>
@@ -854,6 +1004,60 @@
   }
 
   /* Meta */
+  /* Backups (v0.5.2) */
+  .backup-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .backup-panel {
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .backup-warn {
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    line-height: 1.6;
+  }
+  .backup-warn.danger {
+    color: var(--signal-high);
+    border: 1px solid var(--signal-high);
+    padding: 8px 10px;
+    background: rgba(239, 68, 68, 0.06);
+  }
+  .backup-input {
+    border: 1px solid var(--border-strong);
+    background: var(--bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 7px 10px;
+  }
+  .backup-input:focus {
+    outline: none;
+    border-color: var(--klaxon);
+  }
+  .backup-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .backup-msg {
+    margin-top: 8px;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .backup-msg.ok {
+    color: var(--ok);
+  }
+  .backup-msg.err {
+    color: var(--signal-high);
+  }
+
   .meta-grid {
     display: grid;
     grid-template-columns: 110px 1fr;
