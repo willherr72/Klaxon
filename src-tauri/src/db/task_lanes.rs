@@ -175,14 +175,18 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// Returns lanes whose `updated_at` is strictly greater than `since` and
-/// are dirty. Used by the sync push path to gather what needs to ride
-/// the wire to peers.
-pub fn dirty_since(conn: &Connection, since: i64) -> AppResult<Vec<Lane>> {
+/// Lanes to push to a peer, by the per-peer high-water mark.
+///
+/// Deliberately does NOT filter on `dirty` (issue #1): rows received from
+/// a peer land with `dirty = 0`, and filtering on it meant a lane learned
+/// from one peer never forwarded to a second — tasks arriving on a third
+/// device pointed at a lane it didn't have. The cost is one idempotent
+/// echo back to the sender, same as reminders and thoughts.
+pub fn updated_since(conn: &Connection, since: i64) -> AppResult<Vec<Lane>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, order_index, is_default, created_at, updated_at
          FROM task_lanes
-         WHERE dirty = 1 AND updated_at > ?1
+         WHERE updated_at > ?1
          ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since], |r| {
@@ -210,4 +214,51 @@ pub fn clear_dirty(conn: &Connection, id: &str) -> AppResult<()> {
         params![id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_remote, updated_since, Lane};
+
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    /// Issue #1 regression: a lane received from peer A lands clean
+    /// (dirty = 0) but must still be pushed onward to peer B — otherwise a
+    /// task syncing to a third device points at a lane that device never
+    /// receives.
+    #[test]
+    fn received_lanes_still_forward_to_other_peers() {
+        let conn = test_conn();
+        apply_remote(
+            &conn,
+            &Lane {
+                id: "lane-from-phone".into(),
+                name: "Errands".into(),
+                order_index: 5,
+                is_default: false,
+                created_at: 100,
+                updated_at: 100,
+            },
+        )
+        .unwrap();
+
+        let pending: Vec<_> = updated_since(&conn, 50)
+            .unwrap()
+            .into_iter()
+            .filter(|l| l.id == "lane-from-phone")
+            .collect();
+        assert_eq!(pending.len(), 1, "clean lanes must still forward");
+
+        assert!(
+            updated_since(&conn, 100)
+                .unwrap()
+                .iter()
+                .all(|l| l.id != "lane-from-phone"),
+            "high-water mark is exclusive"
+        );
+    }
 }

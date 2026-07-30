@@ -19,10 +19,18 @@ pub fn create(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
     Ok(())
 }
 
-pub fn dirty_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombstone>> {
+/// Tombstones to push to a peer, by the per-peer high-water mark.
+///
+/// Deliberately does NOT filter on `dirty` (issue #1): rows received from
+/// a peer land with `dirty = 0`, and filtering on it meant a delete
+/// learned from one peer never forwarded to a second — at three devices,
+/// a row deleted on the phone stayed alive on the desktop forever. The
+/// cost is one idempotent echo back to the sender, same as reminders
+/// and thoughts.
+pub fn deleted_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombstone>> {
     let mut stmt = conn.prepare(
         "SELECT id, deleted_at, dirty FROM tombstones
-         WHERE dirty = 1 AND deleted_at > ?1
+         WHERE deleted_at > ?1
          ORDER BY deleted_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], |r| {
@@ -62,4 +70,33 @@ pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<(
         params![id, deleted_at],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_remote, deleted_since};
+
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    /// Issue #1 regression: a tombstone received from peer A lands clean
+    /// (dirty = 0) but must still be pushed onward to peer B — otherwise a
+    /// row deleted on the phone stays alive on a third device forever.
+    #[test]
+    fn received_tombstones_still_forward_to_other_peers() {
+        let conn = test_conn();
+        apply_remote(&conn, "gone-1", 100).unwrap();
+
+        let pending = deleted_since(&conn, 50).unwrap();
+        assert_eq!(pending.len(), 1, "clean tombstones must still forward");
+        assert!(!pending[0].dirty);
+
+        assert!(
+            deleted_since(&conn, 100).unwrap().is_empty(),
+            "high-water mark is exclusive"
+        );
+    }
 }
