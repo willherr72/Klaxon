@@ -30,6 +30,22 @@ instead of sync only happening when both apps were open simultaneously.
   Settings shows each peer's most recent sync outcome ("✓ synced 2m ago"
   / "✗ 5m ago · timed out").
 
+- **Cold-capable background sync (Android).** The ~25-minute WorkManager
+  job now syncs even after Android kills the app process: it opens the
+  database directly, binds a short-lived iroh endpoint from the persisted
+  identity, runs one pass, and tears down. Previously it silently no-oped
+  unless the process happened to be warm.
+- **Share-triggered sync.** Sharing to Klaxon enqueues an expedited
+  one-shot of the sync worker, so a shared link reaches your other devices
+  within seconds even with Klaxon fully closed — verified at ~5s in
+  testing.
+
+### Known limitations
+
+- A reminder that arrives via cold sync doesn't arm its alarm until the
+  app is next foregrounded (carried from v0.4; alarms are scheduled by the
+  frontend).
+
 ### Schema / sync
 
 - **Migration 010** — five new nullable columns on `peers` (last-known
