@@ -41,6 +41,11 @@ jobs:
       - name: svelte-check (0 errors)
         run: npx svelte-check --threshold error
 
+      - name: Build frontend
+        # tauri::generate_context!() panics at compile time if frontendDist
+        # (../dist) doesn't exist — a fresh checkout has no built frontend.
+        run: npm run build
+
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
