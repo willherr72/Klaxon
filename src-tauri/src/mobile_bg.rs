@@ -19,6 +19,8 @@ pub enum BgSyncOutcome {
     Disabled,
     /// A sync pass was dispatched.
     Ran,
+    /// v0.5.1: a pass ran from a cold process via the headless path.
+    RanCold,
 }
 
 impl BgSyncOutcome {
@@ -29,6 +31,7 @@ impl BgSyncOutcome {
             BgSyncOutcome::NotReady => 0,
             BgSyncOutcome::Disabled => 1,
             BgSyncOutcome::Ran => 2,
+            BgSyncOutcome::RanCold => 3,
         }
     }
 }
@@ -74,6 +77,7 @@ mod tests {
         assert_eq!(BgSyncOutcome::NotReady.code(), 0);
         assert_eq!(BgSyncOutcome::Disabled.code(), 1);
         assert_eq!(BgSyncOutcome::Ran.code(), 2);
+        assert_eq!(BgSyncOutcome::RanCold.code(), 3);
     }
 }
 
@@ -89,6 +93,12 @@ mod live {
     /// Called once from `setup()`. Idempotent — a second call is ignored.
     pub fn register(app: AppHandle) {
         let _ = BG_APP.set(app);
+    }
+
+    /// Whether the app process is warm (Tauri setup ran). The headless
+    /// path yields when this is true — one identity, one live endpoint.
+    pub fn app_is_live() -> bool {
+        BG_APP.get().is_some()
     }
 
     /// Run one background sync pass if the process is warm and sync is enabled.
@@ -118,20 +128,90 @@ mod live {
 }
 
 #[cfg(mobile)]
+mod headless {
+    use super::BgSyncOutcome;
+
+    /// Cold-process sync: no Tauri, no AppHandle. Open the DB, bind the
+    /// endpoint from the persisted identity, one pass, tear down. Any
+    /// init failure is a logged no-op — never crash the worker process.
+    pub fn try_headless_sync(data_dir: &std::path::Path) -> BgSyncOutcome {
+        // Safety rule: one identity, one live endpoint. If the app is up,
+        // its endpoint owns the identity — the warm path handles that case.
+        if super::live::app_is_live() {
+            return BgSyncOutcome::NotReady;
+        }
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::warn!("headless sync: runtime build failed: {e}");
+                return BgSyncOutcome::NotReady;
+            }
+        };
+        rt.block_on(async {
+            let db_path = data_dir.join("klaxon.db");
+            let conn = match crate::db::open(&db_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("headless sync: db open failed: {e}");
+                    return BgSyncOutcome::NotReady;
+                }
+            };
+            let db = std::sync::Arc::new(parking_lot::Mutex::new(conn));
+            if !crate::sync::read_enabled(&db) {
+                return BgSyncOutcome::Disabled;
+            }
+            let node = match crate::sync::iroh_node::start(data_dir).await {
+                Ok(n) => n,
+                Err(e) => {
+                    log::warn!("headless sync: endpoint start failed: {e}");
+                    return BgSyncOutcome::NotReady;
+                }
+            };
+            let outcome =
+                crate::sync::task::run_one_pass_headless(&db, &node.endpoint).await;
+            log::info!(
+                "headless sync: attempted {} peers, {} failed",
+                outcome.attempted,
+                outcome.failed,
+            );
+            node.endpoint.close().await;
+            BgSyncOutcome::RanCold
+        })
+    }
+}
+
+#[cfg(mobile)]
 pub use live::register;
 
-/// JNI entry point for the Kotlin `BackgroundSyncWorker`. Returns the
-/// `BgSyncOutcome` code. `JNIEnv*` and the worker `jobject` are passed as
-/// opaque pointers we don't touch, so no `jni` crate dependency is needed.
-/// `catch_unwind` keeps a Rust panic from unwinding across the FFI boundary
-/// (undefined behavior otherwise) — a panic maps to -1.
+/// JNI entry point for the Kotlin `BackgroundSyncWorker`. Warm process →
+/// existing in-app pass; cold process → headless pass against the given
+/// data dir. `catch_unwind` keeps a Rust panic from unwinding across the
+/// FFI boundary (undefined behavior otherwise) — a panic maps to -1.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce(
-    _env: *mut std::ffi::c_void,
-    _this: *mut std::ffi::c_void,
-) -> i32 {
-    std::panic::catch_unwind(|| live::try_background_sync().code()).unwrap_or(-1)
+pub extern "system" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    data_dir: jni::objects::JString<'local>,
+) -> jni::sys::jint {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        match live::try_background_sync() {
+            // Warm path handled it (ran, or sync is disabled).
+            outcome @ (BgSyncOutcome::Ran | BgSyncOutcome::Disabled) => outcome.code(),
+            // NotReady = process is cold. Go headless.
+            _ => {
+                let Ok(dir) = env.get_string(&data_dir) else {
+                    return -1;
+                };
+                let dir: String = dir.into();
+                headless::try_headless_sync(std::path::Path::new(&dir)).code()
+            }
+        }
+    }))
+    .unwrap_or(-1)
 }
 
 /// JNI entry point called from `MainActivity.onCreate` (before Tauri's
@@ -146,6 +226,31 @@ pub extern "C" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce(
 pub extern "system" fn Java_com_klaxon_app_MainActivity_nativeInitAndroidContext<'local>(
     env: jni::JNIEnv<'local>,
     _this: jni::objects::JObject<'local>,
+    context: jni::objects::JObject<'local>,
+) {
+    init_android_context_guarded(env, context);
+}
+
+/// v0.5.1: a cold WorkManager process never ran `MainActivity.onCreate`,
+/// so the worker must initialize the ndk-context itself before any Rust
+/// networking — otherwise hickory-resolver aborts the process (the v0.4
+/// bug all over again, from a different entry point).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeInitAndroidContext<'local>(
+    env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    context: jni::objects::JObject<'local>,
+) {
+    init_android_context_guarded(env, context);
+}
+
+/// Shared body for the two init exports above. Guarded: Android re-runs
+/// activity lifecycles freely, and both entry points may fire in one
+/// process lifetime — `initialize_android_context` asserts it runs once.
+#[cfg(target_os = "android")]
+fn init_android_context_guarded<'local>(
+    env: jni::JNIEnv<'local>,
     context: jni::objects::JObject<'local>,
 ) {
     use std::sync::atomic::{AtomicBool, Ordering};
