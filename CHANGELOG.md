@@ -5,12 +5,13 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.5.1
+## [0.5.1] — 2026-07-30
 
-Sync reliability, milestone 1: sync is **event-driven**, and dials aim at
-known addresses instead of waiting on discovery. The goal: a change leaves
-the device within seconds of the write, and every awake-window gets used —
-instead of sync only happening when both apps were open simultaneously.
+Sync reliability. Sync is now **event-driven**, dials aim at known
+addresses instead of waiting on discovery, and the phone syncs **from a
+cold process**. A change leaves the device within seconds of the write and
+every awake-window gets used — sync no longer requires both apps to be
+open at the same time.
 
 ### Added
 
