@@ -1,5 +1,6 @@
 mod alerts;
 mod audio;
+pub mod backup;
 #[cfg(desktop)]
 mod capture;
 mod commands;
@@ -97,6 +98,8 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init());
 
     // Desktop-only plugins. Autostart/single-instance/global-shortcut all
@@ -155,11 +158,33 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&app_dir)?;
 
+            // A staged restore (from Settings → Restore backup…) swaps in
+            // here, before the database ever opens. Failure leaves the
+            // marker in place and boots the existing data.
+            match backup::restore::apply_staged_if_any(&app_dir) {
+                Ok(true) => log::info!("backup restore applied at boot"),
+                Ok(false) => {}
+                Err(e) => log::error!("staged restore failed, booting existing data: {e}"),
+            }
+
             let db_path = app_dir.join("klaxon.db");
             log::info!("opening db at {}", db_path.display());
 
             let conn = db::open(&db_path)?;
             let db = Arc::new(Mutex::new(conn));
+
+            // Daily local snapshot — zero-discipline insurance against
+            // corruption and accidental deletes. Never blocks startup.
+            {
+                let conn = db.lock();
+                if let Err(e) = backup::snapshot::snapshot_if_due(
+                    &conn,
+                    &app_dir.join("backups"),
+                    crate::models::now_ms(),
+                ) {
+                    log::warn!("snapshot failed: {e}");
+                }
+            }
 
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             #[cfg(desktop)]
@@ -387,6 +412,11 @@ pub fn run() {
             commands::update_thought,
             commands::delete_thought,
             commands::thought_tag_counts,
+            backup::commands::export_backup,
+            backup::commands::stage_restore,
+            backup::commands::restore_inbox_status,
+            backup::commands::stage_restore_inbox,
+            backup::commands::snapshot_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

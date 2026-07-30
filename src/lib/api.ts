@@ -90,6 +90,15 @@ export const api = {
     invoke<Thought>("update_thought", { id, patch }),
   deleteThought: (id: string) => invoke<void>("delete_thought", { id }),
   thoughtTagCounts: () => invoke<TagCount[]>("thought_tag_counts"),
+  // Backups (v0.5.2)
+  exportBackup: (passphrase: string) =>
+    invoke<string>("export_backup", { passphrase }),
+  stageRestore: (path: string, passphrase: string) =>
+    invoke<string>("stage_restore", { path, passphrase }),
+  snapshotStatus: () => invoke<number | null>("snapshot_status"),
+  restoreInboxStatus: () => invoke<number | null>("restore_inbox_status"),
+  stageRestoreInbox: (passphrase: string) =>
+    invoke<string>("stage_restore_inbox", { passphrase }),
 };
 
 export interface Lane {

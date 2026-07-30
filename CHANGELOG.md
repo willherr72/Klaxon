@@ -5,6 +5,45 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — 0.5.2
+
+Backups: **your data stays yours — and now you can keep it.** Plus CI and
+a sync-forwarding fix.
+
+### Added
+
+- **Automatic local snapshots.** Once a day at launch, Klaxon copies its
+  database (SQLite online-backup API, safe under WAL) into `backups/`,
+  keeping the newest 7. Plain `.db` files — restorable with nothing but a
+  file manager. Settings shows the last snapshot time.
+- **Encrypted export.** Settings → System → Export backup produces a
+  single passphrase-encrypted `.klaxonbak` (Argon2id + AES-256-GCM)
+  containing the database *and* the device's sync identity — a full
+  resurrection file. Desktop saves via dialog; Android hands it to the
+  share sheet.
+- **Restore.** Desktop picks the file; on Android, open the `.klaxonbak`
+  "with Klaxon" from Files/Drive and then run Settings → Restore. Restores
+  stage and apply on the next launch, with the previous files kept in
+  `restore-undo/`. A restored device keeps its pairings — it *is* the old
+  device. The restore flow warns, prominently: never restore onto a second
+  device while the original still runs.
+- **CI.** Every push runs the Rust suite, a zero-warning build, and
+  svelte-check on a Windows runner.
+
+### Fixed
+
+- **Lanes and deletions now forward across the whole mesh** (#1). They
+  previously never propagated past the peer that first received them — at
+  three devices, a row deleted on one stayed alive on another forever.
+
+### Verification note
+
+Every backup mechanism was verified on hardware (export, encryption,
+share-sheet and open-with delivery, passphrase rejection, staged
+boot-swap restore, and the guardrail's deterrent value — live, on its
+first real encounter). The full same-device resurrection drill was
+verified by parts rather than as a single run.
+
 ## [0.5.1] — 2026-07-30
 
 Sync reliability. Sync is now **event-driven**, dials aim at known
