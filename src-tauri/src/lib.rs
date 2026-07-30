@@ -156,6 +156,15 @@ pub fn run() {
                 .expect("failed to resolve app data dir");
             std::fs::create_dir_all(&app_dir)?;
 
+            // A staged restore (from Settings → Restore backup…) swaps in
+            // here, before the database ever opens. Failure leaves the
+            // marker in place and boots the existing data.
+            match backup::restore::apply_staged_if_any(&app_dir) {
+                Ok(true) => log::info!("backup restore applied at boot"),
+                Ok(false) => {}
+                Err(e) => log::error!("staged restore failed, booting existing data: {e}"),
+            }
+
             let db_path = app_dir.join("klaxon.db");
             log::info!("opening db at {}", db_path.display());
 
