@@ -98,6 +98,8 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init());
 
     // Desktop-only plugins. Autostart/single-instance/global-shortcut all
@@ -410,6 +412,9 @@ pub fn run() {
             commands::update_thought,
             commands::delete_thought,
             commands::thought_tag_counts,
+            backup::commands::export_backup,
+            backup::commands::stage_restore,
+            backup::commands::snapshot_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
