@@ -93,13 +93,24 @@
   async function pickRestoreFile() {
     backupMsg = null;
     backupErr = null;
-    const picked = await openFileDialog({
-      multiple: false,
-      filters: [{ name: "Klaxon backup", extensions: ["klaxonbak"] }],
-    });
-    if (typeof picked === "string") {
-      restorePath = picked;
-      backupFlow = "restore-confirm";
+    try {
+      // No extension filter on Android: SAF resolves filters via MIME
+      // types, and a custom extension like .klaxonbak maps to nothing —
+      // the picker either errors or shows an empty, unselectable list.
+      const picked = await openFileDialog({
+        multiple: false,
+        ...(isMobile
+          ? {}
+          : { filters: [{ name: "Klaxon backup", extensions: ["klaxonbak"] }] }),
+      });
+      if (typeof picked === "string") {
+        restorePath = picked;
+        backupFlow = "restore-confirm";
+      }
+    } catch (e) {
+      // Without this catch, a dialog failure is an unhandled rejection —
+      // i.e. a button that visibly does nothing.
+      backupErr = String(e);
     }
   }
 
