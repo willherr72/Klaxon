@@ -1,6 +1,6 @@
 [package]
 name = "klaxon"
-version = "0.5.0"
+version = "0.5.1"
 description = "A reminder app that gets your attention"
 authors = ["Will Herr"]
 edition = "2021"
@@ -59,6 +59,18 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
+
+# v0.5.1: suspend/resume notifications for the sync loop (WM_POWERBROADCAST
+# via a message-only window). 0.62 to match the copy already in the
+# dependency tree via tauri, not to add a third.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    # WNDCLASSW / RegisterClassW are gated here (the struct embeds GDI types).
+    "Win32_Graphics_Gdi",
+] }
 
 # v0.4: Android-only. We initialize the global ndk-context (JavaVM + Android
 # Context) ourselves from MainActivity — Tauri/wry never set it, but crates

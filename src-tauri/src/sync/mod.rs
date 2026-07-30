@@ -18,6 +18,7 @@ pub mod ops;
 pub mod pair_handler;
 pub mod proto;
 pub mod task;
+pub mod trigger;
 pub mod types;
 
 use std::collections::HashMap;

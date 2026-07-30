@@ -142,6 +142,10 @@ impl PairHandler {
                         created_at: now_ms(),
                         last_seen_at: Some(now_ms()),
                         iroh_node_id: Some(offer.initiator_node_id.clone()),
+                        endpoint_addrs_json: None,
+                        last_sync_ok_at: None,
+                        last_sync_error: None,
+                        last_sync_error_at: None,
                     };
                     peers::upsert(&conn, &peer)?;
                 }

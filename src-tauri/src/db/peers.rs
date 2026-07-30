@@ -16,26 +16,41 @@ pub struct Peer {
     /// Iroh EndpointId (base32 string) captured during pairing. `None`
     /// only for very-pre-v0.3 leftover rows; new pairings always set it.
     pub iroh_node_id: Option<String>,
+    /// v0.5.1: last-known-good iroh addresses as JSON `Vec<TransportAddr>`.
+    /// Seeded into dials so the first connect after launch skips address
+    /// lookup entirely.
+    pub endpoint_addrs_json: Option<String>,
+    /// v0.5.1: per-peer sync evidence for the Settings UI.
+    pub last_sync_ok_at: Option<i64>,
+    pub last_sync_error: Option<String>,
+    pub last_sync_error_at: Option<i64>,
+}
+
+const COLUMNS: &str = "id, name, shared_secret, last_pull_at, last_push_at, created_at,
+                last_seen_at, iroh_node_id, endpoint_addrs, last_sync_ok_at,
+                last_sync_error, last_sync_error_at";
+
+fn row_to_peer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Peer> {
+    Ok(Peer {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        shared_secret: r.get(2)?,
+        last_pull_at: r.get(3)?,
+        last_push_at: r.get(4)?,
+        created_at: r.get(5)?,
+        last_seen_at: r.get(6)?,
+        iroh_node_id: r.get(7)?,
+        endpoint_addrs_json: r.get(8)?,
+        last_sync_ok_at: r.get(9)?,
+        last_sync_error: r.get(10)?,
+        last_sync_error_at: r.get(11)?,
+    })
 }
 
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Peer>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, shared_secret, last_pull_at, last_push_at, created_at,
-                last_seen_at, iroh_node_id
-         FROM peers ORDER BY name ASC",
-    )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(Peer {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            shared_secret: r.get(2)?,
-            last_pull_at: r.get(3)?,
-            last_push_at: r.get(4)?,
-            created_at: r.get(5)?,
-            last_seen_at: r.get(6)?,
-            iroh_node_id: r.get(7)?,
-        })
-    })?;
+    let mut stmt =
+        conn.prepare(&format!("SELECT {COLUMNS} FROM peers ORDER BY name ASC"))?;
+    let rows = stmt.query_map([], row_to_peer)?;
     let mut out = Vec::new();
     for r in rows {
         out.push(r?);
@@ -70,23 +85,10 @@ pub fn upsert(conn: &Connection, peer: &Peer) -> AppResult<()> {
 /// connection back to a paired peer.
 #[allow(dead_code)]
 pub fn find_by_node_id(conn: &Connection, node_id: &str) -> AppResult<Option<Peer>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, shared_secret, last_pull_at, last_push_at, created_at,
-                last_seen_at, iroh_node_id
-         FROM peers WHERE iroh_node_id = ?1 LIMIT 1",
-    )?;
-    let mut rows = stmt.query_map(params![node_id], |r| {
-        Ok(Peer {
-            id: r.get(0)?,
-            name: r.get(1)?,
-            shared_secret: r.get(2)?,
-            last_pull_at: r.get(3)?,
-            last_push_at: r.get(4)?,
-            created_at: r.get(5)?,
-            last_seen_at: r.get(6)?,
-            iroh_node_id: r.get(7)?,
-        })
-    })?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM peers WHERE iroh_node_id = ?1 LIMIT 1"
+    ))?;
+    let mut rows = stmt.query_map(params![node_id], row_to_peer)?;
     if let Some(row) = rows.next() {
         Ok(Some(row?))
     } else {
@@ -111,6 +113,37 @@ pub fn mark_pushed(conn: &Connection, id: &str, ts: i64) -> AppResult<()> {
     conn.execute(
         "UPDATE peers SET last_push_at = ?2, last_seen_at = ?2 WHERE id = ?1",
         params![id, ts],
+    )?;
+    Ok(())
+}
+
+/// Record a successful sync: timestamp, refreshed addresses, and clear any
+/// previous error so Settings doesn't show a stale failure.
+pub fn record_sync_ok(
+    conn: &Connection,
+    peer_id: &str,
+    addrs_json: Option<&str>,
+    now: i64,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE peers SET
+            last_sync_ok_at = ?2,
+            last_sync_error = NULL,
+            last_sync_error_at = NULL,
+            endpoint_addrs = COALESCE(?3, endpoint_addrs),
+            addrs_updated_at = CASE WHEN ?3 IS NULL THEN addrs_updated_at ELSE ?2 END
+         WHERE id = ?1",
+        params![peer_id, now, addrs_json],
+    )?;
+    Ok(())
+}
+
+/// Record a failed sync attempt. Keeps the last-good addresses — a dial
+/// failure doesn't invalidate what worked before.
+pub fn record_sync_err(conn: &Connection, peer_id: &str, msg: &str, now: i64) -> AppResult<()> {
+    conn.execute(
+        "UPDATE peers SET last_sync_error = ?2, last_sync_error_at = ?3 WHERE id = ?1",
+        params![peer_id, msg, now],
     )?;
     Ok(())
 }

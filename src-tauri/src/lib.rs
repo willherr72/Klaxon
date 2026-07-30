@@ -8,6 +8,8 @@ pub mod db;
 pub mod error;
 pub mod models;
 mod nl;
+#[cfg(windows)]
+mod power;
 mod recurrence;
 mod scheduler;
 pub mod search;
@@ -48,6 +50,10 @@ pub struct AppState {
     /// be re-registered independently.
     #[cfg(desktop)]
     pub capture_hotkey: Arc<Mutex<Option<Shortcut>>>,
+    /// Pokes the sync loop. Send on every local mutation (push-on-write),
+    /// at launch, and on Windows resume. Cheap, unbounded, coalesced by
+    /// the receiver.
+    pub sync_nudge: tokio::sync::mpsc::UnboundedSender<sync::trigger::Nudge>,
     pub discovery: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>>,
     pub pending_pairs: sync::PendingPairs,
     /// v0.3 iroh transport. `None` until setup completes or if sync is
@@ -171,11 +177,24 @@ pub fn run() {
 
             // Sync server + task: started unconditionally; sync task no-ops while
             // sync_enabled is false. Server respects the same flag at startup.
+            //
+            // The nudge channel makes the loop event-driven: local writes,
+            // launch, and Windows resume poke it instead of waiting for the
+            // 20s tick. The task also gets a sender clone so it can schedule
+            // its own bounded retries.
+            let (nudge_tx, nudge_rx) =
+                tokio::sync::mpsc::unbounded_channel::<sync::trigger::Nudge>();
             let sync_db = db.clone();
             let sync_app = app.handle().clone();
+            let sync_retry_tx = nudge_tx.clone();
             tauri::async_runtime::spawn(async move {
-                sync::task::run(sync_db, sync_app).await;
+                sync::task::run(sync_db, sync_app, nudge_rx, sync_retry_tx).await;
             });
+
+            // Windows suspend/resume → nudges. Losing these events just
+            // degrades to tick-driven catch-up, so failure is non-fatal.
+            #[cfg(windows)]
+            power::spawn_power_watcher(nudge_tx.clone());
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));
@@ -239,9 +258,22 @@ pub fn run() {
                 }
 
                 let node_id_for_mdns = iroh_node_opt.as_ref().map(|n| n.node_id.clone());
-                match sync::discovery::start(identity, node_id_for_mdns) {
+                // The iroh QUIC port, so peers can dial our discovered LAN
+                // IPs directly instead of going through address lookup.
+                let iroh_port = iroh_node_opt
+                    .as_ref()
+                    .and_then(|n| n.endpoint.bound_sockets().first().map(|sa| sa.port()));
+                match sync::discovery::start(identity, node_id_for_mdns, iroh_port) {
                     Ok(h) => *discovery_handle.lock() = Some(h),
                     Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
+                }
+
+                // Eager launch pass — the short-session fix. Klaxon
+                // autostarts at login; this makes "boot → synced" take
+                // seconds instead of waiting for the first 20s tick. Only
+                // worth sending when the endpoint actually came up.
+                if iroh_node_opt.is_some() {
+                    let _ = nudge_tx.send(sync::trigger::Nudge::Launch);
                 }
             }
 
@@ -293,6 +325,7 @@ pub fn run() {
                 current_hotkey,
                 #[cfg(desktop)]
                 capture_hotkey,
+                sync_nudge: nudge_tx.clone(),
                 discovery: discovery_handle,
                 pending_pairs,
                 iroh_node: iroh_node_state,

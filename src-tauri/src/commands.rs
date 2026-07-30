@@ -28,6 +28,13 @@ pub fn get_reminder(state: State<'_, AppState>, id: String) -> AppResult<Reminde
     repo::get_by_id(&conn, &id)
 }
 
+/// Push-on-write: poke the sync loop after a local mutation so the change
+/// leaves this device in ~seconds instead of waiting for the 20s tick.
+/// Failures are impossible in practice (unbounded channel); ignore them.
+fn nudge_write(state: &State<'_, AppState>) {
+    let _ = state.sync_nudge.send(crate::sync::trigger::Nudge::Write);
+}
+
 #[tauri::command]
 pub fn create_reminder(
     state: State<'_, AppState>,
@@ -38,6 +45,7 @@ pub fn create_reminder(
         repo::create(&conn, input)?
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(r)
 }
 
@@ -52,6 +60,7 @@ pub fn update_reminder(
         repo::update(&conn, &id, patch)?
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(r)
 }
 
@@ -67,6 +76,7 @@ pub fn delete_reminder(
     }
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(())
 }
 
@@ -83,6 +93,7 @@ pub fn snooze_reminder(
     };
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(r)
 }
 
@@ -110,6 +121,7 @@ pub fn dismiss_reminder(
         }
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(r)
 }
 
@@ -125,6 +137,7 @@ pub fn complete_reminder(
     };
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    nudge_write(&state);
     Ok(r)
 }
 
@@ -273,6 +286,7 @@ pub fn create_lane(
         lane
     };
     let _ = app.emit("klaxon://lanes-changed", ());
+    nudge_write(&state);
     Ok(lane)
 }
 
@@ -302,6 +316,7 @@ pub fn rename_lane(
             .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?
     };
     let _ = app.emit("klaxon://lanes-changed", ());
+    nudge_write(&state);
     Ok(lane)
 }
 
@@ -349,6 +364,7 @@ pub fn delete_lane(
         }
     };
     let _ = app.emit("klaxon://lanes-changed", ());
+    nudge_write(&state);
     let _ = app.emit("klaxon://reminders-changed", ());
     Ok(outcome)
 }
@@ -373,6 +389,7 @@ pub fn reorder_lanes(
         }
     }
     let _ = app.emit("klaxon://lanes-changed", ());
+    nudge_write(&state);
     Ok(())
 }
 
@@ -411,6 +428,7 @@ pub fn set_task_lane(
         repo::update(&conn, &reminder_id, patch)?
     };
     let _ = app.emit("klaxon://reminders-changed", ());
+    nudge_write(&state);
     Ok(updated)
 }
 
@@ -434,6 +452,10 @@ pub struct PeerView {
     pub last_push_at: i64,
     pub last_seen_at: Option<i64>,
     pub iroh_node_id: Option<String>,
+    /// v0.5.1 sync evidence — drives the per-peer status row in Settings.
+    pub last_sync_ok_at: Option<i64>,
+    pub last_sync_error: Option<String>,
+    pub last_sync_error_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -457,6 +479,9 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
             last_push_at: p.last_push_at,
             last_seen_at: p.last_seen_at,
             iroh_node_id: p.iroh_node_id,
+            last_sync_ok_at: p.last_sync_ok_at,
+            last_sync_error: p.last_sync_error,
+            last_sync_error_at: p.last_sync_error_at,
         })
         .collect())
 }
@@ -486,6 +511,10 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         created_at: now_ms(),
         last_seen_at: None,
         iroh_node_id: Some(input.iroh_node_id.trim().to_string()),
+        endpoint_addrs_json: None,
+        last_sync_ok_at: None,
+        last_sync_error: None,
+        last_sync_error_at: None,
     };
     {
         let conn = state.db.lock();
@@ -498,6 +527,9 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_push_at: peer.last_push_at,
         last_seen_at: peer.last_seen_at,
         iroh_node_id: peer.iroh_node_id,
+        last_sync_ok_at: None,
+        last_sync_error: None,
+        last_sync_error_at: None,
     })
 }
 
@@ -535,7 +567,7 @@ pub async fn ping_peer(
         .as_ref()
         .map(|n| n.endpoint.clone())
         .ok_or_else(|| AppError::Invalid("local iroh endpoint not started".into()))?;
-    sync::iroh_client::ping(&endpoint, &node_id, &secret).await
+    sync::iroh_client::ping(&endpoint, &node_id, &[], &secret).await
 }
 
 #[tauri::command]
@@ -674,6 +706,10 @@ pub async fn start_pair_with(
                     created_at: now_ms(),
                     last_seen_at: Some(now_ms()),
                     iroh_node_id: Some(responder_node_id.clone()),
+                    endpoint_addrs_json: None,
+                    last_sync_ok_at: None,
+                    last_sync_error: None,
+                    last_sync_error_at: None,
                 };
                 peer_repo::upsert(&conn, &peer)?;
             }
@@ -767,6 +803,7 @@ pub fn create_thought(
         thoughts::create(&conn, input)?
     };
     let _ = app.emit("klaxon://thoughts-changed", ());
+    nudge_write(&state);
     Ok(thought)
 }
 
@@ -782,6 +819,7 @@ pub fn update_thought(
         thoughts::update(&conn, &id, patch)?
     };
     let _ = app.emit("klaxon://thoughts-changed", ());
+    nudge_write(&state);
     Ok(thought)
 }
 
@@ -798,6 +836,7 @@ pub fn delete_thought(
         thoughts::delete(&conn, &id)?;
     }
     let _ = app.emit("klaxon://thoughts-changed", ());
+    nudge_write(&state);
     Ok(())
 }
 

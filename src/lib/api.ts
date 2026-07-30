@@ -160,6 +160,10 @@ export interface PeerView {
   last_push_at: number;
   last_seen_at: number | null;
   iroh_node_id: string | null;
+  /** v0.5.1 sync evidence — most recent success / failure per peer. */
+  last_sync_ok_at: number | null;
+  last_sync_error: string | null;
+  last_sync_error_at: number | null;
 }
 
 export interface AddPeerInput {
