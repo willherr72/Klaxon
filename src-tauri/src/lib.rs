@@ -1,5 +1,6 @@
 mod alerts;
 mod audio;
+pub mod backup;
 #[cfg(desktop)]
 mod capture;
 mod commands;
@@ -160,6 +161,19 @@ pub fn run() {
 
             let conn = db::open(&db_path)?;
             let db = Arc::new(Mutex::new(conn));
+
+            // Daily local snapshot — zero-discipline insurance against
+            // corruption and accidental deletes. Never blocks startup.
+            {
+                let conn = db.lock();
+                if let Err(e) = backup::snapshot::snapshot_if_due(
+                    &conn,
+                    &app_dir.join("backups"),
+                    crate::models::now_ms(),
+                ) {
+                    log::warn!("snapshot failed: {e}");
+                }
+            }
 
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             #[cfg(desktop)]
