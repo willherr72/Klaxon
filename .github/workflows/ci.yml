@@ -1,0 +1,54 @@
+# CI: the same three gates every local change has been held to, enforced
+# on every push — cargo tests, a zero-warning build, and svelte-check.
+#
+# Windows runner because Windows is the primary desktop target. The
+# Android build is deliberately NOT here: it needs the NDK toolchain,
+# roughly triples the run, and is exercised locally before every release.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: svelte-check (0 errors)
+        run: npx svelte-check --threshold error
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Zero-warning build
+        working-directory: src-tauri
+        # -D warnings promotes workspace warnings to errors; dependencies
+        # are exempt via cargo's automatic --cap-lints allow.
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build
