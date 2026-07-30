@@ -38,11 +38,11 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .iter()
         .map(RemoteReminder::from)
         .collect();
-    let ts = tombstones::dirty_since(&conn, since)?
+    let ts = tombstones::deleted_since(&conn, since)?
         .iter()
         .map(RemoteTombstone::from)
         .collect();
-    let lanes = task_lanes::dirty_since(&conn, since)?;
+    let lanes = task_lanes::updated_since(&conn, since)?;
     // No `dirty` filter here, unlike lanes/tombstones — see issue #1.
     let thoughts = thoughts::updated_since(&conn, since)?
         .iter()

@@ -334,8 +334,8 @@ async fn sync_one_core(
     let (rems, tombs, lanes, thts) = {
         let conn = db.lock();
         let rs = repo::updated_since(&conn, peer.last_push_at)?;
-        let ts = tombstones::dirty_since(&conn, peer.last_push_at)?;
-        let ls = task_lanes::dirty_since(&conn, peer.last_push_at)?;
+        let ts = tombstones::deleted_since(&conn, peer.last_push_at)?;
+        let ls = task_lanes::updated_since(&conn, peer.last_push_at)?;
         // No `dirty` filter — see issue #1.
         let th = thoughts::updated_since(&conn, peer.last_push_at)?;
         (
