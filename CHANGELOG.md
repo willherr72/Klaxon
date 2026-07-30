@@ -5,7 +5,7 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 0.5.2
+## [0.5.2] — 2026-07-30
 
 Backups: **your data stays yours — and now you can keep it.** Plus CI and
 a sync-forwarding fix.
