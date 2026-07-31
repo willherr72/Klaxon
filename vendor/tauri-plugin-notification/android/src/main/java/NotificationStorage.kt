@@ -7,9 +7,9 @@ package app.tauri.notification
 import android.content.Context
 import android.content.SharedPreferences
 import com.fasterxml.jackson.annotation.JsonAutoDetect
+import com.fasterxml.jackson.annotation.PropertyAccessor
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.PropertyAccessor
 import org.json.JSONException
 import java.lang.Exception
 
