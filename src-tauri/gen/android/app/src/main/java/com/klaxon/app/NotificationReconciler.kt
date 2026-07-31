@@ -38,6 +38,10 @@ object NotificationReconciler {
 
   @JvmStatic
   fun reconcile(context: Context, planJson: String): Boolean {
+    // Entry log brackets the JNI hop: if this line appears but the
+    // armed/cancelled line doesn't, the failure is in this body; if
+    // neither appears, the Rust side never reached us.
+    Log.i(TAG, "alarm reconcile invoked (${planJson.length} bytes)")
     return try {
       val mapper = ObjectMapper()
       val storage = NotificationStorage(context, mapper)

@@ -88,6 +88,10 @@ windows = { version = "0.62", features = [
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
 ndk-context = "0.1"
+# v0.6: route Rust log:: output to logcat. env_logger writes to stderr,
+# which Android discards — Rust logs were invisible on-device, warm or
+# cold, which made cold-path failures silent.
+android_logger = "0.14"
 
 # Vendored fork of tauri-plugin-notification 2.3.3 with a one-line
 # fix to NotificationStorage.writeActionGroup — upstream stores

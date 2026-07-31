@@ -60,6 +60,7 @@ pub extern "system" fn Java_com_klaxon_app_ShareActivity_nativeSaveThought<'loca
     subject: jni::objects::JString<'local>,
     text: jni::objects::JString<'local>,
 ) -> jni::sys::jint {
+    crate::mobile_bg::ensure_android_logging();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let Ok(dir) = env.get_string(&data_dir) else {
             return -2;

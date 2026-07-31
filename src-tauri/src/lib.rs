@@ -82,6 +82,7 @@ pub fn run() {
     // log at INFO — hundreds of lines per minute under steady state.
     // Knock them down to warn-or-higher while keeping our own crate
     // and other deps at the default info level.
+    #[cfg(not(target_os = "android"))]
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(
             "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
@@ -91,6 +92,12 @@ pub fn run() {
         ),
     )
     .init();
+    // Android: env_logger writes to stderr, which the OS discards.
+    // android_logger routes log:: to logcat (tag "KlaxonRust"); the same
+    // guarded init also runs at every cold JNI entry, so background
+    // workers and the share activity are observable too.
+    #[cfg(target_os = "android")]
+    crate::mobile_bg::ensure_android_logging();
 
     // iroh's QUIC stack uses rustls under the hood and rustls 0.23
     // requires an explicit crypto provider before any TLS context spins
