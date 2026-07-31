@@ -5,6 +5,54 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-31
+
+Cold alarms: **a reminder that arrives while Klaxon is closed now
+actually rings.** Android alarm scheduling moved from the webview into
+one native reconcile owned by Rust + Kotlin, so every sync pass — cold
+background, warm background, or foreground — arms the OS alarms itself.
+
+### Added
+
+- **Cold alarm arming.** After every Android sync pass, a Rust planner
+  diffs "which OS notifications should exist" against reality and a
+  Kotlin reconciler arms/cancels them through the notification plugin's
+  own scheduler — identical ids, channels, and action buttons to
+  foreground-scheduled ones. The webview no longer needs to run for a
+  synced reminder to ring.
+- **Late arrivals ring, once.** A reminder that syncs in already past
+  due rings immediately if it's less than 30 minutes late, and never
+  rings for the same fire time twice (device-local ring-once log,
+  migration 011). Stale arrivals stay silent.
+- **Unacknowledged reminders follow you.** A reminder that fired on one
+  device stays ring-eligible on others until you dismiss, complete, or
+  re-snooze it — the phone still rings a reminder the desktop already
+  fired while the phone was asleep. Completing it on any device cancels
+  the pending alarm everywhere on the next pass.
+
+### Fixed
+
+- **Notification receivers no longer crash on `extra` payloads.** The
+  vendored plugin's fire/dismiss/boot-restore receivers re-parsed stored
+  notification JSON with a strict Jackson mapper; any notification
+  carrying `extra` metadata (all of Klaxon's) threw and could kill the
+  ring before it showed. All receiver paths now use the same tolerant
+  mapper Tauri itself parses invokes with (upstream bug in
+  plugin-notification 2.3.3).
+- Android release builds could package a stale native library or skip
+  Kotlin compilation entirely after incremental-build corruption; the
+  app module now declares its Jackson dependency explicitly and release
+  builds are string-verified before install.
+
+### Verification note
+
+Verified on hardware end-to-end: force-stopped app, reminder created on
+desktop, share-triggered cold sync over iroh, phone rang with action
+buttons — plus shade-clearing (desktop completion silences the armed
+phone alarm), late-arrival ring within grace, ring-once on repeat
+passes, warm foreground regression, and migration 011 applied over live
+0.5.2 data.
+
 ## [0.5.2] — 2026-07-30
 
 Backups: **your data stays yours — and now you can keep it.** Plus CI and

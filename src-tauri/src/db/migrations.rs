@@ -205,6 +205,21 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE peers ADD COLUMN last_sync_error TEXT;
     ALTER TABLE peers ADD COLUMN last_sync_error_at INTEGER;
     "#,
+    // 011 — cold alarms (v0.6): ring-once memory for late arrivals.
+    //
+    // "Ring if recently due" is the first arming rule that isn't
+    // naturally idempotent — an immediately-firing entry would re-fire
+    // on every reconcile. This table remembers (reminder, fire time)
+    // pairs this device has armed. Deliberately DEVICE-LOCAL and never
+    // synced: whether this phone rang is not shared state.
+    r#"
+    CREATE TABLE armed_alarms (
+        reminder_id TEXT NOT NULL,
+        fire_at_ms  INTEGER NOT NULL,
+        armed_at    INTEGER NOT NULL,
+        PRIMARY KEY (reminder_id, fire_at_ms)
+    );
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

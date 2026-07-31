@@ -120,6 +120,9 @@ mod live {
                 tauri::async_runtime::block_on(crate::sync::task::run_one_pass(
                     &state.db, app,
                 ));
+                if let Err(e) = crate::os_alarms::reconcile_os_alarms(&state.db) {
+                    log::warn!("warm alarm reconcile failed: {e}");
+                }
                 BgSyncOutcome::Ran
             }
             other => other,
@@ -178,6 +181,12 @@ mod headless {
                 outcome.failed,
             );
             node.endpoint.close().await;
+            // The reason cold sync exists at all: freshly-arrived
+            // reminders must ring. Failure is logged, never fatal —
+            // the next reconcile (foreground at latest) retries.
+            if let Err(e) = crate::os_alarms::reconcile_os_alarms(&db) {
+                log::warn!("cold alarm reconcile failed: {e}");
+            }
             BgSyncOutcome::RanCold
         })
     }
@@ -185,6 +194,23 @@ mod headless {
 
 #[cfg(mobile)]
 pub use live::register;
+
+/// Route Rust `log::` output to logcat under tag "KlaxonRust". Guarded:
+/// safe to call from every JNI entry point in every process — the whole
+/// point is that cold workers, which never run Tauri's setup, are still
+/// observable. Without this, cold-path failures were completely silent.
+#[cfg(target_os = "android")]
+pub fn ensure_android_logging() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        android_logger::init_once(
+            android_logger::Config::default()
+                .with_max_level(log::LevelFilter::Info)
+                .with_tag("KlaxonRust"),
+        );
+    });
+}
 
 /// JNI entry point for the Kotlin `BackgroundSyncWorker`. Warm process →
 /// existing in-app pass; cold process → headless pass against the given
@@ -197,6 +223,7 @@ pub extern "system" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce<'
     _this: jni::objects::JObject<'local>,
     data_dir: jni::objects::JString<'local>,
 ) -> jni::sys::jint {
+    ensure_android_logging();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         match live::try_background_sync() {
             // Warm path handled it (ran, or sync is disabled).

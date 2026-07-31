@@ -845,3 +845,14 @@ pub fn thought_tag_counts(state: State<'_, AppState>) -> AppResult<Vec<TagCount>
     let conn = state.db.lock();
     thoughts::tag_counts(&conn)
 }
+
+/// Mobile: re-arm OS notifications from the current reminders table.
+/// Called by the webview on launch and after reminders-changed — the
+/// same trigger points the old JS reconcile used. The arming decision
+/// itself lives in alarm_plan.rs, shared with the cold and warm
+/// background sync passes.
+#[cfg(mobile)]
+#[tauri::command]
+pub fn reconcile_notifications(state: State<'_, AppState>) -> AppResult<()> {
+    crate::os_alarms::reconcile_os_alarms(&state.db)
+}

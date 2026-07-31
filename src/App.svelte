@@ -104,7 +104,7 @@
       // Keep the OS-level scheduled notifications (AlarmManager on
       // Android) in sync with whatever the canonical reminder list
       // looks like now. No-op on desktop.
-      reconcileScheduledNotifications(list).catch((e) =>
+      reconcileScheduledNotifications().catch((e) =>
         console.warn("reconcileScheduledNotifications failed", e),
       );
     } catch (e) {

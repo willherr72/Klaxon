@@ -1,3 +1,4 @@
+pub mod alarm_plan;
 mod alerts;
 mod audio;
 pub mod backup;
@@ -9,6 +10,7 @@ pub mod db;
 pub mod error;
 pub mod models;
 mod nl;
+pub mod os_alarms;
 #[cfg(windows)]
 mod power;
 mod recurrence;
@@ -80,6 +82,7 @@ pub fn run() {
     // log at INFO — hundreds of lines per minute under steady state.
     // Knock them down to warn-or-higher while keeping our own crate
     // and other deps at the default info level.
+    #[cfg(not(target_os = "android"))]
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(
             "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
@@ -89,6 +92,12 @@ pub fn run() {
         ),
     )
     .init();
+    // Android: env_logger writes to stderr, which the OS discards.
+    // android_logger routes log:: to logcat (tag "KlaxonRust"); the same
+    // guarded init also runs at every cold JNI entry, so background
+    // workers and the share activity are observable too.
+    #[cfg(target_os = "android")]
+    crate::mobile_bg::ensure_android_logging();
 
     // iroh's QUIC stack uses rustls under the hood and rustls 0.23
     // requires an explicit crypto provider before any TLS context spins
@@ -417,6 +426,8 @@ pub fn run() {
             backup::commands::restore_inbox_status,
             backup::commands::stage_restore_inbox,
             backup::commands::snapshot_status,
+            #[cfg(mobile)]
+            commands::reconcile_notifications,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

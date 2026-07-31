@@ -6,6 +6,9 @@ package app.tauri.notification
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.fasterxml.jackson.annotation.JsonAutoDetect
+import com.fasterxml.jackson.annotation.PropertyAccessor
+import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.json.JSONException
 import java.lang.Exception
@@ -16,6 +19,20 @@ private const val NOTIFICATION_STORE_ID = "NOTIFICATION_STORE"
 private const val ACTION_TYPES_ID = "ACTION_TYPE_STORE"
 
 class NotificationStorage(private val context: Context, private val jsonMapper: ObjectMapper) {
+  companion object {
+    // Klaxon patch (upstream bug in 2.3.3): the fire/dismiss/boot-restore
+    // receivers parse sourceJson with a bare ObjectMapper(), whose default
+    // FAIL_ON_UNKNOWN_PROPERTIES throws on any notification whose `extra`
+    // has fields — JSObject exposes zero bean properties to Jackson — so
+    // the receiver crashes before notify() and the notification never
+    // shows. Tauri's own parseArgs mapper (PluginManager) disables that
+    // feature, which is how the same JSON parses fine at schedule time.
+    // Mirror that configuration everywhere sourceJson is re-parsed.
+    fun tolerantMapper(): ObjectMapper = ObjectMapper()
+      .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+      .enable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
+      .setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY)
+  }
   fun appendNotifications(localNotifications: List<Notification>) {
     val storage = getStorage(NOTIFICATION_STORE_ID)
     val editor = storage.edit()
@@ -63,7 +80,10 @@ class NotificationStorage(private val context: Context, private val jsonMapper: 
 
     return try {
       jsonMapper.readValue(notificationString, Notification::class.java)
-    } catch (ex: JSONException) {
+    } catch (ex: Exception) {
+      // Klaxon patch: was JSONException only, but Jackson throws its own
+      // IOException subclasses — an uncaught one here crashes the calling
+      // BroadcastReceiver. A null return lets the fire path still notify().
       null
     }
   }
