@@ -1,3 +1,4 @@
+pub mod alarm_plan;
 mod alerts;
 mod audio;
 pub mod backup;
