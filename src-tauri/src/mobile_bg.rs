@@ -120,6 +120,9 @@ mod live {
                 tauri::async_runtime::block_on(crate::sync::task::run_one_pass(
                     &state.db, app,
                 ));
+                if let Err(e) = crate::os_alarms::reconcile_os_alarms(&state.db) {
+                    log::warn!("warm alarm reconcile failed: {e}");
+                }
                 BgSyncOutcome::Ran
             }
             other => other,
@@ -178,6 +181,12 @@ mod headless {
                 outcome.failed,
             );
             node.endpoint.close().await;
+            // The reason cold sync exists at all: freshly-arrived
+            // reminders must ring. Failure is logged, never fatal —
+            // the next reconcile (foreground at latest) retries.
+            if let Err(e) = crate::os_alarms::reconcile_os_alarms(&db) {
+                log::warn!("cold alarm reconcile failed: {e}");
+            }
             BgSyncOutcome::RanCold
         })
     }

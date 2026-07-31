@@ -18,12 +18,8 @@
 ///   - The Rust dispatcher is a no-op on mobile (see alerts/mod.rs)
 ///     so we never double-notify when the app is open at fire time.
 
+import { invoke } from "@tauri-apps/api/core";
 import {
-  isPermissionGranted,
-  sendNotification,
-  cancel,
-  pending,
-  Schedule,
   createChannel,
   registerActionTypes,
   onAction,
@@ -31,69 +27,12 @@ import {
   Visibility,
 } from "@tauri-apps/plugin-notification";
 import { api } from "./api";
-import type { Reminder, Priority } from "./types";
 import { isMobilePlatform } from "./platform";
 
 const ACTION_TYPE_ID = "klaxon-reminder";
 const ACTION_SNOOZE = "snooze";
 const ACTION_DISMISS = "dismiss";
 const DEFAULT_SNOOZE_MINS = 10;
-
-/** Deterministic UUID → positive 31-bit int hash. The plugin's
- * notification id must be a 32-bit integer; we keep it positive to
- * avoid ambiguity with sign-handling in the plugin's internal map. */
-function hashIdToInt32(id: string): number {
-  let h = 5381;
-  for (let i = 0; i < id.length; i++) {
-    h = ((h << 5) + h) ^ id.charCodeAt(i);
-  }
-  return Math.abs(h | 0);
-}
-
-function fireTargetMs(r: Reminder): number | null {
-  if (r.state !== "pending" && r.state !== "snoozed") return null;
-  return r.snooze_until ?? r.due_at;
-}
-
-function channelIdFor(p: Priority): string {
-  switch (p) {
-    case "low":
-      return "klaxon-low";
-    case "normal":
-      return "klaxon-normal";
-    case "high":
-      return "klaxon-high";
-  }
-}
-
-/** Pretty due-time line appended to the notification body. */
-function formatDueLine(targetMs: number): string {
-  const t = new Date(targetMs);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tDay = new Date(targetMs);
-  tDay.setHours(0, 0, 0, 0);
-  const diffDays = Math.round(
-    (tDay.getTime() - today.getTime()) / 86_400_000,
-  );
-  const hh = String(t.getHours()).padStart(2, "0");
-  const mm = String(t.getMinutes()).padStart(2, "0");
-  if (diffDays === 0) return `Due today ${hh}:${mm}`;
-  if (diffDays === 1) return `Due tomorrow ${hh}:${mm}`;
-  if (diffDays === -1) return `Was due yesterday ${hh}:${mm}`;
-  const months = [
-    "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-    "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
-  ];
-  return `Due ${months[t.getMonth()]} ${String(t.getDate()).padStart(2, "0")} ${hh}:${mm}`;
-}
-
-function buildBody(r: Reminder, targetMs: number): string {
-  const lines: string[] = [];
-  if (r.description) lines.push(r.description);
-  lines.push(`${formatDueLine(targetMs)} (${r.priority.toUpperCase()})`);
-  return lines.join("\n");
-}
 
 /// One-time setup on app launch: register channels (so per-priority
 /// importance + heads-up display works) and action buttons (Snooze /
@@ -189,53 +128,11 @@ async function handleAction(
   }
 }
 
-export async function reconcileScheduledNotifications(
-  reminders: Reminder[],
-): Promise<void> {
+/** Arming now lives natively (one reconcile in Rust/Kotlin, shared with
+ * the cold and warm background sync passes — see alarm_plan.rs and
+ * NotificationReconciler.kt). The webview's remaining jobs are the
+ * channel/action setup and tap handling above. */
+export async function reconcileScheduledNotifications(): Promise<void> {
   if (!isMobilePlatform()) return;
-
-  try {
-    if (!(await isPermissionGranted())) return;
-  } catch {
-    return;
-  }
-
-  const desired = new Map<number, Reminder>();
-  const now = Date.now();
-  for (const r of reminders) {
-    const t = fireTargetMs(r);
-    if (t === null || t <= now) continue;
-    desired.set(hashIdToInt32(r.id), r);
-  }
-
-  // Cancel pending OS notifications that no longer belong.
-  try {
-    const pendingList = await pending();
-    const toCancel = pendingList
-      .map((p) => p.id)
-      .filter((id) => !desired.has(id));
-    if (toCancel.length > 0) await cancel(toCancel);
-  } catch (e) {
-    console.warn("mobile-scheduler: cancel pass failed", e);
-  }
-
-  // Schedule each desired notification. The plugin treats `id` as a
-  // primary key — sending again with the same id replaces the
-  // existing schedule, so this loop is idempotent on re-runs.
-  for (const [id, r] of desired) {
-    try {
-      const t = fireTargetMs(r)!;
-      sendNotification({
-        id,
-        title: r.title,
-        body: buildBody(r, t),
-        channelId: channelIdFor(r.priority),
-        actionTypeId: ACTION_TYPE_ID,
-        extra: { reminderId: r.id },
-        schedule: Schedule.at(new Date(t), false, true),
-      });
-    } catch (e) {
-      console.warn(`mobile-scheduler: schedule failed for ${r.id}`, e);
-    }
-  }
+  await invoke("reconcile_notifications");
 }

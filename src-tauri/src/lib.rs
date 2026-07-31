@@ -10,6 +10,7 @@ pub mod db;
 pub mod error;
 pub mod models;
 mod nl;
+pub mod os_alarms;
 #[cfg(windows)]
 mod power;
 mod recurrence;
@@ -418,6 +419,8 @@ pub fn run() {
             backup::commands::restore_inbox_status,
             backup::commands::stage_restore_inbox,
             backup::commands::snapshot_status,
+            #[cfg(mobile)]
+            commands::reconcile_notifications,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
