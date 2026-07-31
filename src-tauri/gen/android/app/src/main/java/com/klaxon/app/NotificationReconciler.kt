@@ -6,7 +6,6 @@ import androidx.core.app.NotificationManagerCompat
 import app.tauri.notification.Notification
 import app.tauri.notification.NotificationStorage
 import app.tauri.notification.TauriNotificationManager
-import com.fasterxml.jackson.databind.ObjectMapper
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -43,7 +42,11 @@ object NotificationReconciler {
     // neither appears, the Rust side never reached us.
     Log.i(TAG, "alarm reconcile invoked (${planJson.length} bytes)")
     return try {
-      val mapper = ObjectMapper()
+      // Tolerant config is load-bearing: `extra` maps to Tauri's JSObject,
+      // which exposes zero bean properties, so a default mapper throws
+      // UnrecognizedPropertyException on extra.reminderId. Same config
+      // Tauri's parseArgs uses (and the receivers, post-patch).
+      val mapper = NotificationStorage.tolerantMapper()
       val storage = NotificationStorage(context, mapper)
       val manager = TauriNotificationManager(storage, null, context, null)
       val plan = JSONArray(planJson)

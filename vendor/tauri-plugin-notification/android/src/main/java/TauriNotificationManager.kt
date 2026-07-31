@@ -460,7 +460,7 @@ class NotificationDismissReceiver : BroadcastReceiver() {
     val isRemovable =
       intent.getBooleanExtra(NOTIFICATION_IS_REMOVABLE_KEY, true)
     if (isRemovable) {
-      val notificationStorage = NotificationStorage(context, ObjectMapper())
+      val notificationStorage = NotificationStorage(context, NotificationStorage.tolerantMapper())
       notificationStorage.deleteNotification(intExtra.toString())
     }
   }
@@ -486,7 +486,7 @@ class TimedNotificationPublisher : BroadcastReceiver() {
     if (id == Int.MIN_VALUE) {
       Logger.error(Logger.tags("Notification"), "No valid id supplied", null)
     }
-    val storage = NotificationStorage(context, ObjectMapper())
+    val storage = NotificationStorage(context, NotificationStorage.tolerantMapper())
 
     val savedNotification = storage.getSavedNotification(id.toString())
     if (savedNotification != null) {
@@ -547,7 +547,7 @@ class LocalNotificationRestoreReceiver : BroadcastReceiver() {
       )
       if (um == null || !um.isUserUnlocked) return
     }
-    val storage = NotificationStorage(context, ObjectMapper())
+    val storage = NotificationStorage(context, NotificationStorage.tolerantMapper())
     val ids = storage.getSavedNotificationIds()
     val notifications = mutableListOf<Notification>()
     val updatedNotifications = mutableListOf<Notification>()
