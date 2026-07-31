@@ -1,3 +1,4 @@
+pub mod armed_alarms;
 pub mod migrations;
 pub mod peers;
 pub mod reminders;
