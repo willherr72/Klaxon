@@ -3273,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "klaxon"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
