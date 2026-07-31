@@ -41,7 +41,15 @@ pub fn hash_id_to_int32(id: &str) -> i32 {
 
 fn fire_target_ms(r: &Reminder) -> Option<i64> {
     match r.state {
-        ReminderState::Pending | ReminderState::Snoozed => {
+        // Fired is included deliberately: it means "rang on SOME device,
+        // not yet acknowledged". A peer that rang flips pending→fired the
+        // instant it rings, and that state syncs over — if Fired were
+        // excluded, a phone that learns of the reminder late (cold sync)
+        // would never ring at all. Grace + the armed log still bound it:
+        // stale ones are skipped, and a device that already armed this
+        // (reminder, fire-time) pair won't re-ring. Only user action
+        // (dismiss / complete / re-snooze) silences peers.
+        ReminderState::Pending | ReminderState::Snoozed | ReminderState::Fired => {
             Some(r.snooze_until.unwrap_or(r.due_at))
         }
         _ => None,
@@ -175,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn future_pending_and_snoozed_are_armed_terminal_states_are_not() {
+    fn unacknowledged_states_are_armed_terminal_states_are_not() {
         let now = 1_000_000;
         let rs = vec![
             reminder("a", ReminderState::Pending, now + 60_000, None),
@@ -186,9 +194,33 @@ mod tests {
         ];
         let plan = desired_notifications(&rs, &Default::default(), now);
         let ids: Vec<&str> = plan.iter().map(|p| p.reminder_id.as_str()).collect();
-        assert_eq!(ids, vec!["a", "b"]);
+        // Fired counts as unacknowledged — only dismiss/complete silence
+        // a reminder across devices.
+        assert_eq!(ids, vec!["a", "b", "e"]);
         // Snooze wins over due_at as the fire time.
         assert_eq!(plan[1].at_ms, now + 120_000);
+    }
+
+    #[test]
+    fn fired_on_another_device_rings_here_within_grace_once() {
+        // The late-arrival scenario that motivated v0.6: desktop rang at
+        // due (state pending→fired), the fired state cold-syncs to the
+        // phone minutes later — the phone must still ring it.
+        let now = 100_000_000;
+        let due = now - 10 * 60_000;
+        let rs = vec![reminder("f", ReminderState::Fired, due, None)];
+        let plan = desired_notifications(&rs, &Default::default(), now);
+        assert_eq!(plan.len(), 1, "unacknowledged fired reminder rings late");
+        assert!(plan[0].past_due);
+
+        // Once armed here, later passes stay silent while state is Fired.
+        let mut armed = std::collections::HashSet::new();
+        armed.insert(("f".to_string(), due));
+        assert!(desired_notifications(&rs, &armed, now).is_empty());
+
+        // Beyond grace it is stale — never rings, same as pending.
+        let stale = vec![reminder("g", ReminderState::Fired, now - 31 * 60_000, None)];
+        assert!(desired_notifications(&stale, &Default::default(), now).is_empty());
     }
 
     #[test]

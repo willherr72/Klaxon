@@ -28,7 +28,10 @@ pub fn reconcile_os_alarms(db: &Arc<Mutex<Connection>>) -> AppResult<()> {
         // reminder — logged pairs matching these must survive (they're
         // what blocks re-rings), while pairs for moved, completed, or
         // deleted reminders age out. NOT plan ∪ armed: unioning the
-        // existing log in would make prune a permanent no-op.
+        // existing log in would make prune a permanent no-op. Must match
+        // the planner's fire-eligible states exactly — Fired included:
+        // pruning a Fired reminder's pair while it's still plan-eligible
+        // (in grace, unacknowledged) would re-arm it every pass.
         let live: std::collections::HashSet<(String, i64)> = reminders
             .iter()
             .filter(|r| {
@@ -36,6 +39,7 @@ pub fn reconcile_os_alarms(db: &Arc<Mutex<Connection>>) -> AppResult<()> {
                     r.state,
                     crate::models::ReminderState::Pending
                         | crate::models::ReminderState::Snoozed
+                        | crate::models::ReminderState::Fired
                 )
             })
             .map(|r| (r.id.clone(), r.snooze_until.unwrap_or(r.due_at)))
