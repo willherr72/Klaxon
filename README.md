@@ -1,95 +1,29 @@
 # Klaxon
 
-> A self-hosted, open-source reminder app that actually gets your attention.
+> A self-hosted reminder app that actually gets your attention — and never touches anyone's cloud.
 
-Klaxon fires persistent, hard-to-ignore notifications when you set a reminder. Three priority tiers — quiet toast, popup window with repeating tone, fullscreen alarm — let you decide how loud each thing should be. No cloud, no account, no subscription. Your data lives in a SQLite file on your machine, and v0.2 lets paired devices sync over the LAN with TLS-encrypted traffic.
+Klaxon is reminders, tasks, and a private thought inbox in one app, synced device-to-device with no server, no account, and no subscription. Reminders ring even when the app is closed. Your data is a SQLite file on your own machines, encrypted iroh traffic between them, and nothing anywhere else.
 
-**Status:** v0.3.0 — iroh transport, cross-network sync, pairing tickets. v0.1.0 + v0.3.0 are tagged with binary releases; v0.2 was rolled into v0.3 before tagging since the LAN HTTPS transport got replaced before it shipped.
+**Platforms:** Windows desktop + Android. Grab both from the [latest release](https://github.com/willherr72/Klaxon/releases/latest).
 
 ---
 
 ## Features
 
-### Reminders and tasks
+- **Reminders that escalate.** Three priority tiers — quiet toast, always-on-top popup with a repeating tone, fullscreen alarm. Configurable repeat count, interval, and tone per tier. Snooze presets or custom. Recurring: daily, weekdays, interval, monthly.
+- **Rings cold.** A reminder created on your desktop rings on your phone even if Klaxon isn't running there — background sync arms real OS alarms. Late arrivals ring once within a 30-minute grace window; a reminder you dismiss anywhere goes quiet everywhere.
+- **Tasks board.** Silent reminders organized in drag-and-drop swim lanes.
+- **Thoughts inbox.** A permanent, searchable feed for ideas: global capture hotkey on desktop, share-to-Klaxon on Android, `#tags` inline, promote any thought into a task or reminder.
+- **True peer-to-peer sync.** Devices pair with a 6-digit confirmation code and sync directly over [iroh](https://iroh.computer) — LAN when possible, encrypted relays when not. No store-and-forward server exists; only your devices ever hold your data.
+- **Backups.** Automatic daily local snapshots, plus passphrase-encrypted full export/restore (Argon2id + AES-256-GCM) that resurrects a device completely — pairings included.
+- **Self-updating.** Klaxon checks GitHub releases daily and installs updates on request, on both platforms.
 
-- **Three priority tiers**, each with distinct alert behavior
-  - **Low** — native OS toast, fire-and-forget
-  - **Normal** — always-on-top corner popup with a repeating klaxon-style tone
-  - **High** — fullscreen alarm with an urgent escalating tone
-- **Persistent alerts** — configurable repeat count + interval per tier
-- **Snooze** with 5 / 15 / 60 min presets *or* any custom duration
-- **Recurring reminders** — daily, weekdays, custom interval, monthly
-- **Task reminders** — same as a reminder but silent. Appears in the list, doesn't ring. Use it for to-do items where the alarm would be wrong.
-- **Per-priority tone picker** — Klaxon / Chime / Siren / Pulse, with a Preview button in System Config
+## Screenshots
 
-### Navigation
-
-- **Sidebar modes** — Reminders, Tasks, Calendar, Completed (collapses what was previously a busy single list)
-- **Top-bar time filters** — All / Today / Upcoming / Recurring, shown for the Reminders and Tasks modes
-- **Calendar view** — month grid with prev/next/today nav, click a reminder pill to edit, **right-click a day** to add a Reminder or Task for that date
-- **Text search** via `Ctrl+F`, filters title + description in real time
-- **Configurable sort order** (oldest → newest or newest → oldest)
-
-### Sync (v0.2)
-
-- **mDNS auto-discovery** — paired devices on the same WiFi find each other
-- **Tap-to-pair** — both devices show the same 6-digit confirmation code; tap Approve on each, no copy-paste of secrets
-- **TLS-encrypted sync** — each device generates a self-signed cert at first run; pinned per peer during pairing so eavesdroppers on the LAN can't read traffic
-- **Per-pair shared secret** as bearer auth on top of TLS
-- **Last-write-wins** delta sync over an embedded HTTP server (axum), every 20 s by default
-- **Tombstones** for deletes so removals propagate
-- **Dismiss / snooze propagation** — silencing an alarm on one device silences it on every paired device
-
-### Window and tray
-
-- **System tray residency** — closes to tray, doesn't quit
-- **Single-instance** — launching twice focuses the existing window
-- **Autostart on login** — optional, toggle in System Config
-- **Multi-monitor aware** — alert popup appears on the monitor that contains the main window, not always the primary
-- **CPU-aware ticker** — 1 s while the soonest countdown is sub-day; 30 s otherwise; fully paused when the window is hidden to the tray
-
-### Other
-
-- **Customisable global hotkey** for "new reminder" from anywhere (default `Ctrl+Alt+N`)
-- **Open source, MIT licensed** — no telemetry, no phone-home
-- **Local-first SQLite** with sync metadata baked into the schema from v0.1
-
----
-
-## Keyboard shortcuts
-
-| Where     | Shortcut          | Action                              |
-| --------- | ----------------- | ----------------------------------- |
-| Anywhere  | `Ctrl+Alt+N` *    | New reminder (global, configurable) |
-| Main app  | `Ctrl+N`          | New reminder                        |
-| Main app  | `Ctrl+F`          | Open / focus search                 |
-| Main app  | `Esc` (in search) | Close search                        |
-| List      | `Tab`             | Focus next reminder                 |
-| List      | `Enter` / `Space` | Open focused reminder               |
-| List      | `Del` / `Backspace` | Delete focused reminder           |
-| Calendar  | Right-click cell  | Context menu → Make Reminder / Task |
-| Editor    | `Esc`             | Close                               |
-| Editor    | `Ctrl+Enter`      | Save                                |
-| Alert     | `Esc` / `Enter`   | Dismiss                             |
-| Alert     | `Space`           | Snooze 5 minutes                    |
-
-*Default global hotkey — change it in System Config → Hotkeys.
-
----
-
-## Tech stack
-
-- **[Tauri 2](https://tauri.app/)** — desktop shell (Rust + WebView)
-- **[Svelte 5](https://svelte.dev/)** + TypeScript — frontend, runes API
-- **[rusqlite](https://github.com/rusqlite/rusqlite)** — bundled SQLite
-- **[rodio](https://github.com/RustAudio/rodio)** + sine wave synthesis — audio
-- **[tokio](https://tokio.rs/)** — async runtime, scheduler, sync task
-- **[axum](https://github.com/tokio-rs/axum)** + **[axum-server](https://github.com/programatik29/axum-server)** + **[rustls](https://github.com/rustls/rustls)** — embedded HTTPS sync server
-- **[reqwest](https://github.com/seanmonstar/reqwest)** + custom cert pinning — sync client
-- **[mdns-sd](https://github.com/keepsimple1/mdns-sd)** — LAN discovery
-- **[rcgen](https://github.com/rustls/rcgen)** — self-signed cert generation
-
-See [DESIGN.md](DESIGN.md) for architecture detail.
+<!-- Blank-state captures; more coming. -->
+![Desktop](docs/screenshots/desktop-main.png)
+![Tasks board](docs/screenshots/tasks-board.png)
+![Android](docs/screenshots/phone-main.png)
 
 ---
 
@@ -97,17 +31,40 @@ See [DESIGN.md](DESIGN.md) for architecture detail.
 
 ### Windows
 
-The v0.1.0 installer is attached to the [v0.1.0 release](https://github.com/willherr72/Klaxon/releases/tag/v0.1.0). Newer code on `main` and tagged release candidates (`v0.3.0-rc.1`+) build via `npm run tauri build` — see below.
+1. Download `Klaxon_<version>_x64-setup.exe` from the [latest release](https://github.com/willherr72/Klaxon/releases/latest).
+2. Run it. **Windows will show "Windows protected your PC"** — that's SmartScreen reacting to a self-signed installer, which is normal for a self-hosted app that doesn't buy a yearly code-signing certificate. Click **More info → Run anyway**.
+3. That's the last installer you run by hand: from then on Klaxon updates itself (Settings → System shows new releases).
 
-The installer is **unsigned**, so Windows SmartScreen will warn on first run. Click *More info → Run anyway*. Code-signing is on the long-term roadmap.
+### Android
 
-### Linux
+1. Download `klaxon-<version>-arm64.apk` from the [latest release](https://github.com/willherr72/Klaxon/releases/latest) on the phone and open it.
+2. Android asks you to allow installs from your browser/file manager — one-time.
+3. On the first in-app update, Android asks once more to allow installs **from Klaxon** — that's what lets it update itself from then on.
 
-No prebuilt binary yet — build from source (instructions below). Tested on Ubuntu/Debian for v0.3.
+### Staying updated
 
-### macOS
+Klaxon checks for new releases quietly (on launch and daily) and shows a hint in the status bar plus an update panel in Settings → System. One tap downloads the right artifact and hands it to the OS installer — nothing installs silently. **Keep both devices current:** the sync wire format can change between releases, and Klaxon warns you when a paired device looks outdated.
 
-Compiles but not yet tested.
+## Pairing two devices
+
+1. Open **Settings → Sync** on both devices (same Wi-Fi makes discovery automatic; a remote device can be added by its `iroh://` node id).
+2. Pick the discovered device and start pairing.
+3. Both screens show the same 6-digit code — confirm on each.
+4. Done. Reminders, tasks, and thoughts flow both ways from then on, including while one side is asleep — the next wake catches up, over LAN or relay, wherever you are.
+
+## Backups
+
+- **Snapshots:** once a day Klaxon copies its database into `backups/` (newest 7 kept) — plain SQLite files, restorable with a file manager.
+- **Export:** Settings → System → Export backup writes a single passphrase-encrypted `.klaxonbak` containing the database *and* the device's sync identity. Restoring it makes a machine *be* the old device, pairings intact. There is no passphrase recovery — keep it safe. Never restore one identity onto two live devices.
+
+## Privacy model
+
+What leaves a device, exhaustively:
+
+- **Sync traffic to your own paired peers**, end-to-end encrypted by iroh. When no direct path exists, it flows through n0's public relays, which see only encrypted bytes.
+- **A release check to `api.github.com`** (unauthenticated, roughly daily) and the release download when you ask for an update.
+
+There is no telemetry, no account, no analytics, and no server of ours anywhere.
 
 ---
 
@@ -182,52 +139,18 @@ First run takes several minutes for the full release compile; subsequent builds 
 ### Tests
 
 ```bash
+npm run build       # cargo test needs ../dist to exist
 cd src-tauri
-cargo test --lib
+cargo test
 ```
-
-The recurrence module has 9 unit tests covering daily, weekly (with weekday picker), interval, and monthly recurrence including DST/leap-day edge cases.
-
----
 
 ## Configuration
 
-Klaxon stores its database, settings, and TLS cert/key in your platform's app-data directory under `com.klaxon.app/`:
+Klaxon stores its database, settings, sync identity, and backups in your platform's app-data directory under `com.klaxon.app/`:
 
 - **Windows** — `%APPDATA%\com.klaxon.app\`
 - **macOS** — `~/Library/Application Support/com.klaxon.app/`
 - **Linux** — `~/.config/com.klaxon.app/`
-
-Contents:
-
-- `klaxon.db` — reminders, peers, settings, tombstones
-- `klaxon-cert.pem` + `klaxon-key.pem` — self-signed sync TLS cert (generated on first run when sync is enabled)
-
-System Config (gear icon at the bottom of the sidebar) lets you tune:
-
-- **Alert behavior** — repeat count + interval and tone per priority
-- **Display** — sort order (oldest → newest or newest → oldest)
-- **LAN Sync** — enable/disable, view device identity, see discovered devices, pair / manage peers
-- **Hotkeys** — system-wide hotkey combination
-- **Startup** — launch on system login
-- **System** — database path and version
-
-All sections collapse by default; click a header to expand just the one you're editing.
-
----
-
-## Roadmap
-
-| Milestone | Status | Highlights |
-| --- | --- | --- |
-| **v0.1** | ✅ Released | Single device. CRUD, three priority tiers, recurrence, snooze, system tray, autostart, configurable hotkey. |
-| **v0.2** | ⤴ Merged into v0.3 | Originally LAN HTTPS sync; the transport got replaced before tagging so the features (Task reminders, calendar view, search, sort, collapsible Settings, dismiss/snooze propagation) shipped under v0.3.0 instead. |
-| **v0.3** | ✅ Released | Sync over [iroh](https://www.iroh.computer/) — direct LAN when possible, hole-punched / relayed otherwise. Pairing tickets (QR + base32 string). Cross-platform verified Windows ↔ Linux. |
-| **v0.3.1** | ✅ Released | Swim-lane Tasks board — user-defined lanes with drag-and-drop. Lane CRUD syncs over iroh. |
-| **v0.4 / mobile** | ⏳ Planned | Android client riding the v0.3 iroh transport. |
-| **v0.4** | ⏳ Planned | Microsoft Graph (Outlook/Teams), Google Calendar, CalDAV integrations. |
-| **v0.5** | ⏳ Planned | **Opt-in shared groups.** Reminders can belong to a group; devices that explicitly joined sync those records. Per-group encryption key so paired peers outside the group can't read the contents even if they intercept traffic. Default behavior unchanged — reminders are private until you actively share them. Needs careful threat-model work; likely a separate design doc when it lands. |
-| **v1.0** | ⏳ Planned | iOS + Android via Tauri 2 mobile, sharing the Rust scheduler core. |
 
 ---
 
