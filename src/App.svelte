@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { api } from "./lib/api";
+  import { api, type UpdateCheck } from "./lib/api";
   import { reminders, editingId, editorOpen, nowTick, setTickRate } from "./lib/stores";
   import { comboMatches } from "./lib/shortcut";
   import type { Reminder, ReminderCreate, TimeFilter, ViewMode } from "./lib/types";
@@ -26,6 +26,16 @@
   } from "./lib/mobile-scheduler";
 
   let allReminders = $state<Reminder[]>([]);
+  let availableUpdate = $state<UpdateCheck | null>(null);
+
+  async function runUpdateCheck(): Promise<void> {
+    try {
+      const r = await api.checkForUpdate();
+      availableUpdate = r.update_available ? r : null;
+    } catch (e) {
+      console.warn("update check failed (silent)", e);
+    }
+  }
   let currentView = $state<ViewMode>("reminders");
   let currentTimeFilter = $state<TimeFilter>("all");
   let currentEditingId = $state<string | null>(null);
@@ -202,6 +212,11 @@
     } catch (e) {
       console.error("notification permission check failed", e);
     }
+    // Update check: delayed so it never competes with startup, then
+    // daily while running. Auto-checks are silent — failures only ever
+    // surface from the manual "Check now" button in Settings.
+    setTimeout(() => void runUpdateCheck(), 5_000);
+    setInterval(() => void runUpdateCheck(), 24 * 60 * 60 * 1000);
     // Sync-on-foreground. When the mobile OS brings Klaxon back from
     // the background, kick an immediate sync pass so the user sees
     // fresh data from peers instead of waiting up to 20s for the next
@@ -600,6 +615,7 @@
     pendingCount={pendingCount}
     nextReminder={nextReminder}
     now={now}
+    availableUpdate={availableUpdate}
   />
   <ReminderEditor
     open={isEditorOpen}
@@ -616,6 +632,9 @@
   <SettingsModal
     open={settingsOpen}
     onClose={handleSettingsClose}
+    availableUpdate={availableUpdate}
+    onUpdateChecked={(r: UpdateCheck) =>
+      (availableUpdate = r.update_available ? r : null)}
   />
   <IncomingPairModal />
   <QuickAdd

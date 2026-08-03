@@ -20,6 +20,7 @@ pub mod share;
 pub mod sync;
 #[cfg(desktop)]
 mod tray;
+mod updates;
 
 use std::collections::HashMap;
 #[cfg(desktop)]
@@ -407,6 +408,8 @@ pub fn run() {
             commands::sync_now,
             commands::list_discovered_peers,
             commands::start_pair_with,
+            updates::check_for_update,
+            updates::download_and_install_update,
             commands::approve_pair_request,
             commands::decline_pair_request,
             commands::list_lanes,

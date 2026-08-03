@@ -99,7 +99,20 @@ export const api = {
   restoreInboxStatus: () => invoke<number | null>("restore_inbox_status"),
   stageRestoreInbox: (passphrase: string) =>
     invoke<string>("stage_restore_inbox", { passphrase }),
+  // Updates (v0.7)
+  checkForUpdate: () => invoke<UpdateCheck>("check_for_update"),
+  downloadAndInstallUpdate: () =>
+    invoke<void>("download_and_install_update"),
 };
+
+export interface UpdateCheck {
+  current: string;
+  latest: string;
+  release_name: string;
+  notes_snippet: string;
+  update_available: boolean;
+  asset_found: boolean;
+}
 
 export interface Lane {
   id: string;
