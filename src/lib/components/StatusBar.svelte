@@ -132,10 +132,17 @@
     }
     .cell { gap: 5px; }
     /* Hide the chatty labels — the LED + count + countdown are enough
-       visual signal on a narrow phone. */
+       visual signal on a narrow phone. The update hint is exempt: it's
+       actionable, not chatty, and vanishes once the update installs. */
     .cell .mono-caps,
-    .cell .mono-caps-faint:not(.cell.tail .mono-caps-faint) {
+    .cell .mono-caps-faint:not(.cell.tail .mono-caps-faint):not(.update-hint) {
       display: none;
+    }
+    .update-hint {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 40vw;
     }
     .cell.tail .mono-caps-faint {
       font-size: 8px;
