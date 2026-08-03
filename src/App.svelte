@@ -59,6 +59,34 @@
     await api.setSetting("last_seen_version", appVersionNow);
   }
 
+  // First-run card (v0.7.1): only when the whole app is genuinely empty
+  // — any reminder, thought, or peer anywhere suppresses it forever, so
+  // restores and synced-in data never see onboarding.
+  let showFirstRun = $state(false);
+
+  async function evalFirstRun(): Promise<void> {
+    try {
+      if (allReminders.length > 0) return;
+      if ((await api.getSetting("onboarding_dismissed")) !== null) return;
+      const [peers, thoughts] = await Promise.all([
+        api.listPeers(),
+        api.listThoughts(null, 1, 0),
+      ]);
+      showFirstRun = peers.length === 0 && thoughts.length === 0;
+    } catch {
+      showFirstRun = false;
+    }
+  }
+
+  async function dismissFirstRun(): Promise<void> {
+    showFirstRun = false;
+    try {
+      await api.setSetting("onboarding_dismissed", "1");
+    } catch (e) {
+      console.warn("onboarding dismiss failed", e);
+    }
+  }
+
   async function runUpdateCheck(): Promise<void> {
     try {
       const r = await api.checkForUpdate();
@@ -222,7 +250,8 @@
   }
 
   onMount(async () => {
-    refresh();
+    await refresh();
+    void evalFirstRun();
     loadSort();
     loadInappHotkeys();
     // Mobile: register notification channels + action buttons + tap
@@ -650,6 +679,10 @@
       bind:searchQuery
       onSearchClose={() => { searchOpen = false; searchQuery = ""; }}
       sortOrder={sortOrder}
+      firstRun={showFirstRun}
+      onFirstRunCreate={() => { void dismissFirstRun(); openNew(); }}
+      onFirstRunPair={() => { void dismissFirstRun(); settingsOpen = true; }}
+      onFirstRunDismiss={() => void dismissFirstRun()}
     />
   {/if}
   <StatusBar
