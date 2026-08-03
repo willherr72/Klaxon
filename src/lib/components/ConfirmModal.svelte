@@ -53,6 +53,7 @@
   <div
     class="overlay"
     onclick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    onkeydown={(e) => { if (e.key === "Escape") onCancel(); }}
     role="dialog"
     aria-modal="true"
     aria-labelledby="confirm-title"

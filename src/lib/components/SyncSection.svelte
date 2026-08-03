@@ -1250,7 +1250,6 @@
   .secret-row {
     display: flex; gap: 8px;
   }
-  .secret-row .pair-input { flex: 1; }
   .pair-actions {
     display: flex; align-items: center; justify-content: flex-end;
     gap: 8px;

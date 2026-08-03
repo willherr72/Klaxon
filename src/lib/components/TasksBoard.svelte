@@ -5,6 +5,7 @@
   import { api, type Lane } from "../api";
   import type { Reminder } from "../types";
   import ConfirmModal from "./ConfirmModal.svelte";
+  import EmptyState from "./EmptyState.svelte";
 
   let {
     reminders,
@@ -360,6 +361,12 @@
       </button>
     {/if}
   </div>
+
+  {#if reminders.length === 0}
+    <div class="board-empty">
+      <EmptyState primary="No Tasks" secondary="Silent reminders land here" />
+    </div>
+  {/if}
 </div>
 
 <ConfirmModal
@@ -380,6 +387,13 @@
 />
 
 <style>
+  /* Board is a horizontal flex row; the empty-state banner needs to sit
+     beside the lanes without stretching them, so it flexes to fill the
+     remaining width. */
+  .board-empty {
+    flex: 1;
+    min-width: 240px;
+  }
   .board {
     grid-area: main;
     display: flex;
@@ -406,14 +420,6 @@
     border: 1px solid var(--border);
     transition: border-color 120ms var(--ease), background 120ms var(--ease);
   }
-  .lane.hovered {
-    border-color: var(--klaxon);
-    background: rgba(255, 157, 0, 0.04);
-  }
-  .lane.dragging-self {
-    opacity: 0.4;
-  }
-
   .lane-head {
     display: flex;
     align-items: center;
@@ -516,10 +522,6 @@
     border-color: var(--klaxon-dim);
     background: var(--bg-elev);
   }
-  .card.dragging {
-    opacity: 0.35;
-    border-color: var(--klaxon);
-  }
   .card-title {
     font-size: 13px;
     line-height: 1.3;
@@ -531,6 +533,7 @@
     color: var(--text-muted);
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
