@@ -220,6 +220,10 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (reminder_id, fire_at_ms)
     );
     "#,
+    // 012 — v0.7.1: peer app-version exchange (Hello RPC). NULL means
+    // "never learned": a pre-0.7.1 peer, or no sync since this device
+    // upgraded. Surfaced in Settings as version + outdated warnings.
+    "ALTER TABLE peers ADD COLUMN last_app_version TEXT;",
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

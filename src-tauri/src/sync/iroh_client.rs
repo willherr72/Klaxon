@@ -112,6 +112,30 @@ async fn call(
 /// Convenience: Ping the peer and return its PingResponse, mapping the
 /// auth/unimplemented error variants to AppError so callers don't have
 /// to unwrap themselves.
+/// v0.7.1 version exchange. `None` = the peer predates Hello (its
+/// handler drops the stream on the unknown variant, which surfaces here
+/// as a read error or timeout) — never an error, and the sync pass
+/// continues on the normal verbs regardless.
+pub async fn hello(
+    endpoint: &Endpoint,
+    node_id: &str,
+    seed_addrs: &[TransportAddr],
+    shared_secret: &str,
+) -> Option<String> {
+    let req = RpcRequest::Hello {
+        app_version: env!("CARGO_PKG_VERSION").into(),
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        call(endpoint, node_id, seed_addrs, shared_secret, req),
+    )
+    .await
+    {
+        Ok(Ok((RpcResponse::Hello { app_version }, _))) => Some(app_version),
+        _ => None,
+    }
+}
+
 pub async fn ping(
     endpoint: &Endpoint,
     node_id: &str,

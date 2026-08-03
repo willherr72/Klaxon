@@ -265,6 +265,16 @@ async fn sync_one_core(
         }
     }
 
+    // Version exchange (v0.7.1). Best-effort and recorded either way:
+    // None must overwrite a stale value — a peer reinstalled with an
+    // older build shouldn't keep claiming a modern version.
+    let peer_version =
+        iroh_client::hello(endpoint, node_id, &seed, &peer.shared_secret).await;
+    {
+        let conn = db.lock();
+        let _ = crate::db::peers::set_app_version(&conn, &peer.id, peer_version.as_deref());
+    }
+
     // Pull
     let (pulled, dial) =
         iroh_client::pull(endpoint, node_id, &seed, &peer.shared_secret, peer.last_pull_at)

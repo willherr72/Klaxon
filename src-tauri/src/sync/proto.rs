@@ -70,6 +70,11 @@ pub enum RpcRequest {
     Ping,
     Pull { since: i64 },
     Push(ChangeSet),
+    /// v0.7.1: version exchange. Trailing on purpose — postcard tags
+    /// variants by index, so older peers decode the earlier variants
+    /// unchanged and drop only the one stream carrying a Hello they
+    /// can't parse (the handler's per-stream error isolation).
+    Hello { app_version: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +85,8 @@ pub enum RpcResponse {
     /// Responder rejected the call. `unauthorized` is the special string
     /// the client uses to surface "your shared secret didn't match".
     Error(String),
+    /// v0.7.1: version exchange reply. Trailing — see `RpcRequest::Hello`.
+    Hello { app_version: String },
 }
 
 /// Length-prefixed postcard frame. Big-endian u32 length, then the body.
@@ -159,6 +166,44 @@ mod tests {
         let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
         assert_eq!(got.secret, "deadbeef");
         assert!(matches!(got.request, RpcRequest::Ping));
+    }
+
+    #[tokio::test]
+    async fn roundtrip_hello_both_directions() {
+        let (mut a, mut b) = duplex(64 * 1024);
+        let req = RpcEnvelope {
+            secret: "s".into(),
+            request: RpcRequest::Hello { app_version: "0.7.1".into() },
+        };
+        write_frame(&mut a, &req).await.unwrap();
+        let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
+        assert!(
+            matches!(got.request, RpcRequest::Hello { ref app_version } if app_version == "0.7.1")
+        );
+
+        let resp = RpcResponse::Hello { app_version: "0.7.2".into() };
+        write_frame(&mut a, &resp).await.unwrap();
+        let got: RpcResponse = read_frame(&mut b).await.unwrap();
+        assert!(
+            matches!(got, RpcResponse::Hello { ref app_version } if app_version == "0.7.2")
+        );
+    }
+
+    /// Guards the wire-compat invariant that lets 0.7.0 peers keep
+    /// syncing: Hello must be TRAILING, so the earlier variants' postcard
+    /// indices are exactly what they were before Hello existed.
+    #[test]
+    fn hello_variants_are_trailing() {
+        // Variant index is the first varint postcard writes for an enum.
+        let ping = postcard::to_allocvec(&RpcRequest::Ping).unwrap();
+        assert_eq!(ping[0], 0, "Ping must stay variant 0");
+        let pull = postcard::to_allocvec(&RpcRequest::Pull { since: 0 }).unwrap();
+        assert_eq!(pull[0], 1, "Pull must stay variant 1");
+        let hello = postcard::to_allocvec(&RpcRequest::Hello { app_version: "x".into() }).unwrap();
+        assert_eq!(hello[0], 3, "Hello is the new trailing variant 3");
+        let hello_resp =
+            postcard::to_allocvec(&RpcResponse::Hello { app_version: "x".into() }).unwrap();
+        assert_eq!(hello_resp[0], 4, "response Hello is trailing variant 4");
     }
 
     #[tokio::test]

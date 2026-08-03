@@ -456,6 +456,9 @@ pub struct PeerView {
     pub last_sync_ok_at: Option<i64>,
     pub last_sync_error: Option<String>,
     pub last_sync_error_at: Option<i64>,
+    /// v0.7.1: peer's app version from the Hello exchange; None = never
+    /// learned (pre-0.7.1 peer or no sync since our upgrade).
+    pub last_app_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -482,6 +485,7 @@ pub fn list_peers(state: State<'_, AppState>) -> AppResult<Vec<PeerView>> {
             last_sync_ok_at: p.last_sync_ok_at,
             last_sync_error: p.last_sync_error,
             last_sync_error_at: p.last_sync_error_at,
+            last_app_version: p.last_app_version,
         })
         .collect())
 }
@@ -515,6 +519,7 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_sync_ok_at: None,
         last_sync_error: None,
         last_sync_error_at: None,
+        last_app_version: None,
     };
     {
         let conn = state.db.lock();
@@ -530,6 +535,7 @@ pub fn add_peer(state: State<'_, AppState>, input: AddPeerInput) -> AppResult<Pe
         last_sync_ok_at: None,
         last_sync_error: None,
         last_sync_error_at: None,
+        last_app_version: None,
     })
 }
 
@@ -710,6 +716,7 @@ pub async fn start_pair_with(
                     last_sync_ok_at: None,
                     last_sync_error: None,
                     last_sync_error_at: None,
+                    last_app_version: None,
                 };
                 peer_repo::upsert(&conn, &peer)?;
             }
