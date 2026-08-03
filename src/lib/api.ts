@@ -186,6 +186,8 @@ export interface PeerView {
   last_sync_ok_at: number | null;
   last_sync_error: string | null;
   last_sync_error_at: number | null;
+  /** v0.7.1: peer's app version from the Hello exchange; null = never learned. */
+  last_app_version: string | null;
 }
 
 export interface AddPeerInput {

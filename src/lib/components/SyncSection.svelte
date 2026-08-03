@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { getVersion } from "@tauri-apps/api/app";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import QRCode from "qrcode";
   import {
@@ -19,6 +20,7 @@
   } = $props();
 
   let device = $state<DeviceInfo | null>(null);
+  let myVersion = $state("");
   let deviceName = $state("");
   let peers = $state<PeerView[]>([]);
   let discovered = $state<DiscoveredPeer[]>([]);
@@ -48,6 +50,11 @@
   let unlistenProgress: UnlistenFn | null = null;
 
   onMount(async () => {
+    try {
+      myVersion = await getVersion();
+    } catch (e) {
+      console.warn("getVersion failed", e);
+    }
     refresh();
     refreshDiscovery();
     discoveryTimer = window.setInterval(refreshDiscovery, 3000);
@@ -232,6 +239,31 @@
   }
 
 
+  // v0.7.1 peer-health heuristics. Stale = quiet too long; outdated =
+  // strictly semver-older than us. A NEWER peer shows its version with
+  // no alarm — the nagging happens on the device that's behind.
+  const STALE_MS = 72 * 60 * 60 * 1000;
+
+  function isStale(p: PeerView): boolean {
+    return p.last_sync_ok_at != null && Date.now() - p.last_sync_ok_at > STALE_MS;
+  }
+
+  function parseSemver(v: string): [number, number, number] | null {
+    const m = v.trim().replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)/);
+    return m ? [+m[1], +m[2], +m[3]] : null;
+  }
+
+  function isOutdated(p: PeerView): boolean {
+    if (!p.last_app_version || !myVersion) return false;
+    const a = parseSemver(p.last_app_version);
+    const b = parseSemver(myVersion);
+    if (!a || !b) return false;
+    return (
+      a[0] < b[0] ||
+      (a[0] === b[0] && (a[1] < b[1] || (a[1] === b[1] && a[2] < b[2])))
+    );
+  }
+
   function relativeTime(ms: number | null): string {
     if (!ms || ms === 0) return "—";
     const diff = Date.now() - ms;
@@ -395,6 +427,21 @@
             {:else if p.last_sync_ok_at}
               <div class="peer-sync ok mono-caps-faint">
                 ✓ synced {relativeTime(p.last_sync_ok_at)}
+              </div>
+            {/if}
+            <!-- v0.7.1 version exchange. "unknown" = peer predates the
+                 Hello RPC or hasn't synced since we upgraded. -->
+            <div class="peer-sync mono-caps-faint">
+              {p.last_app_version ? `v${p.last_app_version}` : "version unknown"}
+            </div>
+            {#if isStale(p)}
+              <div class="peer-warn mono-caps-faint">
+                ⚠ not synced in {relativeTime(p.last_sync_ok_at ?? 0)}
+              </div>
+            {/if}
+            {#if isOutdated(p)}
+              <div class="peer-warn mono-caps-faint">
+                ⚠ running v{p.last_app_version} — update it on that device
               </div>
             {/if}
           </div>
@@ -817,6 +864,10 @@
     color: var(--text);
     font-size: 12px;
     font-weight: 500;
+  }
+  .peer-warn {
+    color: var(--warn, #d9a13d);
+    font-size: 10px;
   }
   .peer-seen {
     font-size: 9px;
