@@ -5,6 +5,38 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-08-03
+
+Update checking: **Klaxon now tells you when a new release exists and
+installs it for you.** Plus iroh 1.0.3 — sync moves off the pre-release
+relay fleet onto production infrastructure.
+
+### Added
+
+- **Update checking.** Klaxon quietly checks GitHub releases on launch
+  and daily. When a newer version exists: a hint in the status bar and
+  an update panel in Settings → System with the release notes. One
+  button downloads the right artifact (NSIS installer on Windows, APK
+  on Android) and hands it to the OS installer — no silent installs.
+  Android asks once to allow installs from Klaxon; updates keep all
+  data (same signing key). A manual "Check for updates" button lives
+  in Settings; only manual checks surface errors.
+
+### Changed
+
+- **iroh 1.0.0-rc.0 → 1.0.3** (first stable line). Sync now rides n0's
+  production relay fleet instead of the canary relays. Verified on
+  hardware: warm LAN round-trip, share-triggered cold pass, and a
+  relay-only sync with Wi-Fi off. As always: update both devices
+  together.
+
+### Verification note
+
+The Android update flow was drilled end-to-end on hardware: a
+0.6.9-versioned build detected the published v0.7.0 release, downloaded
+it, raised the system install prompt, and upgraded itself in place with
+data intact.
+
 ## [0.6.0] — 2026-07-31
 
 Cold alarms: **a reminder that arrives while Klaxon is closed now
