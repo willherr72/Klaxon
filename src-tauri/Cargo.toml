@@ -51,7 +51,7 @@ rustls = "0.23"
 # windows-core version conflict on Windows. We get along fine without UPnP
 # port mapping — iroh's hole-punching + relays are the primary NAT traversal
 # path. `tls-ring` and `metrics` re-added because they're useful defaults.
-iroh = { version = "1.0.0-rc.0", default-features = false, features = ["tls-ring", "metrics"] }
+iroh = { version = "1.0.3", default-features = false, features = ["tls-ring", "metrics"] }
 # postcard: small, fast, schema-less serde format. Used to encode RPC
 # envelopes (length-prefixed) on iroh bidi streams.
 postcard = { version = "1", features = ["alloc"] }
