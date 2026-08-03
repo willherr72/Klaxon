@@ -3,6 +3,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import { countdown } from "../time";
   import type { Reminder } from "../types";
+  import type { UpdateCheck } from "../api";
 
   let appVersion = $state("");
   onMount(async () => {
@@ -17,10 +18,12 @@
     pendingCount,
     nextReminder,
     now,
+    availableUpdate = null,
   }: {
     pendingCount: number;
     nextReminder: Reminder | null;
     now: number;
+    availableUpdate?: UpdateCheck | null;
   } = $props();
 
   let nextTarget = $derived(
@@ -48,6 +51,14 @@
     <span class="num accent">{nextText}</span>
   </div>
   <div class="spacer"></div>
+  {#if availableUpdate}
+    <div class="cell">
+      <span class="mono-caps-faint update-hint">
+        v{availableUpdate.latest} available — see Settings
+      </span>
+    </div>
+    <div class="sep">·</div>
+  {/if}
   <div class="cell tail">
     <span class="mono-caps-faint">Klaxon · v{appVersion || "…"}</span>
   </div>
@@ -104,6 +115,7 @@
     letter-spacing: 0.06em;
   }
   .accent { color: var(--klaxon); }
+  .update-hint { color: var(--klaxon); }
   .sep { color: var(--text-faint); }
   .spacer { flex: 1; }
   .tail { opacity: 0.7; }

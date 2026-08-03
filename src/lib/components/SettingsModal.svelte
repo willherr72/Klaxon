@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from "../api";
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import { getVersion } from "@tauri-apps/api/app";
   import {
     enable as enableAutostart,
@@ -13,12 +13,56 @@
   import SignalLight from "./SignalLight.svelte";
   import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
+  import type { UpdateCheck } from "../api";
   import { keyEventToCombo, prettyShortcut } from "../shortcut";
   import { isMobilePlatform } from "../platform";
+  import { listen } from "@tauri-apps/api/event";
 
   const isMobile = isMobilePlatform();
 
-  let { open, onClose }: { open: boolean; onClose: () => void } = $props();
+  let {
+    open,
+    onClose,
+    availableUpdate = null,
+    onUpdateChecked = () => {},
+  }: {
+    open: boolean;
+    onClose: () => void;
+    availableUpdate?: UpdateCheck | null;
+    onUpdateChecked?: (r: UpdateCheck) => void;
+  } = $props();
+
+  // Updates (v0.7)
+  let updBusy = $state(false);
+  let updPct = $state(0);
+  let updError = $state("");
+  let checkMsg = $state("");
+  let unlistenUpdProgress: (() => void) | null = null;
+
+  async function manualUpdateCheck() {
+    checkMsg = "";
+    updError = "";
+    try {
+      const r = await api.checkForUpdate();
+      onUpdateChecked(r);
+      checkMsg = r.update_available ? "" : "You're up to date.";
+    } catch {
+      checkMsg = "Couldn't reach GitHub.";
+    }
+  }
+
+  async function startUpdate() {
+    updError = "";
+    updBusy = true;
+    updPct = 0;
+    try {
+      await api.downloadAndInstallUpdate();
+    } catch {
+      updError = "Download failed.";
+    } finally {
+      updBusy = false;
+    }
+  }
 
   type ToneKey = "klaxon" | "chime" | "siren" | "pulse";
   type PrioConfig = { count: number; intervalSecs: number; tone: ToneKey };
@@ -161,7 +205,13 @@
     } catch (e) {
       console.error("getVersion failed", e);
     }
+    unlistenUpdProgress = await listen<number>(
+      "update-download-progress",
+      (e) => (updPct = e.payload),
+    );
   });
+
+  onDestroy(() => unlistenUpdProgress?.());
 
   // Each panel section starts collapsed so the modal stays compact. Click a
   // section header to expand the one you want to edit.
@@ -670,6 +720,45 @@
               </span>
             </div>
 
+            <!-- Updates (v0.7) -->
+            {#if availableUpdate}
+              <div class="update-panel">
+                <div class="mono-caps">Update available: v{availableUpdate.latest}</div>
+                <div class="mono-caps-faint">{availableUpdate.release_name}</div>
+                {#if availableUpdate.notes_snippet}
+                  <div class="update-notes">{availableUpdate.notes_snippet}</div>
+                {/if}
+                <div class="mono-caps-faint">
+                  Update your other devices too — Klaxon versions must match to sync.
+                </div>
+                <div class="backup-row">
+                  {#if availableUpdate.asset_found}
+                    <button class="btn ghost" onclick={startUpdate} disabled={updBusy}>
+                      {updBusy ? `Downloading… ${updPct}%` : "Update"}
+                    </button>
+                  {:else}
+                    <a
+                      href="https://github.com/willherr72/Klaxon/releases/latest"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open release page
+                    </a>
+                  {/if}
+                  {#if updError}
+                    <span class="backup-msg err mono-caps-faint">{updError}</span>
+                    <button class="btn ghost" onclick={startUpdate}>Retry</button>
+                  {/if}
+                </div>
+              </div>
+            {/if}
+            <div class="backup-row">
+              <button class="btn ghost" onclick={manualUpdateCheck} disabled={updBusy}>
+                Check for updates
+              </button>
+              {#if checkMsg}<span class="mono-caps-faint">{checkMsg}</span>{/if}
+            </div>
+
             <!-- Backups (v0.5.2) -->
             <div class="backup-row">
               <button
@@ -1046,6 +1135,19 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+  .update-panel {
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .update-notes {
+    font-size: 12px;
+    color: var(--text-dim, #9a9a9a);
+    white-space: pre-line;
   }
   .backup-warn {
     font-size: 10px;
