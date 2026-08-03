@@ -146,6 +146,7 @@ impl PairHandler {
                         last_sync_ok_at: None,
                         last_sync_error: None,
                         last_sync_error_at: None,
+                        last_app_version: None,
                     };
                     peers::upsert(&conn, &peer)?;
                 }

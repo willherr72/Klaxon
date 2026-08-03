@@ -2,6 +2,7 @@
   import { dayHeader, dayKey, effectiveDueAt } from "../time";
   import type { Reminder } from "../types";
   import EmptyState from "./EmptyState.svelte";
+  import { isMobilePlatform } from "../platform";
   import ReminderItem from "./ReminderItem.svelte";
 
   let {
@@ -15,6 +16,10 @@
     searchQuery = $bindable(""),
     onSearchClose,
     sortOrder = "date_asc",
+    firstRun = false,
+    onFirstRunCreate,
+    onFirstRunPair,
+    onFirstRunDismiss,
   }: {
     reminders: Reminder[];
     selectedId: string | null;
@@ -26,7 +31,13 @@
     searchQuery?: string;
     onSearchClose?: () => void;
     sortOrder?: "date_asc" | "date_desc";
+    firstRun?: boolean;
+    onFirstRunCreate?: () => void;
+    onFirstRunPair?: () => void;
+    onFirstRunDismiss?: () => void;
   } = $props();
+
+  const isMobile = isMobilePlatform();
 
   let searchInput: HTMLInputElement | null = $state(null);
 
@@ -88,7 +99,30 @@
     </div>
   {/if}
 
-  {#if reminders.length === 0}
+  {#if reminders.length === 0 && firstRun}
+    <!-- v0.7.1 first-run card: shown once, only when the whole app is
+         genuinely empty (no reminders, thoughts, or peers). -->
+    <div class="firstrun">
+      <button class="firstrun-dismiss" onclick={() => onFirstRunDismiss?.()} aria-label="Dismiss">×</button>
+      <div class="mono-caps">Welcome to Klaxon</div>
+      <div class="mono-caps-faint">
+        Private reminders that sync device-to-device. No server, no account.
+      </div>
+      <div class="firstrun-actions">
+        <button class="firstrun-btn primary" onclick={() => onFirstRunCreate?.()}>
+          Create your first reminder
+        </button>
+        <button class="firstrun-btn" onclick={() => onFirstRunPair?.()}>
+          Pair your other device
+        </button>
+      </div>
+      {#if !isMobile}
+        <div class="mono-caps-faint">
+          Tip: Ctrl+Alt+T captures a thought from anywhere (configurable in Settings).
+        </div>
+      {/if}
+    </div>
+  {:else if reminders.length === 0}
     <EmptyState />
   {:else}
     {#each groups as g (g.key)}
@@ -200,4 +234,48 @@
     transition: color 120ms var(--ease);
   }
   .search-close:hover { color: var(--text); }
+
+  /* v0.7.1 first-run card */
+  .firstrun {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    height: 100%;
+    padding: 24px;
+    text-align: center;
+  }
+  .firstrun-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .firstrun-btn {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+  }
+  .firstrun-btn.primary {
+    border-color: var(--klaxon);
+    color: var(--klaxon);
+  }
+  .firstrun-btn:hover { border-color: var(--klaxon); }
+  .firstrun-dismiss {
+    position: absolute;
+    top: 10px;
+    right: 14px;
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .firstrun-dismiss:hover { color: var(--text); }
 </style>

@@ -24,11 +24,14 @@ pub struct Peer {
     pub last_sync_ok_at: Option<i64>,
     pub last_sync_error: Option<String>,
     pub last_sync_error_at: Option<i64>,
+    /// v0.7.1: peer's app version from the Hello exchange. `None` =
+    /// never learned (pre-0.7.1 peer, or no sync since we upgraded).
+    pub last_app_version: Option<String>,
 }
 
 const COLUMNS: &str = "id, name, shared_secret, last_pull_at, last_push_at, created_at,
                 last_seen_at, iroh_node_id, endpoint_addrs, last_sync_ok_at,
-                last_sync_error, last_sync_error_at";
+                last_sync_error, last_sync_error_at, last_app_version";
 
 fn row_to_peer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Peer> {
     Ok(Peer {
@@ -44,7 +47,33 @@ fn row_to_peer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Peer> {
         last_sync_ok_at: r.get(9)?,
         last_sync_error: r.get(10)?,
         last_sync_error_at: r.get(11)?,
+        last_app_version: r.get(12)?,
     })
+}
+
+/// Record (or clear) the app version a peer reported via Hello. Clearing
+/// on a failed exchange matters: a peer that was reinstalled with an
+/// older build must not keep its stale "modern" version string.
+pub fn set_app_version(
+    conn: &Connection,
+    peer_id: &str,
+    version: Option<&str>,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE peers SET last_app_version = ?2 WHERE id = ?1",
+        rusqlite::params![peer_id, version],
+    )?;
+    Ok(())
+}
+
+/// Peer id for a shared secret — the Hello handler's caller lookup.
+pub fn id_by_secret(conn: &Connection, secret: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT id FROM peers WHERE shared_secret = ?1",
+        rusqlite::params![secret],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Peer>> {

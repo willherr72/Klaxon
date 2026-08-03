@@ -5,6 +5,40 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-08-03
+
+Polish: **peers now tell each other their versions**, updates announce
+themselves, first launches get a welcome, and the README finally
+describes the app that exists.
+
+### Added
+
+- **Peer version exchange.** Devices swap app versions during every sync
+  pass. Settings → Sync shows each peer's version, warns when a peer
+  hasn't synced in 3 days, and nags when a peer is running an older
+  release. Fully compatible with 0.7.0 peers — they simply show as
+  "version unknown" until upgraded.
+- **What's-new card.** After an update, the next launch shows that
+  release's changelog once. Works offline — the changelog ships inside
+  the app.
+- **First-run welcome.** A brand-new install (no reminders, thoughts, or
+  peers) offers the two actions that matter: create a reminder, pair a
+  device.
+
+### Changed
+
+- README rewritten: current feature set, Windows SmartScreen and Android
+  install walkthroughs, pairing quickstart, backups, privacy model.
+- Tasks board shows an empty state; accessibility and lint cleanups
+  (svelte-check now fully clean).
+
+### Verification note
+
+0.7.1 ↔ 0.7.0 sync interop proven live before release (the trailing-RPC
+design costs old peers one dropped stream, nothing more). Discovered and
+filed along the way: neither platform rebinds its sync endpoint after a
+network migration (#3).
+
 ## [0.7.0] — 2026-08-03
 
 Update checking: **Klaxon now tells you when a new release exists and

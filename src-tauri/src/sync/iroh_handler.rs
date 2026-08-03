@@ -88,6 +88,20 @@ impl SyncHandler {
                 Ok(ack) => RpcResponse::Push(ack),
                 Err(e) => RpcResponse::Error(format!("push: {e}")),
             },
+            // v0.7.1: both sides learn from one exchange — record the
+            // caller's version, reply with ours. Recording is
+            // best-effort; the reply matters more than the bookkeeping.
+            RpcRequest::Hello { app_version } => {
+                let conn = self.db.lock();
+                if let Some(peer_id) = crate::db::peers::id_by_secret(&conn, &env.secret) {
+                    let _ = crate::db::peers::set_app_version(
+                        &conn,
+                        &peer_id,
+                        Some(&app_version),
+                    );
+                }
+                RpcResponse::Hello { app_version: env!("CARGO_PKG_VERSION").into() }
+            }
         };
 
         proto::write_frame(send, &resp).await

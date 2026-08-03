@@ -2,6 +2,9 @@
   import { onMount, onDestroy } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { api, type UpdateCheck } from "./lib/api";
+  import { getVersion } from "@tauri-apps/api/app";
+  import changelogRaw from "../CHANGELOG.md?raw";
+  import { extractChangelogSection } from "./lib/whatsnew";
   import { reminders, editingId, editorOpen, nowTick, setTickRate } from "./lib/stores";
   import { comboMatches } from "./lib/shortcut";
   import type { Reminder, ReminderCreate, TimeFilter, ViewMode } from "./lib/types";
@@ -27,6 +30,62 @@
 
   let allReminders = $state<Reminder[]>([]);
   let availableUpdate = $state<UpdateCheck | null>(null);
+  let whatsNew = $state<string | null>(null);
+  let appVersionNow = $state("");
+
+  async function initWhatsNew(): Promise<void> {
+    try {
+      appVersionNow = await getVersion();
+      const lastSeen = await api.getSetting("last_seen_version");
+      if (lastSeen === null) {
+        // Fresh install: swallow silently so a brand-new user gets the
+        // first-run card, not release notes for a version they never
+        // upgraded from.
+        await api.setSetting("last_seen_version", appVersionNow);
+      } else if (lastSeen !== appVersionNow) {
+        whatsNew = extractChangelogSection(changelogRaw, appVersionNow);
+        if (whatsNew === null) {
+          // Section missing (dev build) — don't re-check every launch.
+          await api.setSetting("last_seen_version", appVersionNow);
+        }
+      }
+    } catch (e) {
+      console.warn("what's-new init failed", e);
+    }
+  }
+
+  async function dismissWhatsNew(): Promise<void> {
+    whatsNew = null;
+    await api.setSetting("last_seen_version", appVersionNow);
+  }
+
+  // First-run card (v0.7.1): only when the whole app is genuinely empty
+  // — any reminder, thought, or peer anywhere suppresses it forever, so
+  // restores and synced-in data never see onboarding.
+  let showFirstRun = $state(false);
+
+  async function evalFirstRun(): Promise<void> {
+    try {
+      if (allReminders.length > 0) return;
+      if ((await api.getSetting("onboarding_dismissed")) !== null) return;
+      const [peers, thoughts] = await Promise.all([
+        api.listPeers(),
+        api.listThoughts(null, 1, 0),
+      ]);
+      showFirstRun = peers.length === 0 && thoughts.length === 0;
+    } catch {
+      showFirstRun = false;
+    }
+  }
+
+  async function dismissFirstRun(): Promise<void> {
+    showFirstRun = false;
+    try {
+      await api.setSetting("onboarding_dismissed", "1");
+    } catch (e) {
+      console.warn("onboarding dismiss failed", e);
+    }
+  }
 
   async function runUpdateCheck(): Promise<void> {
     try {
@@ -191,7 +250,8 @@
   }
 
   onMount(async () => {
-    refresh();
+    await refresh();
+    void evalFirstRun();
     loadSort();
     loadInappHotkeys();
     // Mobile: register notification channels + action buttons + tap
@@ -217,6 +277,7 @@
     // surface from the manual "Check now" button in Settings.
     setTimeout(() => void runUpdateCheck(), 5_000);
     setInterval(() => void runUpdateCheck(), 24 * 60 * 60 * 1000);
+    void initWhatsNew();
     // Sync-on-foreground. When the mobile OS brings Klaxon back from
     // the background, kick an immediate sync pass so the user sees
     // fresh data from peers instead of waiting up to 20s for the next
@@ -580,6 +641,15 @@
     nextReminder={nextReminder}
     now={now}
   />
+  {#if whatsNew}
+    <!-- Floating on purpose: .app is a named-area grid, and an in-flow
+         card would auto-place into a phantom cell. -->
+    <div class="whatsnew">
+      <div class="mono-caps">Updated to v{appVersionNow}</div>
+      <pre class="whatsnew-body">{whatsNew}</pre>
+      <button class="whatsnew-btn mono-caps" onclick={dismissWhatsNew}>Got it</button>
+    </div>
+  {/if}
   {#if currentView === "calendar"}
     <CalendarView
       reminders={filtered}
@@ -609,6 +679,10 @@
       bind:searchQuery
       onSearchClose={() => { searchOpen = false; searchQuery = ""; }}
       sortOrder={sortOrder}
+      firstRun={showFirstRun}
+      onFirstRunCreate={() => { void dismissFirstRun(); openNew(); }}
+      onFirstRunPair={() => { void dismissFirstRun(); settingsOpen = true; }}
+      onFirstRunDismiss={() => void dismissFirstRun()}
     />
   {/if}
   <StatusBar
@@ -694,6 +768,50 @@
     .app > * { min-width: 0; }
     .app.editor-open {
       padding-right: 0;
+    }
+  }
+
+  /* v0.7.1 what's-new card — floats above the grid, toast-style. */
+  .whatsnew {
+    position: fixed;
+    top: 56px;
+    right: 16px;
+    z-index: 60;
+    max-width: 420px;
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
+  .whatsnew-body {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-2);
+    font-family: inherit;
+  }
+  .whatsnew-btn {
+    align-self: flex-end;
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    padding: 5px 14px;
+    cursor: pointer;
+  }
+  .whatsnew-btn:hover {
+    border-color: var(--klaxon);
+  }
+  @media (max-width: 1024px) {
+    .whatsnew {
+      left: 12px;
+      right: 12px;
+      max-width: none;
     }
   }
 </style>
