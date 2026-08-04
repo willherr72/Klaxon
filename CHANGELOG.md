@@ -5,6 +5,36 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] — 2026-08-04
+
+Reliability: **sync now survives moving between networks**, release
+notes render properly, and a vestigial column is gone.
+
+### Fixed
+
+- **Network migrations no longer strand sync** (#3). Moving to a
+  different Wi-Fi used to leave the sync endpoint bound to the dead
+  network until you restarted the app — on both platforms. Klaxon now
+  listens for interface changes (Windows) and connectivity events
+  (Android), tells iroh to re-evaluate its sockets and paths, and runs
+  a sync pass. Wake-from-sleep gets the same treatment.
+- **Release notes render as formatted text** in the update panel and
+  the what's-new card instead of raw markdown.
+
+### Changed
+
+- **The `dirty` flag is retired** (#2). Sync forwarding has been carried
+  entirely by per-peer time watermarks since the issue-#1 fix; the flag
+  was written everywhere and read nowhere. The columns are dropped
+  (migration 013) and a new three-device mesh test pins the forwarding
+  semantics.
+
+### Verification note
+
+Live network-hop drill: with both devices running and synced, the
+laptop moved to a different network mid-session — sync recovered
+without a restart on either side.
+
 ## [0.7.1] — 2026-08-03
 
 Polish: **peers now tell each other their versions**, updates announce
