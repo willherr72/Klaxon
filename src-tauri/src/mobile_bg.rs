@@ -101,6 +101,12 @@ mod live {
         BG_APP.get().is_some()
     }
 
+    /// Clone of the live handle for JNI entry points that need state.
+    /// None while cold — callers must treat that as a silent no-op.
+    pub fn app_handle() -> Option<AppHandle> {
+        BG_APP.get().cloned()
+    }
+
     /// Run one background sync pass if the process is warm and sync is enabled.
     /// Blocks the calling (worker) thread until the pass completes so iroh has
     /// time to connect.
@@ -239,6 +245,31 @@ pub extern "system" fn Java_com_klaxon_app_BackgroundSyncWorker_nativeSyncOnce<'
         }
     }))
     .unwrap_or(-1)
+}
+
+/// v0.7.2 (issue #3): ConnectivityManager callback → NetworkChange
+/// nudge. Android never exposes network changes to native code (iroh's
+/// `network_change` docs call this out explicitly), so Kotlin forwards
+/// them. Warm-only by design: the cold worker builds a fresh endpoint
+/// per pass and never needs this. The sync loop owns the actual
+/// `endpoint.network_change()` call.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_klaxon_app_MainActivity_nativeNetworkChanged<'local>(
+    _env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+) {
+    ensure_android_logging();
+    let _ = std::panic::catch_unwind(|| {
+        let Some(app) = live::app_handle() else {
+            log::debug!("network change before setup — ignored");
+            return;
+        };
+        use tauri::Manager;
+        let state = app.state::<crate::AppState>();
+        log::info!("connectivity change from Kotlin — nudging sync");
+        let _ = state.sync_nudge.send(crate::sync::trigger::Nudge::NetworkChange);
+    });
 }
 
 /// JNI entry point called from `MainActivity.onCreate` (before Tauri's
