@@ -80,6 +80,10 @@ windows = { version = "0.62", features = [
     "Win32_System_LibraryLoader",
     # WNDCLASSW / RegisterClassW are gated here (the struct embeds GDI types).
     "Win32_Graphics_Gdi",
+    # v0.7.2 net_watch.rs: NotifyIpInterfaceChange + ADDRESS_FAMILY.
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
 ] }
 
 # v0.4: Android-only. We initialize the global ndk-context (JavaVM + Android
