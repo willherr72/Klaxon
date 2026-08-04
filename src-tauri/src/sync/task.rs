@@ -346,7 +346,7 @@ async fn sync_one_core(
         let rs = repo::updated_since(&conn, peer.last_push_at)?;
         let ts = tombstones::deleted_since(&conn, peer.last_push_at)?;
         let ls = task_lanes::updated_since(&conn, peer.last_push_at)?;
-        // No `dirty` filter — see issue #1.
+        // Watermark selection only — see issues #1/#2.
         let th = thoughts::updated_since(&conn, peer.last_push_at)?;
         (
             rs.iter().map(RemoteReminder::from).collect::<Vec<_>>(),

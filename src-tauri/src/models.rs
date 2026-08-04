@@ -84,7 +84,6 @@ pub struct Reminder {
     pub source: String,
     pub external_id: Option<String>,
     pub last_synced_at: Option<i64>,
-    pub dirty: bool,
     /// When true the scheduler ignores this row entirely — no alarm. Used
     /// for to-do style items that have a date but shouldn't ring.
     pub silent: bool,
@@ -225,7 +224,6 @@ pub struct Thought {
     pub tags: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
-    pub dirty: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

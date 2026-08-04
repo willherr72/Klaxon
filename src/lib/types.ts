@@ -28,7 +28,7 @@ export interface Reminder {
   source: string;
   external_id: string | null;
   last_synced_at: number | null;
-  dirty: boolean;
+
   silent: boolean;
   tags: string[];
   // v0.3.1: swim-lane id (only set for silent reminders / tasks).
@@ -76,7 +76,7 @@ export interface Thought {
   tags: string[];
   created_at: number;
   updated_at: number;
-  dirty: boolean;
+
 }
 
 export interface ThoughtCreate {

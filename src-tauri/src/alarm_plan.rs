@@ -165,7 +165,6 @@ mod tests {
             source: "local".into(),
             external_id: None,
             last_synced_at: None,
-            dirty: false,
             silent: false,
             tags: vec![],
             task_lane_id: None,

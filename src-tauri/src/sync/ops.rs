@@ -43,7 +43,6 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .map(RemoteTombstone::from)
         .collect();
     let lanes = task_lanes::updated_since(&conn, since)?;
-    // No `dirty` filter here, unlike lanes/tombstones — see issue #1.
     let thoughts = thoughts::updated_since(&conn, since)?
         .iter()
         .map(RemoteThought::from)
@@ -194,7 +193,7 @@ mod tests {
 
     /// Issue #2's design guarantee: forwarding is carried entirely by
     /// updated_at/deleted_at watermarks — a change that arrives FROM a
-    /// peer (which lands with dirty = 0 today) must forward onward to a
+    /// peer must forward onward to a
     /// third device unchanged. A→B→C through the real pull/push ops.
     #[test]
     fn changes_forward_across_three_devices_via_watermarks() {
@@ -244,7 +243,7 @@ mod tests {
         apply_set(&b, &hop1);
 
         // Hop 2: C ingests from B. If any table's selection still
-        // consulted `dirty`, the rows B received would be invisible
+        // consulted an origin flag, the rows B received would be invisible
         // here — the exact issue-#1 failure mode.
         let hop2 = pull(&b, 0).unwrap();
         assert_eq!(hop2.reminders.len(), 1, "forwarded reminder in B's pull");

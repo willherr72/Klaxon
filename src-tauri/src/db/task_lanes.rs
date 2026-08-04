@@ -5,7 +5,7 @@
 //! user can create/rename/reorder/delete them.
 //!
 //! Sync semantics mirror reminders: `updated_at` is the LWW clock, the
-//! `dirty` flag flags rows the local side hasn't pushed yet, and lane
+//! `updated_at` watermarks carry sync selection, and lane
 //! deletes write to the shared `tombstones` table so peers learn to
 //! drop their copy.
 
@@ -92,13 +92,13 @@ pub fn default_lane(conn: &Connection) -> AppResult<Lane> {
     })?)
 }
 
-/// Insert a brand-new lane (caller picks a fresh UUID). Marks dirty so
+/// Insert a brand-new lane (caller picks a fresh UUID); `updated_at` makes
 /// the next sync push includes it.
 pub fn insert(conn: &Connection, lane: &Lane) -> AppResult<()> {
     conn.execute(
         "INSERT INTO task_lanes
-            (id, name, order_index, is_default, created_at, updated_at, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
+            (id, name, order_index, is_default, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             lane.id,
             lane.name,
@@ -112,7 +112,7 @@ pub fn insert(conn: &Connection, lane: &Lane) -> AppResult<()> {
 }
 
 /// Update an existing lane's mutable fields. Bumps `updated_at` and
-/// flips `dirty` so the change pushes on the next sync tick.
+/// bumps `updated_at` so the change pushes on the next sync tick.
 pub fn update(
     conn: &Connection,
     id: &str,
@@ -124,8 +124,7 @@ pub fn update(
         "UPDATE task_lanes
             SET name = ?2,
                 order_index = ?3,
-                updated_at = ?4,
-                dirty = 1
+                updated_at = ?4
           WHERE id = ?1",
         params![id, name, order_index, updated_at],
     )?;
@@ -134,7 +133,7 @@ pub fn update(
 
 /// Apply a lane that arrived over sync. Last-write-wins by
 /// `updated_at`; older incoming rows are ignored. New rows insert; the
-/// remote `dirty` flag is always 0 because we accept the wire value as
+/// the wire value is accepted as
 /// canonical.
 pub fn apply_remote(conn: &Connection, lane: &Lane) -> AppResult<bool> {
     let existing_updated: Option<i64> = conn
@@ -151,13 +150,12 @@ pub fn apply_remote(conn: &Connection, lane: &Lane) -> AppResult<bool> {
     }
     conn.execute(
         "INSERT INTO task_lanes
-            (id, name, order_index, is_default, created_at, updated_at, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+            (id, name, order_index, is_default, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(id) DO UPDATE SET
             name = excluded.name,
             order_index = excluded.order_index,
-            updated_at = excluded.updated_at,
-            dirty = 0",
+            updated_at = excluded.updated_at",
         params![
             lane.id,
             lane.name,
@@ -177,8 +175,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 
 /// Lanes to push to a peer, by the per-peer high-water mark.
 ///
-/// Deliberately does NOT filter on `dirty` (issue #1): rows received from
-/// a peer land with `dirty = 0`, and filtering on it meant a lane learned
+/// Selection is by watermark alone (issues #1/#2): a lane learned
 /// from one peer never forwarded to a second — tasks arriving on a third
 /// device pointed at a lane it didn't have. The cost is one idempotent
 /// echo back to the sender, same as reminders and thoughts.
@@ -208,13 +205,6 @@ pub fn updated_since(conn: &Connection, since: i64) -> AppResult<Vec<Lane>> {
 
 /// Mark a lane clean — called after a successful push.
 #[allow(dead_code)]
-pub fn clear_dirty(conn: &Connection, id: &str) -> AppResult<()> {
-    conn.execute(
-        "UPDATE task_lanes SET dirty = 0 WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
@@ -227,7 +217,7 @@ mod tests {
     }
 
     /// Issue #1 regression: a lane received from peer A lands clean
-    /// (dirty = 0) but must still be pushed onward to peer B — otherwise a
+    /// but must still be pushed onward to peer B — otherwise a
     /// task syncing to a third device points at a lane that device never
     /// receives.
     #[test]
