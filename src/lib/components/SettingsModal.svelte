@@ -14,6 +14,7 @@
   import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
   import type { UpdateCheck } from "../api";
+  import { renderMdLite } from "../mdlite";
   import { keyEventToCombo, prettyShortcut } from "../shortcut";
   import { isMobilePlatform } from "../platform";
   import { listen } from "@tauri-apps/api/event";
@@ -726,7 +727,10 @@
                 <div class="mono-caps">Update available: v{availableUpdate.latest}</div>
                 <div class="mono-caps-faint">{availableUpdate.release_name}</div>
                 {#if availableUpdate.notes_snippet}
-                  <div class="update-notes">{availableUpdate.notes_snippet}</div>
+                  <div class="update-notes">
+                    <!-- eslint-disable-next-line svelte/no-at-html-tags — renderMdLite escapes first -->
+                    {@html renderMdLite(availableUpdate.notes_snippet)}
+                  </div>
                 {/if}
                 <div class="mono-caps-faint">
                   Update your other devices too — Klaxon versions must match to sync.
@@ -1147,7 +1151,30 @@
   .update-notes {
     font-size: 12px;
     color: var(--text-dim, #9a9a9a);
-    white-space: pre-line;
+  }
+  /* Injected via {@html} — Svelte scoping can't see these. */
+  .update-notes :global(h4) {
+    margin: 8px 0 4px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-2);
+  }
+  .update-notes :global(ul) {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+  .update-notes :global(li) {
+    margin: 2px 0;
+    line-height: 1.5;
+  }
+  .update-notes :global(p) {
+    margin: 4px 0;
+    line-height: 1.5;
+  }
+  .update-notes :global(code) {
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
   .backup-warn {
     font-size: 10px;

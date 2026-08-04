@@ -5,6 +5,7 @@
   import { getVersion } from "@tauri-apps/api/app";
   import changelogRaw from "../CHANGELOG.md?raw";
   import { extractChangelogSection } from "./lib/whatsnew";
+  import { renderMdLite } from "./lib/mdlite";
   import { reminders, editingId, editorOpen, nowTick, setTickRate } from "./lib/stores";
   import { comboMatches } from "./lib/shortcut";
   import type { Reminder, ReminderCreate, TimeFilter, ViewMode } from "./lib/types";
@@ -646,7 +647,10 @@
          card would auto-place into a phantom cell. -->
     <div class="whatsnew">
       <div class="mono-caps">Updated to v{appVersionNow}</div>
-      <pre class="whatsnew-body">{whatsNew}</pre>
+      <div class="whatsnew-body">
+        <!-- renderMdLite escapes before injecting -->
+        {@html renderMdLite(whatsNew)}
+      </div>
       <button class="whatsnew-btn mono-caps" onclick={dismissWhatsNew}>Got it</button>
     </div>
   {/if}
@@ -789,12 +793,27 @@
   }
   .whatsnew-body {
     margin: 0;
-    white-space: pre-wrap;
     overflow-y: auto;
     font-size: 12px;
     line-height: 1.5;
     color: var(--text-2);
-    font-family: inherit;
+  }
+  .whatsnew-body :global(h4) {
+    margin: 8px 0 4px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .whatsnew-body :global(ul) {
+    margin: 4px 0;
+    padding-left: 18px;
+  }
+  .whatsnew-body :global(li) {
+    margin: 2px 0;
+  }
+  .whatsnew-body :global(p) {
+    margin: 4px 0;
   }
   .whatsnew-btn {
     align-self: flex-end;
