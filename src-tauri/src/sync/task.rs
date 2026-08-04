@@ -90,15 +90,21 @@ pub async fn run(
             },
         };
 
+        let mut network_changed = false;
         let retry_attempt = if let Some(nudge) = triggered {
             // Coalesce the burst: wait out the debounce window, then drain
             // whatever else arrived. Retry nudges skip the debounce — their
-            // delay already happened.
+            // delay already happened. Track Resume/NetworkChange across the
+            // whole drained burst — a Write arriving after a NetworkChange
+            // must not swallow the rebind.
             if !matches!(nudge, Nudge::Retry(_)) {
                 tokio::time::sleep(DEBOUNCE).await;
             }
+            network_changed = matches!(nudge, Nudge::Resume | Nudge::NetworkChange);
             let mut latest = nudge;
             while let Ok(n) = nudges.try_recv() {
+                network_changed |=
+                    matches!(n, Nudge::Resume | Nudge::NetworkChange);
                 latest = n;
             }
             match latest {
@@ -108,6 +114,19 @@ pub async fn run(
         } else {
             0
         };
+
+        // Issue #3: after sleep or a network migration, tell iroh to
+        // re-evaluate sockets/paths/relay before dialing — a stale
+        // binding otherwise times out on every dial until app restart.
+        if network_changed {
+            let ep = app
+                .try_state::<crate::AppState>()
+                .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
+            if let Some(ep) = ep {
+                log::info!("network-change/resume — notifying iroh endpoint");
+                ep.network_change().await;
+            }
+        }
 
         let outcome = run_one_pass(&db, &app).await;
 
