@@ -20,10 +20,9 @@ Klaxon is reminders, tasks, and a private thought inbox in one app, synced devic
 
 ## Screenshots
 
-<!-- Blank-state captures; more coming. -->
 ![Desktop](docs/screenshots/desktop-main.png)
 ![Tasks board](docs/screenshots/tasks-board.png)
-![Android](docs/screenshots/phone-main.png)
+<!-- Android capture coming: docs/screenshots/phone-main.png -->
 
 ---
 
