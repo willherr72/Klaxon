@@ -5,6 +5,20 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] — 2026-08-04
+
+Hotfix on top of 0.7.2 (whose desktop build could hang at launch —
+install this instead).
+
+### Fixed
+
+- **Desktop no longer hangs at launch on unfamiliar networks.** Startup
+  blocked the main thread while iroh initialized its Windows network
+  monitor, whose WMI/COM calls can stall on a COM-STA thread that isn't
+  pumping messages — window never appeared. Latent since v0.3; sync
+  bring-up now runs fully in the background and the window shows
+  immediately.
+
 ## [0.7.2] — 2026-08-04
 
 Reliability: **sync now survives moving between networks**, release
