@@ -18,6 +18,11 @@ pub enum Nudge {
     Launch,
     Resume,
     Retry(u8),
+    /// v0.7.2 (issue #3): the OS reported an interface/connectivity
+    /// change. The loop tells iroh to re-evaluate sockets and paths
+    /// before dialing — without this, an endpoint that outlives a
+    /// network migration stays bound to the dead network forever.
+    NetworkChange,
 }
 
 /// Coalescing window: nudges arriving within this of the first are folded

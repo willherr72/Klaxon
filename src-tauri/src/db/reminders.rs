@@ -15,7 +15,6 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let state_str: String = row.get("state")?;
     let state = ReminderState::from_str(&state_str).unwrap_or(ReminderState::Pending);
     let priority_int: i32 = row.get("priority")?;
-    let dirty_int: i32 = row.get("dirty")?;
     let silent_int: i32 = row.get("silent")?;
     let tags_json: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
@@ -35,7 +34,6 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         source: row.get("source")?,
         external_id: row.get("external_id")?,
         last_synced_at: row.get("last_synced_at")?,
-        dirty: dirty_int != 0,
         silent: silent_int != 0,
         tags,
         task_lane_id: row.get("task_lane_id")?,
@@ -46,7 +44,7 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
          FROM reminders
          ORDER BY due_at ASC",
     )?;
@@ -61,7 +59,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
 pub fn next_pending(conn: &Connection) -> AppResult<Option<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
          FROM reminders
          WHERE state IN ('pending', 'snoozed') AND silent = 0
          ORDER BY COALESCE(snooze_until, due_at) ASC
@@ -105,8 +103,8 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, 1, ?9, ?10, ?11)",
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, ?9, ?10, ?11)",
         params![
             id,
             input.title.trim(),
@@ -128,7 +126,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
 pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Reminder> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
          FROM reminders WHERE id = ?1",
     )?;
     let r = stmt
@@ -206,7 +204,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
     conn.execute(
         "UPDATE reminders
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
-             sound_path = ?6, repeat_rule = ?7, updated_at = ?8, dirty = 1,
+             sound_path = ?6, repeat_rule = ?7, updated_at = ?8,
              silent = ?9, state = ?10, snooze_until = ?11, tags = ?12,
              task_lane_id = ?13
          WHERE id = ?1",
@@ -243,7 +241,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
          FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
@@ -293,8 +291,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, dirty, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, 0, ?13, ?14, ?15)
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
@@ -306,7 +304,6 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
            snooze_until = excluded.snooze_until,
            updated_at = excluded.updated_at,
            last_synced_at = excluded.last_synced_at,
-           dirty = 0,
            silent = excluded.silent,
            tags = excluded.tags,
            task_lane_id = excluded.task_lane_id",
@@ -340,7 +337,7 @@ pub fn set_state(
     let now = now_ms();
     let n = conn.execute(
         "UPDATE reminders
-         SET state = ?2, snooze_until = ?3, updated_at = ?4, dirty = 1
+         SET state = ?2, snooze_until = ?3, updated_at = ?4
          WHERE id = ?1",
         params![id, state.as_str(), snooze_until, now],
     )?;
@@ -354,7 +351,7 @@ pub fn reschedule(conn: &Connection, id: &str, new_due_at: i64) -> AppResult<()>
     let now = now_ms();
     conn.execute(
         "UPDATE reminders
-         SET due_at = ?2, state = 'pending', snooze_until = NULL, updated_at = ?3, dirty = 1
+         SET due_at = ?2, state = 'pending', snooze_until = NULL, updated_at = ?3
          WHERE id = ?1",
         params![id, new_due_at, now],
     )?;

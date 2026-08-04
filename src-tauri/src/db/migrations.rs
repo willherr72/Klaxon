@@ -224,6 +224,21 @@ const MIGRATIONS: &[&str] = &[
     // "never learned": a pre-0.7.1 peer, or no sync since this device
     // upgraded. Surfaced in Settings as version + outdated warnings.
     "ALTER TABLE peers ADD COLUMN last_app_version TEXT;",
+    // 013 — v0.7.2: the dirty flag is vestigial. Since the issue-#1 fix,
+    // every synced table is selected by updated_at/deleted_at against
+    // per-peer cursors — which IS the per-peer forwarding state (#2).
+    // Partial indexes referencing the column must go first: SQLite
+    // refuses DROP COLUMN while an index mentions it.
+    r#"
+    DROP INDEX IF EXISTS idx_reminders_dirty;
+    DROP INDEX IF EXISTS idx_tombstones_dirty;
+    DROP INDEX IF EXISTS idx_task_lanes_dirty;
+    DROP INDEX IF EXISTS idx_thoughts_dirty;
+    ALTER TABLE reminders  DROP COLUMN dirty;
+    ALTER TABLE tombstones DROP COLUMN dirty;
+    ALTER TABLE task_lanes DROP COLUMN dirty;
+    ALTER TABLE thoughts   DROP COLUMN dirty;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

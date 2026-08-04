@@ -12,6 +12,7 @@ pub mod models;
 mod nl;
 pub mod os_alarms;
 #[cfg(windows)]
+mod net_watch;
 mod power;
 mod recurrence;
 mod scheduler;
@@ -230,6 +231,10 @@ pub fn run() {
             // degrades to tick-driven catch-up, so failure is non-fatal.
             #[cfg(windows)]
             power::spawn_power_watcher(nudge_tx.clone());
+            // v0.7.2 (issue #3): interface changes → NetworkChange nudges,
+            // so a network migration no longer strands the endpoint.
+            #[cfg(windows)]
+            net_watch::spawn_net_watcher(nudge_tx.clone());
 
             let discovery_handle: Arc<Mutex<Option<sync::discovery::DiscoveryHandle>>> =
                 Arc::new(Mutex::new(None));

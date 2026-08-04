@@ -5,7 +5,7 @@
 //!
 //! Sync semantics: `updated_at` is the LWW clock and deletes write to the
 //! shared `tombstones` table. Unlike lanes, the push path does *not* filter
-//! on `dirty` — see issue #1.
+//! on any origin flag — watermarks only (issues #1/#2).
 
 use rusqlite::{params, Connection, Row};
 use serde::Serialize;
@@ -19,18 +19,16 @@ use crate::sync::types::RemoteThought;
 fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
     let tags_json: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
-    let dirty_int: i32 = row.get("dirty")?;
     Ok(Thought {
         id: row.get("id")?,
         body: row.get("body")?,
         tags,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
-        dirty: dirty_int != 0,
     })
 }
 
-const COLUMNS: &str = "id, body, tags, created_at, updated_at, dirty";
+const COLUMNS: &str = "id, body, tags, created_at, updated_at";
 
 /// A thought's tags are whatever `#tag`s appear in its body, plus any the
 /// caller passed explicitly (the Android share-target will want that).
@@ -60,8 +58,8 @@ pub fn create(conn: &Connection, input: ThoughtCreate) -> AppResult<Thought> {
     let now = now_ms();
 
     conn.execute(
-        "INSERT INTO thoughts (id, body, tags, created_at, updated_at, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?4, 1)",
+        "INSERT INTO thoughts (id, body, tags, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)",
         params![id, body, tags_json, now],
     )?;
 
@@ -94,7 +92,7 @@ pub fn list(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<Thought
 }
 
 /// Patch semantics: `None` leaves a field untouched. Always bumps
-/// `updated_at` and marks dirty.
+/// `updated_at` (the sync watermark).
 pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Thought> {
     let current = get_by_id(conn, id)?;
 
@@ -115,7 +113,7 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
 
     conn.execute(
         "UPDATE thoughts
-            SET body = ?2, tags = ?3, updated_at = ?4, dirty = 1
+            SET body = ?2, tags = ?3, updated_at = ?4
           WHERE id = ?1",
         params![id, body, tags_json, now_ms()],
     )?;
@@ -129,7 +127,7 @@ pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Th
 ///
 /// Not used by the sync-apply path: an incoming tombstone is handled by
 /// `tombstones::apply_remote`, which drops the row without writing a
-/// fresh, dirty tombstone that would echo straight back.
+/// fresh tombstone that would echo straight back.
 pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
     let n = conn.execute("DELETE FROM thoughts WHERE id = ?1", params![id])?;
     if n == 0 {
@@ -141,7 +139,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 
 /// Apply a thought that arrived over sync. Last-write-wins by
 /// `updated_at`; older incoming rows are ignored. Returns whether anything
-/// changed. Remote rows land with `dirty = 0`.
+/// changed.
 pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
     let existing: Option<i64> = conn
         .query_row(
@@ -160,13 +158,12 @@ pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
     let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into());
 
     conn.execute(
-        "INSERT INTO thoughts (id, body, tags, created_at, updated_at, dirty)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)
+        "INSERT INTO thoughts (id, body, tags, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
             body = excluded.body,
             tags = excluded.tags,
-            updated_at = excluded.updated_at,
-            dirty = 0",
+            updated_at = excluded.updated_at",
         params![t.id, truncate_body(&t.body), tags_json, t.created_at, t.updated_at],
     )?;
     Ok(true)
@@ -174,7 +171,7 @@ pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
 
 /// Rows to push to a peer, by the per-peer high-water mark.
 ///
-/// Deliberately does NOT filter on `dirty`, matching `reminders`. Lanes
+/// Selection is by watermark alone, matching `reminders`. Lanes
 /// and tombstones do filter, which is why a row learned from one peer
 /// never reaches a second — issue #1. The cost here is that a row echoes
 /// back once to the peer it came from, which is idempotent under LWW.
@@ -227,7 +224,7 @@ pub fn search(
     // of normalized lowercase strings, so an exact element match via
     // json_each is precise — no LIKE substring false positives.
     let mut stmt = conn.prepare(
-        "SELECT t.id, t.body, t.tags, t.created_at, t.updated_at, t.dirty,
+        "SELECT t.id, t.body, t.tags, t.created_at, t.updated_at,
                 snippet(thoughts_fts, 0, '<mark>', '</mark>', '…', 12) AS snip
            FROM thoughts_fts
            JOIN thoughts t ON t.rowid = thoughts_fts.rowid
@@ -323,7 +320,6 @@ mod tests {
             vec!["work".to_string(), "idea".to_string()],
             "tags should be normalized and deduped"
         );
-        assert!(made.dirty);
 
         let fetched = get_by_id(&conn, &made.id).unwrap();
         assert_eq!(fetched.body, made.body);
@@ -635,14 +631,13 @@ mod tests {
     }
 
     #[test]
-    fn updated_since_ignores_the_dirty_flag() {
+    fn updated_since_forwards_peer_received_rows() {
         let conn = test_conn();
-        // A row received from a peer lands with dirty = 0. It must still be
-        // forwardable to a third device — see issue #1.
+        // A row received from a peer must still be forwardable to a third
+        // device — watermark selection, no origin bookkeeping (issues #1/#2).
         apply_remote(&conn, &remote("r1", "from peer A", 100)).unwrap();
         let pending = updated_since(&conn, 50).unwrap();
         assert_eq!(pending.len(), 1, "clean rows must still be pushed onward");
-        assert!(!pending[0].dirty);
 
         assert!(
             updated_since(&conn, 100).unwrap().is_empty(),

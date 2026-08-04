@@ -116,7 +116,7 @@ mod tests {
         let conn = crate::db::open(&path).unwrap();
         let got = crate::db::thoughts::get_by_id(&conn, &id).unwrap();
         assert_eq!(got.body, "an idea from the phone");
-        assert!(got.dirty, "must be dirty so the next sync pushes it");
+        assert!(got.updated_at > 0, "updated_at set — the watermark the next sync selects on");
         std::fs::remove_file(&path).ok();
     }
 

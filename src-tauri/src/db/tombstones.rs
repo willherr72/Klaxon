@@ -7,13 +7,12 @@ use crate::error::AppResult;
 pub struct Tombstone {
     pub id: String,
     pub deleted_at: i64,
-    pub dirty: bool,
 }
 
 pub fn create(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
     conn.execute(
-        "INSERT INTO tombstones (id, deleted_at, dirty) VALUES (?1, ?2, 1)
-         ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at, dirty = 1",
+        "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at",
         params![id, deleted_at],
     )?;
     Ok(())
@@ -21,15 +20,14 @@ pub fn create(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
 
 /// Tombstones to push to a peer, by the per-peer high-water mark.
 ///
-/// Deliberately does NOT filter on `dirty` (issue #1): rows received from
-/// a peer land with `dirty = 0`, and filtering on it meant a delete
+/// Selection is by watermark alone (issues #1/#2): a delete
 /// learned from one peer never forwarded to a second — at three devices,
 /// a row deleted on the phone stayed alive on the desktop forever. The
 /// cost is one idempotent echo back to the sender, same as reminders
 /// and thoughts.
 pub fn deleted_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombstone>> {
     let mut stmt = conn.prepare(
-        "SELECT id, deleted_at, dirty FROM tombstones
+        "SELECT id, deleted_at FROM tombstones
          WHERE deleted_at > ?1
          ORDER BY deleted_at ASC",
     )?;
@@ -37,10 +35,6 @@ pub fn deleted_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombston
         Ok(Tombstone {
             id: r.get(0)?,
             deleted_at: r.get(1)?,
-            dirty: {
-                let n: i32 = r.get(2)?;
-                n != 0
-            },
         })
     })?;
     let mut out = Vec::new();
@@ -53,7 +47,7 @@ pub fn deleted_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombston
 pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
     // Remote tombstones come in clean (we received them, no need to push back).
     conn.execute(
-        "INSERT INTO tombstones (id, deleted_at, dirty) VALUES (?1, ?2, 0)
+        "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
          ON CONFLICT(id) DO UPDATE SET
            deleted_at = MAX(tombstones.deleted_at, excluded.deleted_at)",
         params![id, deleted_at],
@@ -83,7 +77,7 @@ mod tests {
     }
 
     /// Issue #1 regression: a tombstone received from peer A lands clean
-    /// (dirty = 0) but must still be pushed onward to peer B — otherwise a
+    /// but must still be pushed onward to peer B — otherwise a
     /// row deleted on the phone stays alive on a third device forever.
     #[test]
     fn received_tombstones_still_forward_to_other_peers() {
@@ -92,7 +86,6 @@ mod tests {
 
         let pending = deleted_since(&conn, 50).unwrap();
         assert_eq!(pending.len(), 1, "clean tombstones must still forward");
-        assert!(!pending[0].dirty);
 
         assert!(
             deleted_since(&conn, 100).unwrap().is_empty(),

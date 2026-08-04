@@ -351,7 +351,7 @@ pub fn delete_lane(
         let now = now_ms();
         let moved = conn.execute(
             "UPDATE reminders
-                SET task_lane_id = ?2, updated_at = ?3, dirty = 1
+                SET task_lane_id = ?2, updated_at = ?3
               WHERE task_lane_id = ?1",
             rusqlite::params![id, default_id, now],
         )?;
