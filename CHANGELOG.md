@@ -5,6 +5,18 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.4] — 2026-08-08
+
+### Fixed
+
+- **Sync could silently stop after a network change** (the second face
+  of the v0.7.3 WMI bug). The sync loop awaited iroh's network-change
+  notification inline; on networks where Windows' WMI stalls, that call
+  never returned and the loop sat wedged — no syncs, no errors, until
+  an app restart. The notification is now detached with a 10-second
+  watchdog: a wedged scan costs one warning line, and syncing continues
+  on the old paths until the network monitor recovers.
+
 ## [0.7.3] — 2026-08-04
 
 Hotfix on top of 0.7.2 (whose desktop build could hang at launch —
