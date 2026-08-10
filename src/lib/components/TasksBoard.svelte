@@ -243,6 +243,7 @@
       type: "klaxon-lane",
       flipDurationMs: 200,
       dragDisabled: !!renamingLaneId,
+      delayTouchStart: 200,
     }}
     onconsider={onLaneConsider}
     onfinalize={onLaneFinalize}
@@ -297,6 +298,10 @@
             type: "klaxon-card",
             flipDurationMs: 150,
             dropTargetStyle: {},
+            /* Without a touch delay the zone preventDefaults touchstart
+               on every card, so a finger can never scroll .cards — hold
+               200ms to drag, move sooner to scroll. Mouse is unaffected. */
+            delayTouchStart: 200,
           }}
           onconsider={onCardConsider(lane.id)}
           onfinalize={onCardFinalize(lane.id)}
@@ -405,11 +410,16 @@
   }
   /* The dndzone wrapper that contains the lanes themselves. Sits as
    * one flex child of .board so the existing horizontal-scroll layout
-   * still works, and the add-lane-column stays outside the zone. */
+   * still works, and the add-lane-column stays outside the zone.
+   * Must stretch to the board's full height: the lanes cap themselves
+   * with max-height: 100%, and a percentage only resolves against a
+   * definite parent height. Left at flex-start (auto height), lanes
+   * grow unbounded and the board clips them with no way to scroll. */
   .lanes-zone {
     display: flex;
     gap: 12px;
     align-items: flex-start;
+    align-self: stretch;
   }
   .lane {
     flex: 0 0 280px;
