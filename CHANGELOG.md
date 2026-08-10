@@ -5,6 +5,19 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] — 2026-08-10
+
+### Fixed
+
+- **Tasks board lanes scroll again when taller than the window.** Since
+  v0.4's touch-drag rework, a lane with more cards than fit on screen
+  grew past the board's clipped edge — everything below the fold was
+  unreachable on both platforms. Lanes now cap at the board's height
+  and the card list scrolls.
+- **A finger can scroll the card list.** The drag zones used to claim
+  every touch instantly. Dragging a card or lane now takes a brief
+  hold (200 ms); a quicker swipe scrolls. Mouse drag is unchanged.
+
 ## [0.7.4] — 2026-08-08
 
 ### Fixed
