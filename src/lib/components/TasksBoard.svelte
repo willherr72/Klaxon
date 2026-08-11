@@ -74,7 +74,14 @@
       }
     }
     for (const k in next) {
-      next[k].sort((a, b) => b.updated_at - a.updated_at);
+      // Ascending by manual position; nulls sink (defensive only —
+      // migration 014 backfills every laned task).
+      next[k].sort(
+        (a, b) =>
+          (a.task_sort_key ?? Number.MAX_VALUE) -
+            (b.task_sort_key ?? Number.MAX_VALUE) ||
+          b.updated_at - a.updated_at,
+      );
     }
     cardsByLane = next;
   });
@@ -115,9 +122,16 @@
       // alone is enough.
       if (e.detail.info.trigger === TRIGGERS.DROPPED_INTO_ZONE) {
         const droppedId = e.detail.info.id;
+        const items = e.detail.items;
+        const idx = items.findIndex((r) => r.id === droppedId);
+        // Neighbors in the finalized visual order; the backend recomputes
+        // their keys fresh, so this is a position hint, not float math.
+        const beforeId = idx > 0 ? items[idx - 1].id : null;
+        const afterId =
+          idx >= 0 && idx < items.length - 1 ? items[idx + 1].id : null;
         api
-          .setTaskLane(droppedId, laneId)
-          .catch((err) => console.error("setTaskLane failed", err));
+          .placeTask(droppedId, laneId, beforeId, afterId)
+          .catch((err) => console.error("placeTask failed", err));
       }
     };
   }
