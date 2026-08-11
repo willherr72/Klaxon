@@ -64,27 +64,33 @@ pub fn place(
     before_id: Option<&str>,
     after_id: Option<&str>,
 ) -> AppResult<Reminder> {
-    fn neighbor_key(conn: &Connection, lane_id: &str, nid: Option<&str>) -> Option<f64> {
-        let nid = nid?;
-        conn.query_row(
-            "SELECT task_sort_key FROM reminders
-             WHERE id = ?1 AND task_lane_id = ?2",
-            params![nid, lane_id],
-            |r| r.get::<_, Option<f64>>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .flatten()
+    // A missing/foreign-lane/NULL-key neighbor maps to None; real DB
+    // errors must propagate, or place() silently misfiles the card at a
+    // lane edge on e.g. an I/O failure.
+    fn neighbor_key(
+        conn: &Connection,
+        lane_id: &str,
+        nid: Option<&str>,
+    ) -> AppResult<Option<f64>> {
+        let Some(nid) = nid else { return Ok(None) };
+        let key: Option<Option<f64>> = conn
+            .query_row(
+                "SELECT task_sort_key FROM reminders
+                 WHERE id = ?1 AND task_lane_id = ?2",
+                params![nid, lane_id],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()?;
+        Ok(key.flatten())
     }
 
-    let mut before = neighbor_key(conn, lane_id, before_id);
-    let mut after = neighbor_key(conn, lane_id, after_id);
+    let mut before = neighbor_key(conn, lane_id, before_id)?;
+    let mut after = neighbor_key(conn, lane_id, after_id)?;
     if let (Some(b), Some(a)) = (before, after) {
         if a - b < MIN_KEY_GAP {
             renumber_lane(conn, lane_id)?;
-            before = neighbor_key(conn, lane_id, before_id);
-            after = neighbor_key(conn, lane_id, after_id);
+            before = neighbor_key(conn, lane_id, before_id)?;
+            after = neighbor_key(conn, lane_id, after_id)?;
         }
     }
     let key = match (before, after) {
@@ -714,7 +720,8 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(order, vec![t3.id.clone(), t1.id.clone(), t2.id.clone()]);
-        // And the keys are healthy again (gap ≥ MIN_KEY_GAP).
-        assert!(placed.task_sort_key.is_some());
+        // And the keys are healthy again: the renumber gave t3/t2 clean
+        // strides (1024/2048) and the drop landed exactly between them.
+        assert_eq!(placed.task_sort_key, Some(1536.0));
     }
 }
