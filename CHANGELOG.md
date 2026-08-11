@@ -5,6 +5,26 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — 2026-08-11
+
+Two follow-ups from the 0.8.0 review. Sync-compatible with 0.8.0 — no
+wire-format change, so devices can update independently this time.
+
+### Fixed
+
+- **Dragging a lane no longer flickers** (#4). Reordering a lane let the
+  board redraw from stale state before the new order was saved, so the
+  lane snapped back to its old slot for an instant and then jumped
+  forward. Cards got this fix in 0.8.0; lanes now behave the same way.
+- **A migration interrupted part-way can no longer break the app** (#5).
+  Each schema migration and the record of having applied it are now
+  written together, so losing power (or having Android kill the app)
+  mid-upgrade rolls the change back cleanly and the next launch retries
+  it. Previously that gap could leave the database in a state the app
+  refused to open, recoverable only from a backup. No release is known
+  to have hit this — it's a latent hazard being closed before the next
+  schema change lands.
+
 ## [0.8.0] — 2026-08-11
 
 **Update both devices together** — the sync wire format changed; a

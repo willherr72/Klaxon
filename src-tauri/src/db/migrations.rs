@@ -263,6 +263,28 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
+    run_list(conn, MIGRATIONS)
+}
+
+/// Apply every migration newer than the recorded schema version.
+///
+/// Split from `run` so tests can drive it with a synthetic list — the real
+/// `MIGRATIONS` are append-only and can't express "this one fails".
+///
+/// Each migration's SQL and its `schema_version` row commit together. They
+/// used to be two independent statements, so a process death in between
+/// (power loss, OOM kill, Android reaping a background sync) left the
+/// schema changed but the version unrecorded — the next launch re-ran the
+/// same migration and any `ALTER TABLE ... ADD COLUMN` in it failed
+/// permanently with "duplicate column name", with no in-app recovery.
+/// SQLite has transactional DDL, so one transaction closes that window.
+///
+/// Consequence for future migrations: their SQL now runs inside an open
+/// transaction, so it must not contain `BEGIN`/`COMMIT` or `VACUUM`, and
+/// a `PRAGMA` that only takes effect outside one (`foreign_keys` is the
+/// realistic trap — a 12-step table rebuild would need it) will silently
+/// no-op rather than error. None of the existing entries do this.
+fn run_list(conn: &Connection, migrations: &[&str]) -> AppResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
     )?;
@@ -275,17 +297,23 @@ pub fn run(conn: &Connection) -> AppResult<()> {
         )
         .unwrap_or(0);
 
-    for (idx, sql) in MIGRATIONS.iter().enumerate() {
+    for (idx, sql) in migrations.iter().enumerate() {
         let version = (idx + 1) as i64;
         if version <= current {
             continue;
         }
         log::info!("applying migration {version}");
-        conn.execute_batch(sql)?;
-        conn.execute(
+        // `unchecked_transaction` because callers hold only `&Connection`
+        // (the app shares one behind a mutex). Dropping it without a commit
+        // rolls back, so an error below leaves neither the partial schema
+        // change nor the version row.
+        let tx = conn.unchecked_transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
             "INSERT INTO schema_version(version) VALUES (?1)",
             [version],
         )?;
+        tx.commit()?;
     }
 
     Ok(())
@@ -297,6 +325,90 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         super::run(&conn).unwrap();
         conn
+    }
+
+    /// Issue #5: a migration and its `schema_version` row must land as one
+    /// atomic unit. When the SQL fails part-way, neither the partial schema
+    /// change nor the version record may survive — otherwise the next
+    /// launch re-runs the same migration and an `ALTER TABLE ... ADD
+    /// COLUMN` inside it fails forever with "duplicate column name",
+    /// leaving an app that cannot open its own database.
+    #[test]
+    fn a_failed_migration_rolls_back_and_can_be_retried() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let good = "CREATE TABLE kept (id TEXT PRIMARY KEY);";
+        // Valid DDL followed by a statement that fails: the shape of a
+        // migration dying half-way through.
+        let broken = "CREATE TABLE later (id TEXT PRIMARY KEY);
+                      INSERT INTO no_such_table (id) VALUES ('x');";
+
+        assert!(
+            super::run_list(&conn, &[good, broken]).is_err(),
+            "the broken migration must surface its error"
+        );
+
+        let table_count = |name: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let recorded = |c: &rusqlite::Connection| -> i64 {
+            c.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        assert_eq!(table_count("later"), 0, "failed migration's DDL must roll back");
+        assert_eq!(recorded(&conn), 1, "only the migration that fully applied is recorded");
+        assert_eq!(table_count("kept"), 1, "rollback is scoped to the failing migration");
+
+        // The payoff: a corrected build retries cleanly instead of hitting
+        // "table already exists" on the half-applied statement.
+        let fixed = "CREATE TABLE later (id TEXT PRIMARY KEY);";
+        super::run_list(&conn, &[good, fixed]).unwrap();
+        assert_eq!(table_count("later"), 1);
+        assert_eq!(recorded(&conn), 2, "retry records the version it applied");
+    }
+
+    /// The other half of issue #5, and the half the test above cannot
+    /// see: the version row must commit WITH the schema change, not merely
+    /// after it. An implementation that committed the DDL and then wrote
+    /// the version separately would satisfy every assertion above while
+    /// still leaving the crash-in-the-gap window wide open. Force the
+    /// version insert itself to fail and require the already-successful
+    /// DDL to roll back with it.
+    #[test]
+    fn the_version_row_commits_with_its_migration() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             CREATE TRIGGER block_v1 BEFORE INSERT ON schema_version
+             WHEN new.version = 1 BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            super::run_list(&conn, &["CREATE TABLE t (id TEXT PRIMARY KEY);"]).is_err(),
+            "the blocked version insert must surface its error"
+        );
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 't'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tables, 0,
+            "DDL must roll back when recording its version fails"
+        );
     }
 
     fn fts_hits(conn: &rusqlite::Connection, term: &str) -> i64 {
