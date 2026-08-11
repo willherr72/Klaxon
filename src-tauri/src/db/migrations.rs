@@ -239,6 +239,27 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE task_lanes DROP COLUMN dirty;
     ALTER TABLE thoughts   DROP COLUMN dirty;
     "#,
+    // 014 — v0.8: persistent manual card order on the Tasks board.
+    //
+    // Lanes render ascending by task_sort_key (smallest on top). Drops
+    // write a midpoint between the new neighbors, so one row changes
+    // per drag. Backfill follows the pre-0.8 visible order
+    // (updated_at DESC) so the board looks identical after upgrade.
+    // NULL on non-task rows.
+    r#"
+    ALTER TABLE reminders ADD COLUMN task_sort_key REAL;
+
+    UPDATE reminders SET task_sort_key = (
+        SELECT rn * 1024.0 FROM (
+            SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY task_lane_id
+                ORDER BY updated_at DESC, id
+            ) AS rn
+            FROM reminders WHERE task_lane_id IS NOT NULL
+        ) ranked WHERE ranked.id = reminders.id
+    )
+    WHERE task_lane_id IS NOT NULL;
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -350,5 +371,65 @@ mod tests {
         conn.execute("DELETE FROM thoughts WHERE id = 't1'", []).unwrap();
 
         assert_eq!(fts_hits(&conn, "bread"), 0, "delete must clear the index row");
+    }
+
+    /// Migration 014: tasks get gapped sort keys per lane, assigned in
+    /// the pre-migration visible order (updated_at DESC) — the board
+    /// must not visibly reshuffle on upgrade. Runs all migrations
+    /// EXCEPT the last, seeds rows, then applies the last one.
+    #[test]
+    fn migration_014_backfills_sort_keys_in_visible_order() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
+        )
+        .unwrap();
+        for (idx, sql) in super::MIGRATIONS
+            .iter()
+            .enumerate()
+            .take(super::MIGRATIONS.len() - 1)
+        {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_version(version) VALUES (?1)",
+                [(idx + 1) as i64],
+            )
+            .unwrap();
+        }
+        // Three tasks in the seed Todo lane. r1 is newest → today it
+        // renders on top → it must get the smallest key.
+        for (id, up) in [("r1", 3000), ("r2", 2000), ("r3", 1000)] {
+            conn.execute(
+                "INSERT INTO reminders
+                 (id, title, due_at, priority, state, created_at, updated_at, silent, tags, task_lane_id)
+                 VALUES (?1, 'task', 0, 1, 'pending', 1, ?2, 1, '[]',
+                         '00000000-0000-4000-8000-000000000001')",
+                rusqlite::params![id, up],
+            )
+            .unwrap();
+        }
+        // A non-task reminder must stay NULL.
+        conn.execute(
+            "INSERT INTO reminders
+             (id, title, due_at, priority, state, created_at, updated_at, silent, tags)
+             VALUES ('ring', 'rings', 0, 1, 'pending', 1, 1, 0, '[]')",
+            [],
+        )
+        .unwrap();
+
+        super::run(&conn).unwrap();
+
+        let key = |id: &str| -> Option<f64> {
+            conn.query_row(
+                "SELECT task_sort_key FROM reminders WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(key("r1"), Some(1024.0));
+        assert_eq!(key("r2"), Some(2048.0));
+        assert_eq!(key("r3"), Some(3072.0));
+        assert_eq!(key("ring"), None, "non-tasks keep NULL");
     }
 }
