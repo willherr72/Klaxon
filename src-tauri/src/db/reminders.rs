@@ -27,6 +27,85 @@ pub(crate) fn top_of_lane_key(conn: &Connection, lane_id: &str) -> AppResult<f64
     })
 }
 
+/// Rewrite a lane's keys to clean 1024·n in current visual order.
+/// Bumps updated_at on every row it touches (LWW churn — rare, accepted;
+/// see the spec's sync section). Wrapped in a transaction so a crash
+/// can't leave the lane half-renumbered.
+fn renumber_lane(conn: &Connection, lane_id: &str) -> AppResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM reminders WHERE task_lane_id = ?1
+         ORDER BY COALESCE(task_sort_key, 9e18) ASC, updated_at DESC",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(params![lane_id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let tx = conn.unchecked_transaction()?;
+    let now = now_ms();
+    for (i, rid) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
+            params![rid, ((i + 1) as f64) * KEY_STRIDE, now],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Persist a board drop. `before_id` is the card visually ABOVE the drop
+/// slot, `after_id` the card BELOW; either may be None at a lane edge.
+/// Neighbors are resolved fresh from the DB (and ignored if they've left
+/// the lane) so a stale frontend can't corrupt ordering. Exactly one row
+/// is written — unless the neighbor gap has collapsed below MIN_KEY_GAP,
+/// in which case the lane renumbers first.
+pub fn place(
+    conn: &Connection,
+    id: &str,
+    lane_id: &str,
+    before_id: Option<&str>,
+    after_id: Option<&str>,
+) -> AppResult<Reminder> {
+    fn neighbor_key(conn: &Connection, lane_id: &str, nid: Option<&str>) -> Option<f64> {
+        let nid = nid?;
+        conn.query_row(
+            "SELECT task_sort_key FROM reminders
+             WHERE id = ?1 AND task_lane_id = ?2",
+            params![nid, lane_id],
+            |r| r.get::<_, Option<f64>>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten()
+    }
+
+    let mut before = neighbor_key(conn, lane_id, before_id);
+    let mut after = neighbor_key(conn, lane_id, after_id);
+    if let (Some(b), Some(a)) = (before, after) {
+        if a - b < MIN_KEY_GAP {
+            renumber_lane(conn, lane_id)?;
+            before = neighbor_key(conn, lane_id, before_id);
+            after = neighbor_key(conn, lane_id, after_id);
+        }
+    }
+    let key = match (before, after) {
+        (Some(b), Some(a)) => (b + a) / 2.0,
+        (None, Some(a)) => a - KEY_STRIDE,
+        (Some(b), None) => b + KEY_STRIDE,
+        (None, None) => KEY_STRIDE,
+    };
+
+    let n = conn.execute(
+        "UPDATE reminders
+         SET task_lane_id = ?2, task_sort_key = ?3, updated_at = ?4
+         WHERE id = ?1",
+        params![id, lane_id, key, now_ms()],
+    )?;
+    if n == 0 {
+        return Err(AppError::NotFound(format!("reminder {id}")));
+    }
+    get_by_id(conn, id)
+}
+
 fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
     let repeat_rule = repeat_rule_json
@@ -403,6 +482,7 @@ pub fn reschedule(conn: &Connection, id: &str, new_due_at: i64) -> AppResult<()>
 mod tests {
     use super::{create, update};
     use crate::models::{Priority, ReminderCreate, ReminderUpdate};
+    use rusqlite::params;
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -548,5 +628,93 @@ mod tests {
         assert!(super::apply_remote(&conn, &remote).unwrap());
         let got = super::get_by_id(&conn, &t.id).unwrap();
         assert_eq!(got.task_sort_key, Some(512.5));
+    }
+
+    /// Drop between two neighbors → midpoint key; edges get stride
+    /// offsets. The three creates stack t3 (top, key −1024), t2 (0),
+    /// t1 (1024).
+    #[test]
+    fn place_computes_midpoints_and_edge_keys() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("one")).unwrap();   // 1024
+        let t2 = create(&conn, mk_task("two")).unwrap();   // 0
+        let t3 = create(&conn, mk_task("three")).unwrap(); // -1024
+        let lane = t1.task_lane_id.clone().unwrap();
+
+        // Drag t1 between t3 (above) and t2 (below): (−1024 + 0)/2.
+        let placed = super::place(&conn, &t1.id, &lane, Some(&t3.id), Some(&t2.id)).unwrap();
+        assert_eq!(placed.task_sort_key, Some(-512.0));
+
+        // Drag t2 to the very top (only an `after` neighbor): −1024 − 1024.
+        let top = super::place(&conn, &t2.id, &lane, None, Some(&t3.id)).unwrap();
+        assert_eq!(top.task_sort_key, Some(-2048.0));
+
+        // Drag t2 to the very bottom (only a `before` neighbor). t1's
+        // key is −512 after the first placement, so bottom = −512 + 1024.
+        let bottom = super::place(&conn, &t2.id, &lane, Some(&t1.id), None).unwrap();
+        assert_eq!(bottom.task_sort_key, Some(512.0));
+    }
+
+    /// Cross-lane drop into an empty lane: no neighbors → KEY_STRIDE,
+    /// and the lane assignment persists in the same write.
+    #[test]
+    fn place_moves_across_lanes() {
+        let conn = test_conn();
+        let t = create(&conn, mk_task("wanderer")).unwrap();
+        let now = crate::models::now_ms();
+        let lane = crate::db::task_lanes::Lane {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "target".into(),
+            order_index: 60,
+            is_default: false,
+            created_at: now,
+            updated_at: now,
+        };
+        crate::db::task_lanes::insert(&conn, &lane).unwrap();
+
+        let placed = super::place(&conn, &t.id, &lane.id, None, None).unwrap();
+        assert_eq!(placed.task_lane_id.as_deref(), Some(lane.id.as_str()));
+        assert_eq!(placed.task_sort_key, Some(1024.0));
+    }
+
+    /// Exhausted precision between neighbors triggers a lane renumber,
+    /// after which the midpoint is representable again and total order
+    /// is preserved.
+    #[test]
+    fn place_rebalances_when_neighbor_gap_collapses() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("a")).unwrap();
+        let t2 = create(&conn, mk_task("b")).unwrap();
+        let t3 = create(&conn, mk_task("c")).unwrap();
+        let lane = t1.task_lane_id.clone().unwrap();
+        // Force t3 and t2 into a sub-MIN_KEY_GAP embrace at the top.
+        conn.execute(
+            "UPDATE reminders SET task_sort_key = 100.0 WHERE id = ?1",
+            params![t3.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE reminders SET task_sort_key = 100.0000000001 WHERE id = ?1",
+            params![t2.id],
+        )
+        .unwrap();
+
+        let placed = super::place(&conn, &t1.id, &lane, Some(&t3.id), Some(&t2.id)).unwrap();
+
+        // Order must be t3, t1, t2 — read it back by key.
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM reminders WHERE task_lane_id = ?1
+                 ORDER BY task_sort_key ASC",
+            )
+            .unwrap();
+        let order: Vec<String> = stmt
+            .query_map(params![lane], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(order, vec![t3.id.clone(), t1.id.clone(), t2.id.clone()]);
+        // And the keys are healthy again (gap ≥ MIN_KEY_GAP).
+        assert!(placed.task_sort_key.is_some());
     }
 }
