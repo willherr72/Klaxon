@@ -484,6 +484,44 @@ pub fn reschedule(conn: &Connection, id: &str, new_due_at: i64) -> AppResult<()>
     Ok(())
 }
 
+/// One-shot "sort by stars": stable rewrite of a lane's keys, highest
+/// priority first, ties keeping their current visual order. Returns the
+/// number of rows rewritten. An already-sorted lane returns 0 with no
+/// writes at all — repeat presses cost nothing and cause no sync churn.
+pub fn sort_lane_by_stars(conn: &Connection, lane_id: &str) -> AppResult<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, priority, task_sort_key FROM reminders
+         WHERE task_lane_id = ?1
+         ORDER BY COALESCE(task_sort_key, 9e18) ASC, updated_at DESC",
+    )?;
+    let mut rows: Vec<(String, i32, Option<f64>)> = stmt
+        .query_map(params![lane_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+
+    if rows.windows(2).all(|w| w[0].1 >= w[1].1) {
+        return Ok(0); // already star-sorted top-to-bottom
+    }
+    // Vec::sort_by_key is stable — equal priorities keep drag order.
+    rows.sort_by_key(|(_, prio, _)| std::cmp::Reverse(*prio));
+
+    let tx = conn.unchecked_transaction()?;
+    let now = now_ms();
+    let mut changed = 0usize;
+    for (i, (rid, _, old_key)) in rows.iter().enumerate() {
+        let target = ((i + 1) as f64) * KEY_STRIDE;
+        if *old_key == Some(target) {
+            continue;
+        }
+        tx.execute(
+            "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
+            params![rid, target, now],
+        )?;
+        changed += 1;
+    }
+    tx.commit()?;
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{create, update};
@@ -723,5 +761,47 @@ mod tests {
         // And the keys are healthy again: the renumber gave t3/t2 clean
         // strides (1024/2048) and the drop landed exactly between them.
         assert_eq!(placed.task_sort_key, Some(1536.0));
+    }
+
+    /// Star sort is stable (drag order kept within a tier), rewrites
+    /// only rows whose key changes, and is a no-op on a sorted lane.
+    #[test]
+    fn sort_lane_by_stars_is_stable_and_skips_noops() {
+        let conn = test_conn();
+        // Visual order (top→bottom) after creates: low, high#1, normal, high#2.
+        let mk_p = |title: &str, p: Priority| ReminderCreate {
+            priority: p,
+            ..mk_task(title)
+        };
+        let hi2 = create(&conn, mk_p("high two", Priority::High)).unwrap();
+        let norm = create(&conn, mk_p("normal", Priority::Normal)).unwrap();
+        let hi1 = create(&conn, mk_p("high one", Priority::High)).unwrap();
+        let low = create(&conn, mk_p("low", Priority::Low)).unwrap();
+        let lane = low.task_lane_id.clone().unwrap();
+        // Creates stack upward: current order is low, hi1, norm, hi2.
+
+        let changed = super::sort_lane_by_stars(&conn, &lane).unwrap();
+        assert!(changed > 0);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM reminders WHERE task_lane_id = ?1
+                 ORDER BY task_sort_key ASC",
+            )
+            .unwrap();
+        let order: Vec<String> = stmt
+            .query_map(params![lane], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // Stable: hi1 was above hi2 before the sort, so it stays above.
+        assert_eq!(
+            order,
+            vec![hi1.id.clone(), hi2.id.clone(), norm.id.clone(), low.id.clone()]
+        );
+
+        // Second invocation: already sorted → zero writes.
+        let changed_again = super::sort_lane_by_stars(&conn, &lane).unwrap();
+        assert_eq!(changed_again, 0);
     }
 }
