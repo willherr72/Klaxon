@@ -256,6 +256,12 @@
       .updateReminder(card.id, { priority: p })
       .catch((err) => console.error("set priority failed", err));
   }
+
+  function sortLane(laneId: string) {
+    api
+      .sortLaneByStars(laneId)
+      .catch((err) => console.error("sortLaneByStars failed", err));
+  }
 </script>
 
 <div class="board">
@@ -304,6 +310,11 @@
               >default</span>
             {/if}
             <span class="lane-count mono-caps-faint">{laneCardCount(lane.id)}</span>
+            <button
+              class="lane-sort"
+              onclick={() => sortLane(lane.id)}
+              title="Sort by stars — ★★★ first; ties keep their order"
+            >★↓</button>
             {#if !lane.is_default}
               <button
                 class="lane-delete"
@@ -537,6 +548,19 @@
   }
   .lane-delete:hover {
     color: var(--signal-high);
+  }
+  .lane-sort {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    letter-spacing: -0.05em;
+  }
+  .lane-sort:hover {
+    color: var(--klaxon);
   }
 
   .cards {
