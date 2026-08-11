@@ -4,6 +4,7 @@
   import { dndzone, TRIGGERS } from "svelte-dnd-action";
   import { api, type Lane } from "../api";
   import type { Reminder } from "../types";
+  import { starCount, priorityForStars } from "../stars";
   import ConfirmModal from "./ConfirmModal.svelte";
   import EmptyState from "./EmptyState.svelte";
 
@@ -247,6 +248,14 @@
     ];
     return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")}`;
   }
+
+  function setCardStars(card: Reminder, n: number) {
+    const p = priorityForStars(n);
+    if (p === card.priority) return;
+    api
+      .updateReminder(card.id, { priority: p })
+      .catch((err) => console.error("set priority failed", err));
+  }
 </script>
 
 <div class="board">
@@ -328,6 +337,7 @@
               tabindex="0"
               onclick={() => onSelect(card)}
               onkeydown={(e) => {
+                if (e.target !== e.currentTarget) return;
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   onSelect(card);
@@ -338,18 +348,33 @@
               {#if card.description}
                 <div class="card-desc">{card.description}</div>
               {/if}
-              {#if (card.tags && card.tags.length > 0) || due}
-                <div class="card-meta">
-                  {#if due}
-                    <span class="card-due mono-caps-faint">{due}</span>
-                  {/if}
-                  {#if card.tags}
-                    {#each card.tags as tag (tag)}
-                      <span class="card-tag">#{tag}</span>
-                    {/each}
-                  {/if}
+              <div class="card-meta">
+                <!-- Buttons are exempt from drag-start (the dnd zone's
+                     nested-input guard checks `target.value`), so stars
+                     are tappable without fighting hold-to-drag. -->
+                <div class="card-stars" role="group" aria-label="Priority">
+                  {#each [1, 2, 3] as n (n)}
+                    <button
+                      class="star"
+                      class:lit={n <= starCount(card.priority)}
+                      class:high={card.priority === "high"}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        setCardStars(card, n);
+                      }}
+                      title={`Set priority: ${priorityForStars(n)}`}
+                    >{n <= starCount(card.priority) ? "★" : "☆"}</button>
+                  {/each}
                 </div>
-              {/if}
+                {#if due}
+                  <span class="card-due mono-caps-faint">{due}</span>
+                {/if}
+                {#if card.tags}
+                  {#each card.tags as tag (tag)}
+                    <span class="card-tag">#{tag}</span>
+                  {/each}
+                {/if}
+              </div>
             </div>
           {/each}
         </div>
@@ -582,6 +607,28 @@
     color: var(--text-muted);
     border: 1px solid var(--border);
     padding: 2px 6px;
+  }
+  .card-stars {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .star {
+    background: transparent;
+    border: none;
+    padding: 0 1px;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-faint);
+  }
+  .star.lit {
+    color: var(--text-muted);
+  }
+  .star.lit.high {
+    color: var(--klaxon);
+  }
+  .star:hover {
+    color: var(--klaxon);
   }
 
   .lane-add {
