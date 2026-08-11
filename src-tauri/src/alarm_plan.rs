@@ -168,6 +168,7 @@ mod tests {
             silent: false,
             tags: vec![],
             task_lane_id: None,
+            task_sort_key: None,
         }
     }
 

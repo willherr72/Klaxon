@@ -7,6 +7,26 @@ use crate::models::{
 };
 use crate::sync::types::RemoteReminder;
 
+/// Gap between adjacent sort keys on insert/renumber. Midpoint inserts
+/// halve the local gap; ~50 drops into the same slot before a renumber.
+pub const KEY_STRIDE: f64 = 1024.0;
+/// Below this neighbor gap a midpoint stops being representable enough —
+/// renumber the lane before placing.
+pub const MIN_KEY_GAP: f64 = 1e-6;
+
+/// Key that places a task above everything currently in `lane_id`.
+pub(crate) fn top_of_lane_key(conn: &Connection, lane_id: &str) -> AppResult<f64> {
+    let min: Option<f64> = conn.query_row(
+        "SELECT MIN(task_sort_key) FROM reminders WHERE task_lane_id = ?1",
+        params![lane_id],
+        |r| r.get(0),
+    )?;
+    Ok(match min {
+        Some(m) => m - KEY_STRIDE,
+        None => KEY_STRIDE,
+    })
+}
+
 fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
     let repeat_rule = repeat_rule_json
@@ -37,6 +57,7 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         silent: silent_int != 0,
         tags,
         task_lane_id: row.get("task_lane_id")?,
+        task_sort_key: row.get("task_sort_key")?,
     })
 }
 
@@ -44,7 +65,7 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders
          ORDER BY due_at ASC",
     )?;
@@ -59,7 +80,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
 pub fn next_pending(conn: &Connection) -> AppResult<Option<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders
          WHERE state IN ('pending', 'snoozed') AND silent = 0
          ORDER BY COALESCE(snooze_until, due_at) ASC
@@ -100,11 +121,16 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
         None
     };
 
+    let sort_key = match lane_id.as_deref() {
+        Some(lane) => Some(top_of_lane_key(conn, lane)?),
+        None => None,
+    };
+
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, ?9, ?10, ?11)",
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, ?9, ?10, ?11, ?12)",
         params![
             id,
             input.title.trim(),
@@ -117,6 +143,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
             input.silent as i32,
             tags_json,
             lane_id,
+            sort_key,
         ],
     )?;
 
@@ -126,7 +153,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
 pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Reminder> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders WHERE id = ?1",
     )?;
     let r = stmt
@@ -186,6 +213,17 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
     } else {
         None
     };
+    // Manual board position: preserved on ordinary edits; a lane change
+    // without an explicit position (editor dropdown, task conversion)
+    // lands the task at the top of the new lane. `place()` is the only
+    // path that sets an explicit mid-lane key.
+    let task_sort_key = if task_lane_id == existing.task_lane_id {
+        existing.task_sort_key
+    } else if let Some(ref lane) = task_lane_id {
+        Some(top_of_lane_key(conn, lane)?)
+    } else {
+        None
+    };
     let now = now_ms();
 
     // If the user moved the due time, treat the edit as a manual reschedule:
@@ -206,7 +244,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
              sound_path = ?6, repeat_rule = ?7, updated_at = ?8,
              silent = ?9, state = ?10, snooze_until = ?11, tags = ?12,
-             task_lane_id = ?13
+             task_lane_id = ?13, task_sort_key = ?14
          WHERE id = ?1",
         params![
             id,
@@ -222,6 +260,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
             new_snooze,
             tags_json,
             task_lane_id,
+            task_sort_key,
         ],
     )?;
 
@@ -241,7 +280,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
@@ -291,8 +330,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, ?13, ?14, ?15)
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
@@ -306,7 +345,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
            last_synced_at = excluded.last_synced_at,
            silent = excluded.silent,
            tags = excluded.tags,
-           task_lane_id = excluded.task_lane_id",
+           task_lane_id = excluded.task_lane_id,
+           task_sort_key = excluded.task_sort_key",
         params![
             r.id,
             r.title,
@@ -323,6 +363,7 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
             r.silent as i32,
             tags_json,
             r.task_lane_id,
+            r.task_sort_key,
         ],
     )?;
     Ok(true)
@@ -428,5 +469,84 @@ mod tests {
             Some(crate::db::task_lanes::DEFAULT_LANE_ID),
             "a silent task must always have a lane"
         );
+    }
+
+    fn mk_task(title: &str) -> ReminderCreate {
+        ReminderCreate {
+            title: title.into(),
+            description: None,
+            due_at: 0,
+            priority: Priority::Normal,
+            sound_path: None,
+            repeat_rule: None,
+            silent: true,
+            tags: vec![],
+            task_lane_id: None, // create() routes to the default lane
+        }
+    }
+
+    /// New tasks stack on top: first task in an empty lane gets
+    /// KEY_STRIDE, each subsequent one gets (lane min − KEY_STRIDE).
+    #[test]
+    fn created_tasks_land_on_top_of_their_lane() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("first")).unwrap();
+        let t2 = create(&conn, mk_task("second")).unwrap();
+        assert_eq!(t1.task_sort_key, Some(1024.0));
+        assert_eq!(t2.task_sort_key, Some(0.0), "second lands above the first");
+    }
+
+    /// Changing lanes (editor dropdown path) re-keys to the top of the
+    /// NEW lane; an unrelated edit must not touch the key.
+    #[test]
+    fn lane_change_rekeys_to_top_and_plain_edits_preserve_key() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("mover")).unwrap();
+        let _t2 = create(&conn, mk_task("stayer")).unwrap();
+
+        // Unrelated edit: key untouched.
+        let edited = update(
+            &conn,
+            &t1.id,
+            ReminderUpdate { title: Some("mover 2".into()), ..blank_update() },
+        )
+        .unwrap();
+        assert_eq!(edited.task_sort_key, t1.task_sort_key);
+
+        // New lane → top of that (empty) lane.
+        let now = crate::models::now_ms();
+        let lane = crate::db::task_lanes::Lane {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "elsewhere".into(),
+            order_index: 50,
+            is_default: false,
+            created_at: now,
+            updated_at: now,
+        };
+        crate::db::task_lanes::insert(&conn, &lane).unwrap();
+        let moved = update(
+            &conn,
+            &t1.id,
+            ReminderUpdate {
+                task_lane_id: Some(Some(lane.id.clone())),
+                ..blank_update()
+            },
+        )
+        .unwrap();
+        assert_eq!(moved.task_sort_key, Some(1024.0), "top of the empty new lane");
+    }
+
+    /// The key must survive the sync wire: apply_remote writes it, and
+    /// converting back off the row keeps it.
+    #[test]
+    fn apply_remote_round_trips_task_sort_key() {
+        let conn = test_conn();
+        let t = create(&conn, mk_task("synced")).unwrap();
+        let mut remote = crate::sync::types::RemoteReminder::from(&t);
+        remote.task_sort_key = Some(512.5);
+        remote.updated_at += 1; // strictly newer so LWW applies it
+        assert!(super::apply_remote(&conn, &remote).unwrap());
+        let got = super::get_by_id(&conn, &t.id).unwrap();
+        assert_eq!(got.task_sort_key, Some(512.5));
     }
 }
