@@ -434,6 +434,11 @@ pub fn sort_lane_by_stars(
 ) -> AppResult<usize> {
     let changed = {
         let conn = state.db.lock();
+        // Validate the lane exists — matches place_task's style, so a
+        // garbage lane id errors instead of silently returning 0.
+        if task_lanes::get_by_id(&conn, &lane_id)?.is_none() {
+            return Err(AppError::NotFound(format!("lane {lane_id}")));
+        }
         repo::sort_lane_by_stars(&conn, &lane_id)?
     };
     if changed > 0 {

@@ -9,7 +9,13 @@ Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
 **Update both devices together** — the sync wire format changed; a
 0.7.x peer can't decode 0.8.0 changesets (it reports a version
-mismatch until upgraded).
+mismatch until upgraded). Upgrade both devices back-to-back rather
+than leaving one on 0.7.x for a while. Each device works out its own
+card order the moment it upgrades, and that one-time setup never
+travels over sync — so if you edit tasks on a device that's still
+lagging behind, its card order can end up permanently out of step
+with the other device once it catches up (a re-drag, or a lane's
+sort-by-stars button, fixes it).
 
 ### Added
 

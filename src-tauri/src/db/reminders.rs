@@ -8,7 +8,8 @@ use crate::models::{
 use crate::sync::types::RemoteReminder;
 
 /// Gap between adjacent sort keys on insert/renumber. Midpoint inserts
-/// halve the local gap; ~50 drops into the same slot before a renumber.
+/// halve the local gap; ~30 drops into the same slot before a renumber
+/// (log2(KEY_STRIDE / MIN_KEY_GAP) ≈ log2(1024 / 1e-6) ≈ 30).
 pub const KEY_STRIDE: f64 = 1024.0;
 /// Below this neighbor gap a midpoint stops being representable enough —
 /// renumber the lane before placing.
@@ -97,16 +98,33 @@ pub fn place(
         (Some(b), Some(a)) => (b + a) / 2.0,
         (None, Some(a)) => a - KEY_STRIDE,
         (Some(b), None) => b + KEY_STRIDE,
-        (None, None) => KEY_STRIDE,
+        // Both neighbors missing does NOT mean the lane is empty — the
+        // board can render a filtered subset (time/tag/search filters
+        // in App.svelte), so a drop into a lane whose other cards are
+        // all filtered out passes null on both sides while the lane
+        // still has rows. Using a bare KEY_STRIDE here would collide
+        // with the top card instead of landing above it, so defer to
+        // top_of_lane_key, which already returns KEY_STRIDE for a
+        // genuinely empty lane and `min - KEY_STRIDE` otherwise.
+        (None, None) => top_of_lane_key(conn, lane_id)?,
     };
 
+    // `silent = 1` mirrors the invariant update() enforces: non-silent
+    // reminders never get a lane. place() writes task_lane_id directly
+    // (unlike update(), which routes lane changes through the silent
+    // check above), so without this guard a stale/forged UI call could
+    // attach a lane to a ringing reminder.
     let n = conn.execute(
         "UPDATE reminders
          SET task_lane_id = ?2, task_sort_key = ?3, updated_at = ?4
-         WHERE id = ?1",
+         WHERE id = ?1 AND silent = 1",
         params![id, lane_id, key, now_ms()],
     )?;
     if n == 0 {
+        // Covers both "no row with this id" and "row exists but isn't a
+        // task" (non-silent, so the silent = 1 guard excluded it) — the
+        // caller can't tell which from here, and doesn't need to: either
+        // way there's nothing to place.
         return Err(AppError::NotFound(format!("reminder {id}")));
     }
     get_by_id(conn, id)
@@ -697,6 +715,40 @@ mod tests {
         // key is −512 after the first placement, so bottom = −512 + 1024.
         let bottom = super::place(&conn, &t2.id, &lane, Some(&t1.id), None).unwrap();
         assert_eq!(bottom.task_sort_key, Some(512.0));
+    }
+
+    /// place() must not attach a lane to a non-task (non-silent) reminder.
+    /// update() enforces this invariant via its `silent` check, but
+    /// place() writes task_lane_id directly, so it needs its own guard
+    /// (the UPDATE's `AND silent = 1`).
+    #[test]
+    fn place_rejects_non_silent_reminder() {
+        let conn = test_conn();
+        let ringer = create(
+            &conn,
+            ReminderCreate {
+                title: "ring me".into(),
+                description: None,
+                due_at: 1_000,
+                priority: Priority::Normal,
+                sound_path: None,
+                repeat_rule: None,
+                silent: false,
+                tags: vec![],
+                task_lane_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(ringer.task_lane_id, None);
+        assert_eq!(ringer.task_sort_key, None);
+
+        let lane = crate::db::task_lanes::default_lane(&conn).unwrap().id;
+        let err = super::place(&conn, &ringer.id, &lane, None, None).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::NotFound(_)));
+
+        let reloaded = super::get_by_id(&conn, &ringer.id).unwrap();
+        assert_eq!(reloaded.task_lane_id, None, "still not attached to a lane");
+        assert_eq!(reloaded.task_sort_key, None);
     }
 
     /// Cross-lane drop into an empty lane: no neighbors → KEY_STRIDE,

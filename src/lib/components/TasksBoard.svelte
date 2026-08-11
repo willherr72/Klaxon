@@ -59,6 +59,10 @@
   let lanesOrdered = $state<Lane[]>([]);
   let cardsByLane = $state<Record<string, Reminder[]>>({});
   let isDragging = $state(false);
+  // Count of in-flight api.placeTask writes from the current drag. Guards
+  // isDragging's release — see the freeze-until-settled comment in
+  // onCardFinalize below.
+  let pendingPlacements = 0;
 
   $effect(() => {
     if (isDragging) return;
@@ -108,19 +112,37 @@
     };
   }
   function onCardFinalize(laneId: string) {
-    return (
+    return async (
       e: CustomEvent<{
         items: Reminder[];
         info: { trigger: string; id: string };
       }>,
     ) => {
       cardsByLane = { ...cardsByLane, [laneId]: e.detail.items };
-      isDragging = false;
-      // The TARGET zone (the one a card was dropped INTO) is the
-      // one that fires DROPPED_INTO_ZONE — that's where the actual
-      // lane-change persists. Source zones also fire finalize with
-      // DROPPED_INTO_ANOTHER but we ignore them; the target's call
-      // alone is enough.
+      // FREEZE-UNTIL-SETTLED — do not "simplify" this back to a
+      // synchronous `isDragging = false` here.
+      //
+      // The $effect that rebuilds cardsByLane depends on isDragging.
+      // Releasing the freeze before the matching api.placeTask write has
+      // landed lets that effect re-run against the STILL-STALE
+      // `reminders` prop (the write is in flight) — the dropped card
+      // would snap back to its pre-drag slot, then jump forward again
+      // once the klaxon://reminders-changed refresh arrives. So the
+      // freeze only lifts once every placeTask write from THIS drag has
+      // settled, success or failure (pendingPlacements tracks in-flight
+      // writes; decremented in `.finally()` so a rejected write still
+      // unfreezes the board instead of wedging it forever).
+      //
+      // The TARGET zone (the one a card was dropped INTO) is the one
+      // that fires DROPPED_INTO_ZONE — that's where the actual
+      // lane-change persists. A CROSS-LANE drag also fires finalize on
+      // the SOURCE zone with DROPPED_INTO_ANOTHER (no API call there).
+      // If the source handler released the freeze synchronously, it
+      // would reintroduce the flicker even while the target's write is
+      // still pending — so the non-target branch below defers past a
+      // tick (giving a sibling target-zone finalize, dispatched as part
+      // of the same drag, a chance to register its pending write first)
+      // and only releases if nothing is left pending.
       if (e.detail.info.trigger === TRIGGERS.DROPPED_INTO_ZONE) {
         const droppedId = e.detail.info.id;
         const items = e.detail.items;
@@ -130,9 +152,21 @@
         const beforeId = idx > 0 ? items[idx - 1].id : null;
         const afterId =
           idx >= 0 && idx < items.length - 1 ? items[idx + 1].id : null;
+        pendingPlacements++;
         api
           .placeTask(droppedId, laneId, beforeId, afterId)
-          .catch((err) => console.error("placeTask failed", err));
+          .catch((err) => console.error("placeTask failed", err))
+          .finally(() => {
+            pendingPlacements--;
+            if (pendingPlacements === 0) isDragging = false;
+          });
+      } else {
+        // No API call fired from this zone (source of a cross-lane drag,
+        // or a drop outside any zone). Defer past a tick so a sibling
+        // target-zone finalize gets to register first, then release only
+        // if nothing is (still) pending.
+        await tick();
+        if (pendingPlacements === 0) isDragging = false;
       }
     };
   }
