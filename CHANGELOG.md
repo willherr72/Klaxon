@@ -5,6 +5,25 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-11
+
+**Update both devices together** — the sync wire format changed; a
+0.7.x peer can't decode 0.8.0 changesets (it reports a version
+mismatch until upgraded).
+
+### Added
+
+- **Cards stay where you drag them.** The Tasks board finally persists
+  manual order — within a lane and across lanes — synced between
+  devices. Previously any drag silently snapped the card back to the
+  top of its lane.
+- **Star priority on tasks.** Every card shows ★ / ★★ / ★★★ (the
+  existing low/normal/high priority — tasks just never had a control
+  for it). Tap the stars on a card or use the editor's new PRIORITY
+  row. Three-star tasks glow klaxon orange.
+- **Sort a lane by stars.** The ★↓ button in a lane header does a
+  one-shot sort — highest first, ties keep their dragged order.
+
 ## [0.7.5] — 2026-08-10
 
 ### Fixed
