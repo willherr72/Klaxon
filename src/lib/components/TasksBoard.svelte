@@ -95,14 +95,25 @@
     isDragging = true;
     lanesOrdered = e.detail.items;
   }
-  function onLaneFinalize(
+  async function onLaneFinalize(
     e: CustomEvent<{ items: Lane[]; info: { trigger: string; id: string } }>,
   ) {
     lanesOrdered = e.detail.items;
-    isDragging = false;
-    api
-      .reorderLanes(lanesOrdered.map((l) => l.id))
-      .catch((err) => console.error("reorderLanes failed", err));
+    // Freeze-until-settled, same rule as onCardFinalize below — the
+    // $effect that rebuilds lanesOrdered depends on isDragging, and
+    // `lanes` only refreshes when the klaxon://lanes-changed listener
+    // fires. Releasing before the write lands re-derives from the stale
+    // `lanes`, so the lane visibly snaps back to its old slot and then
+    // forward again. One zone and one write here, so no counter is
+    // needed; `finally` releases even on failure so a rejected reorder
+    // can't wedge the board.
+    try {
+      await api.reorderLanes(lanesOrdered.map((l) => l.id));
+    } catch (err) {
+      console.error("reorderLanes failed", err);
+    } finally {
+      isDragging = false;
+    }
   }
 
   function onCardConsider(laneId: string) {
