@@ -394,42 +394,53 @@ pub fn reorder_lanes(
 }
 
 #[tauri::command]
-pub fn set_task_lane(
+pub fn place_task(
     state: State<'_, AppState>,
     app: AppHandle,
     reminder_id: String,
     lane_id: String,
+    before_id: Option<String>,
+    after_id: Option<String>,
 ) -> AppResult<Reminder> {
     let trimmed = lane_id.trim();
     if trimmed.is_empty() {
         return Err(AppError::Invalid("lane_id required".into()));
     }
-    // Validate the lane exists so a stale UI state doesn't write a
-    // dangling FK.
-    {
+    let updated = {
         let conn = state.db.lock();
+        // Validate the lane exists so a stale UI state doesn't write a
+        // dangling FK.
         if task_lanes::get_by_id(&conn, trimmed)?.is_none() {
             return Err(AppError::NotFound(format!("lane {trimmed}")));
         }
-    }
-    let patch = crate::models::ReminderUpdate {
-        title: None,
-        description: None,
-        due_at: None,
-        priority: None,
-        sound_path: None,
-        repeat_rule: None,
-        silent: None,
-        tags: None,
-        task_lane_id: Some(Some(trimmed.to_string())),
-    };
-    let updated = {
-        let conn = state.db.lock();
-        repo::update(&conn, &reminder_id, patch)?
+        repo::place(
+            &conn,
+            &reminder_id,
+            trimmed,
+            before_id.as_deref(),
+            after_id.as_deref(),
+        )?
     };
     let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(updated)
+}
+
+#[tauri::command]
+pub fn sort_lane_by_stars(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    lane_id: String,
+) -> AppResult<usize> {
+    let changed = {
+        let conn = state.db.lock();
+        repo::sort_lane_by_stars(&conn, &lane_id)?
+    };
+    if changed > 0 {
+        let _ = app.emit("klaxon://reminders-changed", ());
+        nudge_write(&state);
+    }
+    Ok(changed)
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────

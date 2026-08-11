@@ -73,8 +73,14 @@ export const api = {
     invoke<DeleteLaneOutcome>("delete_lane", { id }),
   reorderLanes: (ids: string[]) =>
     invoke<void>("reorder_lanes", { ids }),
-  setTaskLane: (reminderId: string, laneId: string) =>
-    invoke<Reminder>("set_task_lane", { reminderId, laneId }),
+  placeTask: (
+    reminderId: string,
+    laneId: string,
+    beforeId: string | null,
+    afterId: string | null,
+  ) => invoke<Reminder>("place_task", { reminderId, laneId, beforeId, afterId }),
+  sortLaneByStars: (laneId: string) =>
+    invoke<number>("sort_lane_by_stars", { laneId }),
   // Thoughts (v0.5)
   listThoughts: (tag: string | null, limit: number, offset: number) =>
     invoke<Thought[]>("list_thoughts", { tag, limit, offset }),
