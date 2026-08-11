@@ -14,7 +14,7 @@
 
 - `KEY_STRIDE = 1024.0`, `MIN_KEY_GAP = 1e-6` — the only ordering constants; defined once in `src-tauri/src/db/reminders.rs`.
 - Lanes render **ascending** by `task_sort_key`; smallest key = top of lane. New tasks land at the top (`min(lane) − 1024`, or `1024` in an empty lane).
-- `svelte-check` must stay at 0 errors 0 warnings (`npm run check`).
+- `svelte-check` must stay at 0 errors 0 warnings (`npm run check`) — with one sanctioned exception: Task 5's commit intentionally leaves exactly one error (TasksBoard's `setTaskLane` call), which Task 6 clears.
 - `cargo test` and a zero-warning build (`RUSTFLAGS="-D warnings" cargo build`) must pass in `src-tauri/` before each commit.
 - Run all cargo commands from `src-tauri/` (that's the workspace root).
 - This is a **postcard wire-format break** (RemoteReminder gains a field): pre-0.8 peers fail frame decode with the existing friendly error. Version is bumped to 0.8.0 in the final task only.
@@ -472,8 +472,9 @@ Append to the `tests` module in `src-tauri/src/db/reminders.rs`:
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(order, vec![t3.id.clone(), t1.id.clone(), t2.id.clone()]);
-        // And the keys are healthy again (gap ≥ MIN_KEY_GAP).
-        assert!(placed.task_sort_key.is_some());
+        // And the keys are healthy again: the renumber gave t3/t2 clean
+        // strides (1024/2048) and the drop landed exactly between them.
+        assert_eq!(placed.task_sort_key, Some(1536.0));
     }
 ```
 
@@ -524,27 +525,33 @@ pub fn place(
     before_id: Option<&str>,
     after_id: Option<&str>,
 ) -> AppResult<Reminder> {
-    fn neighbor_key(conn: &Connection, lane_id: &str, nid: Option<&str>) -> Option<f64> {
-        let nid = nid?;
-        conn.query_row(
-            "SELECT task_sort_key FROM reminders
-             WHERE id = ?1 AND task_lane_id = ?2",
-            params![nid, lane_id],
-            |r| r.get::<_, Option<f64>>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-        .flatten()
+    // A missing/foreign-lane/NULL-key neighbor maps to None; real DB
+    // errors must propagate, or place() silently misfiles the card at a
+    // lane edge on e.g. an I/O failure.
+    fn neighbor_key(
+        conn: &Connection,
+        lane_id: &str,
+        nid: Option<&str>,
+    ) -> AppResult<Option<f64>> {
+        let Some(nid) = nid else { return Ok(None) };
+        let key: Option<Option<f64>> = conn
+            .query_row(
+                "SELECT task_sort_key FROM reminders
+                 WHERE id = ?1 AND task_lane_id = ?2",
+                params![nid, lane_id],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()?;
+        Ok(key.flatten())
     }
 
-    let mut before = neighbor_key(conn, lane_id, before_id);
-    let mut after = neighbor_key(conn, lane_id, after_id);
+    let mut before = neighbor_key(conn, lane_id, before_id)?;
+    let mut after = neighbor_key(conn, lane_id, after_id)?;
     if let (Some(b), Some(a)) = (before, after) {
         if a - b < MIN_KEY_GAP {
             renumber_lane(conn, lane_id)?;
-            before = neighbor_key(conn, lane_id, before_id);
-            after = neighbor_key(conn, lane_id, after_id);
+            before = neighbor_key(conn, lane_id, before_id)?;
+            after = neighbor_key(conn, lane_id, after_id)?;
         }
     }
     let key = match (before, after) {

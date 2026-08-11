@@ -95,6 +95,10 @@ pub struct Reminder {
     /// non-silent reminders.
     #[serde(default)]
     pub task_lane_id: Option<String>,
+    /// v0.8: manual position within the task lane. Lanes render
+    /// ascending (smallest on top). `None` on non-task rows.
+    #[serde(default)]
+    pub task_sort_key: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

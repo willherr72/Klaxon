@@ -35,6 +35,11 @@ pub struct RemoteReminder {
     /// non-silent rows, and on rows synced from a pre-v0.3.1 peer.
     #[serde(default)]
     pub task_lane_id: Option<String>,
+    /// v0.8: manual board position. Postcard is not self-describing, so
+    /// this field is a wire-format break for pre-0.8 peers (see the
+    /// ChangeSet.thoughts note) — upgrade all paired devices together.
+    #[serde(default)]
+    pub task_sort_key: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +138,7 @@ impl From<&crate::models::Reminder> for RemoteReminder {
             silent: r.silent,
             tags: r.tags.clone(),
             task_lane_id: r.task_lane_id.clone(),
+            task_sort_key: r.task_sort_key,
         }
     }
 }

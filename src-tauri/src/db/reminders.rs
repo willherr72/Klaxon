@@ -7,6 +7,129 @@ use crate::models::{
 };
 use crate::sync::types::RemoteReminder;
 
+/// Gap between adjacent sort keys on insert/renumber. Midpoint inserts
+/// halve the local gap; ~30 drops into the same slot before a renumber
+/// (log2(KEY_STRIDE / MIN_KEY_GAP) ≈ log2(1024 / 1e-6) ≈ 30).
+pub const KEY_STRIDE: f64 = 1024.0;
+/// Below this neighbor gap a midpoint stops being representable enough —
+/// renumber the lane before placing.
+pub const MIN_KEY_GAP: f64 = 1e-6;
+
+/// Key that places a task above everything currently in `lane_id`.
+pub(crate) fn top_of_lane_key(conn: &Connection, lane_id: &str) -> AppResult<f64> {
+    let min: Option<f64> = conn.query_row(
+        "SELECT MIN(task_sort_key) FROM reminders WHERE task_lane_id = ?1",
+        params![lane_id],
+        |r| r.get(0),
+    )?;
+    Ok(match min {
+        Some(m) => m - KEY_STRIDE,
+        None => KEY_STRIDE,
+    })
+}
+
+/// Rewrite a lane's keys to clean 1024·n in current visual order.
+/// Bumps updated_at on every row it touches (LWW churn — rare, accepted;
+/// see the spec's sync section). Wrapped in a transaction so a crash
+/// can't leave the lane half-renumbered.
+fn renumber_lane(conn: &Connection, lane_id: &str) -> AppResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM reminders WHERE task_lane_id = ?1
+         ORDER BY COALESCE(task_sort_key, 9e18) ASC, updated_at DESC",
+    )?;
+    let ids: Vec<String> = stmt
+        .query_map(params![lane_id], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let tx = conn.unchecked_transaction()?;
+    let now = now_ms();
+    for (i, rid) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
+            params![rid, ((i + 1) as f64) * KEY_STRIDE, now],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Persist a board drop. `before_id` is the card visually ABOVE the drop
+/// slot, `after_id` the card BELOW; either may be None at a lane edge.
+/// Neighbors are resolved fresh from the DB (and ignored if they've left
+/// the lane) so a stale frontend can't corrupt ordering. Exactly one row
+/// is written — unless the neighbor gap has collapsed below MIN_KEY_GAP,
+/// in which case the lane renumbers first.
+pub fn place(
+    conn: &Connection,
+    id: &str,
+    lane_id: &str,
+    before_id: Option<&str>,
+    after_id: Option<&str>,
+) -> AppResult<Reminder> {
+    // A missing/foreign-lane/NULL-key neighbor maps to None; real DB
+    // errors must propagate, or place() silently misfiles the card at a
+    // lane edge on e.g. an I/O failure.
+    fn neighbor_key(
+        conn: &Connection,
+        lane_id: &str,
+        nid: Option<&str>,
+    ) -> AppResult<Option<f64>> {
+        let Some(nid) = nid else { return Ok(None) };
+        let key: Option<Option<f64>> = conn
+            .query_row(
+                "SELECT task_sort_key FROM reminders
+                 WHERE id = ?1 AND task_lane_id = ?2",
+                params![nid, lane_id],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .optional()?;
+        Ok(key.flatten())
+    }
+
+    let mut before = neighbor_key(conn, lane_id, before_id)?;
+    let mut after = neighbor_key(conn, lane_id, after_id)?;
+    if let (Some(b), Some(a)) = (before, after) {
+        if a - b < MIN_KEY_GAP {
+            renumber_lane(conn, lane_id)?;
+            before = neighbor_key(conn, lane_id, before_id)?;
+            after = neighbor_key(conn, lane_id, after_id)?;
+        }
+    }
+    let key = match (before, after) {
+        (Some(b), Some(a)) => (b + a) / 2.0,
+        (None, Some(a)) => a - KEY_STRIDE,
+        (Some(b), None) => b + KEY_STRIDE,
+        // Both neighbors missing does NOT mean the lane is empty — the
+        // board can render a filtered subset (time/tag/search filters
+        // in App.svelte), so a drop into a lane whose other cards are
+        // all filtered out passes null on both sides while the lane
+        // still has rows. Using a bare KEY_STRIDE here would collide
+        // with the top card instead of landing above it, so defer to
+        // top_of_lane_key, which already returns KEY_STRIDE for a
+        // genuinely empty lane and `min - KEY_STRIDE` otherwise.
+        (None, None) => top_of_lane_key(conn, lane_id)?,
+    };
+
+    // `silent = 1` mirrors the invariant update() enforces: non-silent
+    // reminders never get a lane. place() writes task_lane_id directly
+    // (unlike update(), which routes lane changes through the silent
+    // check above), so without this guard a stale/forged UI call could
+    // attach a lane to a ringing reminder.
+    let n = conn.execute(
+        "UPDATE reminders
+         SET task_lane_id = ?2, task_sort_key = ?3, updated_at = ?4
+         WHERE id = ?1 AND silent = 1",
+        params![id, lane_id, key, now_ms()],
+    )?;
+    if n == 0 {
+        // Covers both "no row with this id" and "row exists but isn't a
+        // task" (non-silent, so the silent = 1 guard excluded it) — the
+        // caller can't tell which from here, and doesn't need to: either
+        // way there's nothing to place.
+        return Err(AppError::NotFound(format!("reminder {id}")));
+    }
+    get_by_id(conn, id)
+}
+
 fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
     let repeat_rule = repeat_rule_json
@@ -37,6 +160,7 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         silent: silent_int != 0,
         tags,
         task_lane_id: row.get("task_lane_id")?,
+        task_sort_key: row.get("task_sort_key")?,
     })
 }
 
@@ -44,7 +168,7 @@ fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
 pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders
          ORDER BY due_at ASC",
     )?;
@@ -59,7 +183,7 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
 pub fn next_pending(conn: &Connection) -> AppResult<Option<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders
          WHERE state IN ('pending', 'snoozed') AND silent = 0
          ORDER BY COALESCE(snooze_until, due_at) ASC
@@ -100,11 +224,16 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
         None
     };
 
+    let sort_key = match lane_id.as_deref() {
+        Some(lane) => Some(top_of_lane_key(conn, lane)?),
+        None => None,
+    };
+
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, ?9, ?10, ?11)",
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8, 'local', NULL, NULL, ?9, ?10, ?11, ?12)",
         params![
             id,
             input.title.trim(),
@@ -117,6 +246,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
             input.silent as i32,
             tags_json,
             lane_id,
+            sort_key,
         ],
     )?;
 
@@ -126,7 +256,7 @@ pub fn create(conn: &Connection, input: ReminderCreate) -> AppResult<Reminder> {
 pub fn get_by_id(conn: &Connection, id: &str) -> AppResult<Reminder> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders WHERE id = ?1",
     )?;
     let r = stmt
@@ -186,6 +316,17 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
     } else {
         None
     };
+    // Manual board position: preserved on ordinary edits; a lane change
+    // without an explicit position (editor dropdown, task conversion)
+    // lands the task at the top of the new lane. `place()` is the only
+    // path that sets an explicit mid-lane key.
+    let task_sort_key = if task_lane_id == existing.task_lane_id {
+        existing.task_sort_key
+    } else if let Some(ref lane) = task_lane_id {
+        Some(top_of_lane_key(conn, lane)?)
+    } else {
+        None
+    };
     let now = now_ms();
 
     // If the user moved the due time, treat the edit as a manual reschedule:
@@ -206,7 +347,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
          SET title = ?2, description = ?3, due_at = ?4, priority = ?5,
              sound_path = ?6, repeat_rule = ?7, updated_at = ?8,
              silent = ?9, state = ?10, snooze_until = ?11, tags = ?12,
-             task_lane_id = ?13
+             task_lane_id = ?13, task_sort_key = ?14
          WHERE id = ?1",
         params![
             id,
@@ -222,6 +363,7 @@ pub fn update(conn: &Connection, id: &str, patch: ReminderUpdate) -> AppResult<R
             new_snooze,
             tags_json,
             task_lane_id,
+            task_sort_key,
         ],
     )?;
 
@@ -241,7 +383,7 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 pub fn updated_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
-                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id
+                snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders WHERE updated_at > ?1 ORDER BY updated_at ASC",
     )?;
     let rows = stmt.query_map(params![since_ms], row_to_reminder)?;
@@ -291,8 +433,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
     conn.execute(
         "INSERT INTO reminders
          (id, title, description, due_at, priority, sound_path, repeat_rule, state,
-          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, ?13, ?14, ?15)
+          snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'remote', NULL, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
            title = excluded.title,
            description = excluded.description,
@@ -306,7 +448,8 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
            last_synced_at = excluded.last_synced_at,
            silent = excluded.silent,
            tags = excluded.tags,
-           task_lane_id = excluded.task_lane_id",
+           task_lane_id = excluded.task_lane_id,
+           task_sort_key = excluded.task_sort_key",
         params![
             r.id,
             r.title,
@@ -323,6 +466,7 @@ pub fn apply_remote(conn: &Connection, r: &RemoteReminder) -> AppResult<bool> {
             r.silent as i32,
             tags_json,
             r.task_lane_id,
+            r.task_sort_key,
         ],
     )?;
     Ok(true)
@@ -358,10 +502,49 @@ pub fn reschedule(conn: &Connection, id: &str, new_due_at: i64) -> AppResult<()>
     Ok(())
 }
 
+/// One-shot "sort by stars": stable rewrite of a lane's keys, highest
+/// priority first, ties keeping their current visual order. Returns the
+/// number of rows rewritten. An already-sorted lane returns 0 with no
+/// writes at all — repeat presses cost nothing and cause no sync churn.
+pub fn sort_lane_by_stars(conn: &Connection, lane_id: &str) -> AppResult<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, priority, task_sort_key FROM reminders
+         WHERE task_lane_id = ?1
+         ORDER BY COALESCE(task_sort_key, 9e18) ASC, updated_at DESC",
+    )?;
+    let mut rows: Vec<(String, i32, Option<f64>)> = stmt
+        .query_map(params![lane_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+
+    if rows.windows(2).all(|w| w[0].1 >= w[1].1) {
+        return Ok(0); // already star-sorted top-to-bottom
+    }
+    // Vec::sort_by_key is stable — equal priorities keep drag order.
+    rows.sort_by_key(|(_, prio, _)| std::cmp::Reverse(*prio));
+
+    let tx = conn.unchecked_transaction()?;
+    let now = now_ms();
+    let mut changed = 0usize;
+    for (i, (rid, _, old_key)) in rows.iter().enumerate() {
+        let target = ((i + 1) as f64) * KEY_STRIDE;
+        if *old_key == Some(target) {
+            continue;
+        }
+        tx.execute(
+            "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
+            params![rid, target, now],
+        )?;
+        changed += 1;
+    }
+    tx.commit()?;
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{create, update};
     use crate::models::{Priority, ReminderCreate, ReminderUpdate};
+    use rusqlite::params;
 
     fn test_conn() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -428,5 +611,249 @@ mod tests {
             Some(crate::db::task_lanes::DEFAULT_LANE_ID),
             "a silent task must always have a lane"
         );
+    }
+
+    fn mk_task(title: &str) -> ReminderCreate {
+        ReminderCreate {
+            title: title.into(),
+            description: None,
+            due_at: 0,
+            priority: Priority::Normal,
+            sound_path: None,
+            repeat_rule: None,
+            silent: true,
+            tags: vec![],
+            task_lane_id: None, // create() routes to the default lane
+        }
+    }
+
+    /// New tasks stack on top: first task in an empty lane gets
+    /// KEY_STRIDE, each subsequent one gets (lane min − KEY_STRIDE).
+    #[test]
+    fn created_tasks_land_on_top_of_their_lane() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("first")).unwrap();
+        let t2 = create(&conn, mk_task("second")).unwrap();
+        assert_eq!(t1.task_sort_key, Some(1024.0));
+        assert_eq!(t2.task_sort_key, Some(0.0), "second lands above the first");
+    }
+
+    /// Changing lanes (editor dropdown path) re-keys to the top of the
+    /// NEW lane; an unrelated edit must not touch the key.
+    #[test]
+    fn lane_change_rekeys_to_top_and_plain_edits_preserve_key() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("mover")).unwrap();
+        let _t2 = create(&conn, mk_task("stayer")).unwrap();
+
+        // Unrelated edit: key untouched.
+        let edited = update(
+            &conn,
+            &t1.id,
+            ReminderUpdate { title: Some("mover 2".into()), ..blank_update() },
+        )
+        .unwrap();
+        assert_eq!(edited.task_sort_key, t1.task_sort_key);
+
+        // New lane → top of that (empty) lane.
+        let now = crate::models::now_ms();
+        let lane = crate::db::task_lanes::Lane {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "elsewhere".into(),
+            order_index: 50,
+            is_default: false,
+            created_at: now,
+            updated_at: now,
+        };
+        crate::db::task_lanes::insert(&conn, &lane).unwrap();
+        let moved = update(
+            &conn,
+            &t1.id,
+            ReminderUpdate {
+                task_lane_id: Some(Some(lane.id.clone())),
+                ..blank_update()
+            },
+        )
+        .unwrap();
+        assert_eq!(moved.task_sort_key, Some(1024.0), "top of the empty new lane");
+    }
+
+    /// The key must survive the sync wire: apply_remote writes it, and
+    /// converting back off the row keeps it.
+    #[test]
+    fn apply_remote_round_trips_task_sort_key() {
+        let conn = test_conn();
+        let t = create(&conn, mk_task("synced")).unwrap();
+        let mut remote = crate::sync::types::RemoteReminder::from(&t);
+        remote.task_sort_key = Some(512.5);
+        remote.updated_at += 1; // strictly newer so LWW applies it
+        assert!(super::apply_remote(&conn, &remote).unwrap());
+        let got = super::get_by_id(&conn, &t.id).unwrap();
+        assert_eq!(got.task_sort_key, Some(512.5));
+    }
+
+    /// Drop between two neighbors → midpoint key; edges get stride
+    /// offsets. The three creates stack t3 (top, key −1024), t2 (0),
+    /// t1 (1024).
+    #[test]
+    fn place_computes_midpoints_and_edge_keys() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("one")).unwrap();   // 1024
+        let t2 = create(&conn, mk_task("two")).unwrap();   // 0
+        let t3 = create(&conn, mk_task("three")).unwrap(); // -1024
+        let lane = t1.task_lane_id.clone().unwrap();
+
+        // Drag t1 between t3 (above) and t2 (below): (−1024 + 0)/2.
+        let placed = super::place(&conn, &t1.id, &lane, Some(&t3.id), Some(&t2.id)).unwrap();
+        assert_eq!(placed.task_sort_key, Some(-512.0));
+
+        // Drag t2 to the very top (only an `after` neighbor): −1024 − 1024.
+        let top = super::place(&conn, &t2.id, &lane, None, Some(&t3.id)).unwrap();
+        assert_eq!(top.task_sort_key, Some(-2048.0));
+
+        // Drag t2 to the very bottom (only a `before` neighbor). t1's
+        // key is −512 after the first placement, so bottom = −512 + 1024.
+        let bottom = super::place(&conn, &t2.id, &lane, Some(&t1.id), None).unwrap();
+        assert_eq!(bottom.task_sort_key, Some(512.0));
+    }
+
+    /// place() must not attach a lane to a non-task (non-silent) reminder.
+    /// update() enforces this invariant via its `silent` check, but
+    /// place() writes task_lane_id directly, so it needs its own guard
+    /// (the UPDATE's `AND silent = 1`).
+    #[test]
+    fn place_rejects_non_silent_reminder() {
+        let conn = test_conn();
+        let ringer = create(
+            &conn,
+            ReminderCreate {
+                title: "ring me".into(),
+                description: None,
+                due_at: 1_000,
+                priority: Priority::Normal,
+                sound_path: None,
+                repeat_rule: None,
+                silent: false,
+                tags: vec![],
+                task_lane_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(ringer.task_lane_id, None);
+        assert_eq!(ringer.task_sort_key, None);
+
+        let lane = crate::db::task_lanes::default_lane(&conn).unwrap().id;
+        let err = super::place(&conn, &ringer.id, &lane, None, None).unwrap_err();
+        assert!(matches!(err, crate::error::AppError::NotFound(_)));
+
+        let reloaded = super::get_by_id(&conn, &ringer.id).unwrap();
+        assert_eq!(reloaded.task_lane_id, None, "still not attached to a lane");
+        assert_eq!(reloaded.task_sort_key, None);
+    }
+
+    /// Cross-lane drop into an empty lane: no neighbors → KEY_STRIDE,
+    /// and the lane assignment persists in the same write.
+    #[test]
+    fn place_moves_across_lanes() {
+        let conn = test_conn();
+        let t = create(&conn, mk_task("wanderer")).unwrap();
+        let now = crate::models::now_ms();
+        let lane = crate::db::task_lanes::Lane {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "target".into(),
+            order_index: 60,
+            is_default: false,
+            created_at: now,
+            updated_at: now,
+        };
+        crate::db::task_lanes::insert(&conn, &lane).unwrap();
+
+        let placed = super::place(&conn, &t.id, &lane.id, None, None).unwrap();
+        assert_eq!(placed.task_lane_id.as_deref(), Some(lane.id.as_str()));
+        assert_eq!(placed.task_sort_key, Some(1024.0));
+    }
+
+    /// Exhausted precision between neighbors triggers a lane renumber,
+    /// after which the midpoint is representable again and total order
+    /// is preserved.
+    #[test]
+    fn place_rebalances_when_neighbor_gap_collapses() {
+        let conn = test_conn();
+        let t1 = create(&conn, mk_task("a")).unwrap();
+        let t2 = create(&conn, mk_task("b")).unwrap();
+        let t3 = create(&conn, mk_task("c")).unwrap();
+        let lane = t1.task_lane_id.clone().unwrap();
+        // Force t3 and t2 into a sub-MIN_KEY_GAP embrace at the top.
+        conn.execute(
+            "UPDATE reminders SET task_sort_key = 100.0 WHERE id = ?1",
+            params![t3.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE reminders SET task_sort_key = 100.0000000001 WHERE id = ?1",
+            params![t2.id],
+        )
+        .unwrap();
+
+        let placed = super::place(&conn, &t1.id, &lane, Some(&t3.id), Some(&t2.id)).unwrap();
+
+        // Order must be t3, t1, t2 — read it back by key.
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM reminders WHERE task_lane_id = ?1
+                 ORDER BY task_sort_key ASC",
+            )
+            .unwrap();
+        let order: Vec<String> = stmt
+            .query_map(params![lane], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(order, vec![t3.id.clone(), t1.id.clone(), t2.id.clone()]);
+        // And the keys are healthy again: the renumber gave t3/t2 clean
+        // strides (1024/2048) and the drop landed exactly between them.
+        assert_eq!(placed.task_sort_key, Some(1536.0));
+    }
+
+    /// Star sort is stable (drag order kept within a tier), rewrites
+    /// only rows whose key changes, and is a no-op on a sorted lane.
+    #[test]
+    fn sort_lane_by_stars_is_stable_and_skips_noops() {
+        let conn = test_conn();
+        // Visual order (top→bottom) after creates: low, high#1, normal, high#2.
+        let mk_p = |title: &str, p: Priority| ReminderCreate {
+            priority: p,
+            ..mk_task(title)
+        };
+        let hi2 = create(&conn, mk_p("high two", Priority::High)).unwrap();
+        let norm = create(&conn, mk_p("normal", Priority::Normal)).unwrap();
+        let hi1 = create(&conn, mk_p("high one", Priority::High)).unwrap();
+        let low = create(&conn, mk_p("low", Priority::Low)).unwrap();
+        let lane = low.task_lane_id.clone().unwrap();
+        // Creates stack upward: current order is low, hi1, norm, hi2.
+
+        let changed = super::sort_lane_by_stars(&conn, &lane).unwrap();
+        assert!(changed > 0);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM reminders WHERE task_lane_id = ?1
+                 ORDER BY task_sort_key ASC",
+            )
+            .unwrap();
+        let order: Vec<String> = stmt
+            .query_map(params![lane], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // Stable: hi1 was above hi2 before the sort, so it stays above.
+        assert_eq!(
+            order,
+            vec![hi1.id.clone(), hi2.id.clone(), norm.id.clone(), low.id.clone()]
+        );
+
+        // Second invocation: already sorted → zero writes.
+        let changed_again = super::sort_lane_by_stars(&conn, &lane).unwrap();
+        assert_eq!(changed_again, 0);
     }
 }

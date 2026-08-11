@@ -33,6 +33,8 @@ export interface Reminder {
   tags: string[];
   // v0.3.1: swim-lane id (only set for silent reminders / tasks).
   task_lane_id: string | null;
+  /** v0.8: manual board position; lanes render ascending. Null on non-tasks. */
+  task_sort_key: number | null;
 }
 
 export interface ReminderCreate {

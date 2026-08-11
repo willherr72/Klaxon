@@ -203,8 +203,8 @@ mod tests {
         let c = open(&pc);
 
         // Local writes on A: a reminder, a delete (tombstone), a lane,
-        // and a thought.
-        let (rid, doomed_id, lane_id, thought_id) = {
+        // a thought, and a silent task (lands in the seed default lane).
+        let (rid, doomed_id, lane_id, thought_id, task_id) = {
             let conn = a.lock();
             let mk = |title: &str| ReminderCreate {
                 title: title.into(),
@@ -235,7 +235,23 @@ mod tests {
                 ThoughtCreate { body: "an idea".into(), tags: vec![] },
             )
             .unwrap();
-            (r.id, doomed.id, lane.id.clone(), t.id)
+            let task = crate::db::reminders::create(
+                &conn,
+                ReminderCreate {
+                    title: "ordered task".into(),
+                    description: None,
+                    due_at: 0,
+                    priority: Priority::High,
+                    sound_path: None,
+                    repeat_rule: None,
+                    silent: true,
+                    tags: vec![],
+                    task_lane_id: None, // default lane
+                },
+            )
+            .unwrap();
+            assert_eq!(task.task_sort_key, Some(1024.0));
+            (r.id, doomed.id, lane.id.clone(), t.id, task.id)
         };
 
         // Hop 1: B ingests A's full state (what a pull achieves).
@@ -246,7 +262,7 @@ mod tests {
         // consulted an origin flag, the rows B received would be invisible
         // here — the exact issue-#1 failure mode.
         let hop2 = pull(&b, 0).unwrap();
-        assert_eq!(hop2.reminders.len(), 1, "forwarded reminder in B's pull");
+        assert_eq!(hop2.reminders.len(), 2, "forwarded reminders in B's pull");
         assert_eq!(hop2.tombstones.len(), 1, "forwarded tombstone in B's pull");
         assert!(
             hop2.lanes.iter().any(|l| l.id == lane_id),
@@ -271,6 +287,13 @@ mod tests {
                 crate::db::thoughts::get_by_id(&conn, &thought_id).unwrap().body,
                 "an idea"
             );
+            let got_task = crate::db::reminders::get_by_id(&conn, &task_id).unwrap();
+            assert_eq!(
+                got_task.task_sort_key,
+                Some(1024.0),
+                "sort key must forward through the mesh unchanged"
+            );
+            assert_eq!(got_task.priority, Priority::High);
         }
         for p in [pa, pb, pc] {
             std::fs::remove_file(p).ok();

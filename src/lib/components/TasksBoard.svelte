@@ -4,6 +4,7 @@
   import { dndzone, TRIGGERS } from "svelte-dnd-action";
   import { api, type Lane } from "../api";
   import type { Reminder } from "../types";
+  import { starCount, priorityForStars } from "../stars";
   import ConfirmModal from "./ConfirmModal.svelte";
   import EmptyState from "./EmptyState.svelte";
 
@@ -58,6 +59,10 @@
   let lanesOrdered = $state<Lane[]>([]);
   let cardsByLane = $state<Record<string, Reminder[]>>({});
   let isDragging = $state(false);
+  // Count of in-flight api.placeTask writes from the current drag. Guards
+  // isDragging's release — see the freeze-until-settled comment in
+  // onCardFinalize below.
+  let pendingPlacements = 0;
 
   $effect(() => {
     if (isDragging) return;
@@ -74,7 +79,14 @@
       }
     }
     for (const k in next) {
-      next[k].sort((a, b) => b.updated_at - a.updated_at);
+      // Ascending by manual position; nulls sink (defensive only —
+      // migration 014 backfills every laned task).
+      next[k].sort(
+        (a, b) =>
+          (a.task_sort_key ?? Number.MAX_VALUE) -
+            (b.task_sort_key ?? Number.MAX_VALUE) ||
+          b.updated_at - a.updated_at,
+      );
     }
     cardsByLane = next;
   });
@@ -100,24 +112,61 @@
     };
   }
   function onCardFinalize(laneId: string) {
-    return (
+    return async (
       e: CustomEvent<{
         items: Reminder[];
         info: { trigger: string; id: string };
       }>,
     ) => {
       cardsByLane = { ...cardsByLane, [laneId]: e.detail.items };
-      isDragging = false;
-      // The TARGET zone (the one a card was dropped INTO) is the
-      // one that fires DROPPED_INTO_ZONE — that's where the actual
-      // lane-change persists. Source zones also fire finalize with
-      // DROPPED_INTO_ANOTHER but we ignore them; the target's call
-      // alone is enough.
+      // FREEZE-UNTIL-SETTLED — do not "simplify" this back to a
+      // synchronous `isDragging = false` here.
+      //
+      // The $effect that rebuilds cardsByLane depends on isDragging.
+      // Releasing the freeze before the matching api.placeTask write has
+      // landed lets that effect re-run against the STILL-STALE
+      // `reminders` prop (the write is in flight) — the dropped card
+      // would snap back to its pre-drag slot, then jump forward again
+      // once the klaxon://reminders-changed refresh arrives. So the
+      // freeze only lifts once every placeTask write from THIS drag has
+      // settled, success or failure (pendingPlacements tracks in-flight
+      // writes; decremented in `.finally()` so a rejected write still
+      // unfreezes the board instead of wedging it forever).
+      //
+      // The TARGET zone (the one a card was dropped INTO) is the one
+      // that fires DROPPED_INTO_ZONE — that's where the actual
+      // lane-change persists. A CROSS-LANE drag also fires finalize on
+      // the SOURCE zone with DROPPED_INTO_ANOTHER (no API call there).
+      // If the source handler released the freeze synchronously, it
+      // would reintroduce the flicker even while the target's write is
+      // still pending — so the non-target branch below defers past a
+      // tick (giving a sibling target-zone finalize, dispatched as part
+      // of the same drag, a chance to register its pending write first)
+      // and only releases if nothing is left pending.
       if (e.detail.info.trigger === TRIGGERS.DROPPED_INTO_ZONE) {
         const droppedId = e.detail.info.id;
+        const items = e.detail.items;
+        const idx = items.findIndex((r) => r.id === droppedId);
+        // Neighbors in the finalized visual order; the backend recomputes
+        // their keys fresh, so this is a position hint, not float math.
+        const beforeId = idx > 0 ? items[idx - 1].id : null;
+        const afterId =
+          idx >= 0 && idx < items.length - 1 ? items[idx + 1].id : null;
+        pendingPlacements++;
         api
-          .setTaskLane(droppedId, laneId)
-          .catch((err) => console.error("setTaskLane failed", err));
+          .placeTask(droppedId, laneId, beforeId, afterId)
+          .catch((err) => console.error("placeTask failed", err))
+          .finally(() => {
+            pendingPlacements--;
+            if (pendingPlacements === 0) isDragging = false;
+          });
+      } else {
+        // No API call fired from this zone (source of a cross-lane drag,
+        // or a drop outside any zone). Defer past a tick so a sibling
+        // target-zone finalize gets to register first, then release only
+        // if nothing is (still) pending.
+        await tick();
+        if (pendingPlacements === 0) isDragging = false;
       }
     };
   }
@@ -233,6 +282,20 @@
     ];
     return `${months[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")}`;
   }
+
+  function setCardStars(card: Reminder, n: number) {
+    const p = priorityForStars(n);
+    if (p === card.priority) return;
+    api
+      .updateReminder(card.id, { priority: p })
+      .catch((err) => console.error("set priority failed", err));
+  }
+
+  function sortLane(laneId: string) {
+    api
+      .sortLaneByStars(laneId)
+      .catch((err) => console.error("sortLaneByStars failed", err));
+  }
 </script>
 
 <div class="board">
@@ -281,6 +344,11 @@
               >default</span>
             {/if}
             <span class="lane-count mono-caps-faint">{laneCardCount(lane.id)}</span>
+            <button
+              class="lane-sort"
+              onclick={() => sortLane(lane.id)}
+              title="Sort by stars — ★★★ first; ties keep their order"
+            >★↓</button>
             {#if !lane.is_default}
               <button
                 class="lane-delete"
@@ -314,6 +382,7 @@
               tabindex="0"
               onclick={() => onSelect(card)}
               onkeydown={(e) => {
+                if (e.target !== e.currentTarget) return;
                 if (e.key === "Enter" || e.key === " ") {
                   e.preventDefault();
                   onSelect(card);
@@ -324,18 +393,33 @@
               {#if card.description}
                 <div class="card-desc">{card.description}</div>
               {/if}
-              {#if (card.tags && card.tags.length > 0) || due}
-                <div class="card-meta">
-                  {#if due}
-                    <span class="card-due mono-caps-faint">{due}</span>
-                  {/if}
-                  {#if card.tags}
-                    {#each card.tags as tag (tag)}
-                      <span class="card-tag">#{tag}</span>
-                    {/each}
-                  {/if}
+              <div class="card-meta">
+                <!-- Buttons are exempt from drag-start (the dnd zone's
+                     nested-input guard checks `target.value`), so stars
+                     are tappable without fighting hold-to-drag. -->
+                <div class="card-stars" role="group" aria-label="Priority">
+                  {#each [1, 2, 3] as n (n)}
+                    <button
+                      class="star"
+                      class:lit={n <= starCount(card.priority)}
+                      class:high={card.priority === "high"}
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        setCardStars(card, n);
+                      }}
+                      title={`Set priority: ${priorityForStars(n)}`}
+                    >{n <= starCount(card.priority) ? "★" : "☆"}</button>
+                  {/each}
                 </div>
-              {/if}
+                {#if due}
+                  <span class="card-due mono-caps-faint">{due}</span>
+                {/if}
+                {#if card.tags}
+                  {#each card.tags as tag (tag)}
+                    <span class="card-tag">#{tag}</span>
+                  {/each}
+                {/if}
+              </div>
             </div>
           {/each}
         </div>
@@ -499,6 +583,19 @@
   .lane-delete:hover {
     color: var(--signal-high);
   }
+  .lane-sort {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    letter-spacing: -0.05em;
+  }
+  .lane-sort:hover {
+    color: var(--klaxon);
+  }
 
   .cards {
     display: flex;
@@ -568,6 +665,28 @@
     color: var(--text-muted);
     border: 1px solid var(--border);
     padding: 2px 6px;
+  }
+  .card-stars {
+    display: inline-flex;
+    gap: 2px;
+  }
+  .star {
+    background: transparent;
+    border: none;
+    padding: 0 1px;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--text-faint);
+  }
+  .star.lit {
+    color: var(--text-muted);
+  }
+  .star.lit.high {
+    color: var(--klaxon);
+  }
+  .star:hover {
+    color: var(--klaxon);
   }
 
   .lane-add {
