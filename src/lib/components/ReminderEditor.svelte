@@ -4,6 +4,7 @@
   import { api, type Lane } from "../api";
   import { msToLocalInput, localInputToMs } from "../time";
   import type { Priority, Reminder, ReminderCreate, RepeatRule } from "../types";
+  import { starCount, priorityForStars } from "../stars";
   import SignalLight from "./SignalLight.svelte";
 
   let lanes = $state<Lane[]>([]);
@@ -285,6 +286,20 @@
                 <span class="lane-chip-tag">DEFAULT</span>
               {/if}
             </button>
+          {/each}
+        </div>
+      </div>
+
+      <div class="field">
+        <span class="mono-caps-faint">Priority</span>
+        <div class="star-row" role="group" aria-label="Priority">
+          {#each [1, 2, 3] as n (n)}
+            <button
+              type="button"
+              class="star-btn"
+              class:lit={n <= starCount(priority)}
+              onclick={() => (priority = priorityForStars(n))}
+            >{n <= starCount(priority) ? "★" : "☆"}</button>
           {/each}
         </div>
       </div>
@@ -699,5 +714,27 @@
   .btn.done:hover {
     background: var(--ok);
     color: var(--bg);
+  }
+
+  .star-row {
+    display: flex;
+    gap: 4px;
+  }
+  .star-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 4px 12px;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 80ms var(--ease), border-color 80ms var(--ease);
+  }
+  .star-btn.lit {
+    color: var(--klaxon);
+    border-color: var(--klaxon-dim);
+  }
+  .star-btn:hover {
+    border-color: var(--klaxon);
   }
 </style>
