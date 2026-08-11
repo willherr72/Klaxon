@@ -14,7 +14,7 @@
 
 - `KEY_STRIDE = 1024.0`, `MIN_KEY_GAP = 1e-6` — the only ordering constants; defined once in `src-tauri/src/db/reminders.rs`.
 - Lanes render **ascending** by `task_sort_key`; smallest key = top of lane. New tasks land at the top (`min(lane) − 1024`, or `1024` in an empty lane).
-- `svelte-check` must stay at 0 errors 0 warnings (`npm run check`).
+- `svelte-check` must stay at 0 errors 0 warnings (`npm run check`) — with one sanctioned exception: Task 5's commit intentionally leaves exactly one error (TasksBoard's `setTaskLane` call), which Task 6 clears.
 - `cargo test` and a zero-warning build (`RUSTFLAGS="-D warnings" cargo build`) must pass in `src-tauri/` before each commit.
 - Run all cargo commands from `src-tauri/` (that's the workspace root).
 - This is a **postcard wire-format break** (RemoteReminder gains a field): pre-0.8 peers fail frame decode with the existing friendly error. Version is bumped to 0.8.0 in the final task only.
