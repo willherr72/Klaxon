@@ -59,10 +59,12 @@
   let lanesOrdered = $state<Lane[]>([]);
   let cardsByLane = $state<Record<string, Reminder[]>>({});
   let isDragging = $state(false);
-  // Count of in-flight api.placeTask writes from the current drag. Guards
-  // isDragging's release — see the freeze-until-settled comment in
-  // onCardFinalize below.
-  let pendingPlacements = 0;
+  // Count of in-flight board writes (card placements AND lane reorders)
+  // from the current drag. Guards isDragging's release — see the
+  // freeze-until-settled comment in onCardFinalize below. Both drag paths
+  // share this one counter so neither can unfreeze the board while the
+  // other's write is still outstanding.
+  let pendingWrites = 0;
 
   $effect(() => {
     if (isDragging) return;
@@ -99,20 +101,33 @@
     e: CustomEvent<{ items: Lane[]; info: { trigger: string; id: string } }>,
   ) {
     lanesOrdered = e.detail.items;
-    // Freeze-until-settled, same rule as onCardFinalize below — the
-    // $effect that rebuilds lanesOrdered depends on isDragging, and
-    // `lanes` only refreshes when the klaxon://lanes-changed listener
-    // fires. Releasing before the write lands re-derives from the stale
-    // `lanes`, so the lane visibly snaps back to its old slot and then
-    // forward again. One zone and one write here, so no counter is
-    // needed; `finally` releases even on failure so a rejected reorder
-    // can't wedge the board.
+    // Freeze-until-settled, same rule as onCardFinalize below. The $effect
+    // that rebuilds lanesOrdered depends on isDragging and re-derives from
+    // `lanes` — so the freeze must not lift until `lanes` itself holds the
+    // new order, or the lane snaps back to its old slot and then jumps
+    // forward.
+    //
+    // Awaiting the write alone is NOT enough: `lanes` refreshes through a
+    // SECOND round trip (reorder_lanes emits klaxon://lanes-changed, whose
+    // listener calls loadLanes → invoke("list_lanes")). Releasing after
+    // only the write leaves that fetch in flight and the effect still
+    // reads pre-drag order. So we refresh `lanes` here before releasing —
+    // safe to assign while frozen, since the effect early-returns and
+    // never reads it. The listener's own redundant refresh is harmless.
+    //
+    // loadLanes() swallows its own errors, so the release always runs;
+    // refreshing on the failure path too resyncs the board with whatever
+    // the backend actually committed rather than leaving a rejected order
+    // on screen.
+    pendingWrites++;
     try {
       await api.reorderLanes(lanesOrdered.map((l) => l.id));
     } catch (err) {
       console.error("reorderLanes failed", err);
     } finally {
-      isDragging = false;
+      await loadLanes();
+      pendingWrites--;
+      if (pendingWrites === 0) isDragging = false;
     }
   }
 
@@ -140,7 +155,7 @@
       // would snap back to its pre-drag slot, then jump forward again
       // once the klaxon://reminders-changed refresh arrives. So the
       // freeze only lifts once every placeTask write from THIS drag has
-      // settled, success or failure (pendingPlacements tracks in-flight
+      // settled, success or failure (pendingWrites tracks in-flight
       // writes; decremented in `.finally()` so a rejected write still
       // unfreezes the board instead of wedging it forever).
       //
@@ -163,13 +178,13 @@
         const beforeId = idx > 0 ? items[idx - 1].id : null;
         const afterId =
           idx >= 0 && idx < items.length - 1 ? items[idx + 1].id : null;
-        pendingPlacements++;
+        pendingWrites++;
         api
           .placeTask(droppedId, laneId, beforeId, afterId)
           .catch((err) => console.error("placeTask failed", err))
           .finally(() => {
-            pendingPlacements--;
-            if (pendingPlacements === 0) isDragging = false;
+            pendingWrites--;
+            if (pendingWrites === 0) isDragging = false;
           });
       } else {
         // No API call fired from this zone (source of a cross-lane drag,
@@ -177,7 +192,7 @@
         // target-zone finalize gets to register first, then release only
         // if nothing is (still) pending.
         await tick();
-        if (pendingPlacements === 0) isDragging = false;
+        if (pendingWrites === 0) isDragging = false;
       }
     };
   }

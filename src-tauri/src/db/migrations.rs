@@ -278,6 +278,12 @@ pub fn run(conn: &Connection) -> AppResult<()> {
 /// same migration and any `ALTER TABLE ... ADD COLUMN` in it failed
 /// permanently with "duplicate column name", with no in-app recovery.
 /// SQLite has transactional DDL, so one transaction closes that window.
+///
+/// Consequence for future migrations: their SQL now runs inside an open
+/// transaction, so it must not contain `BEGIN`/`COMMIT` or `VACUUM`, and
+/// a `PRAGMA` that only takes effect outside one (`foreign_keys` is the
+/// realistic trap — a 12-step table rebuild would need it) will silently
+/// no-op rather than error. None of the existing entries do this.
 fn run_list(conn: &Connection, migrations: &[&str]) -> AppResult<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
@@ -368,6 +374,41 @@ mod tests {
         super::run_list(&conn, &[good, fixed]).unwrap();
         assert_eq!(table_count("later"), 1);
         assert_eq!(recorded(&conn), 2, "retry records the version it applied");
+    }
+
+    /// The other half of issue #5, and the half the test above cannot
+    /// see: the version row must commit WITH the schema change, not merely
+    /// after it. An implementation that committed the DDL and then wrote
+    /// the version separately would satisfy every assertion above while
+    /// still leaving the crash-in-the-gap window wide open. Force the
+    /// version insert itself to fail and require the already-successful
+    /// DDL to roll back with it.
+    #[test]
+    fn the_version_row_commits_with_its_migration() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+             CREATE TRIGGER block_v1 BEFORE INSERT ON schema_version
+             WHEN new.version = 1 BEGIN SELECT RAISE(ABORT, 'simulated crash'); END;",
+        )
+        .unwrap();
+
+        assert!(
+            super::run_list(&conn, &["CREATE TABLE t (id TEXT PRIMARY KEY);"]).is_err(),
+            "the blocked version insert must surface its error"
+        );
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 't'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            tables, 0,
+            "DDL must roll back when recording its version fails"
+        );
     }
 
     fn fts_hits(conn: &rusqlite::Connection, term: &str) -> i64 {
