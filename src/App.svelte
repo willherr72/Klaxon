@@ -171,16 +171,47 @@
   editorOpen.subscribe((v) => (isEditorOpen = v));
   nowTick.subscribe((v) => (now = v));
 
-  async function refresh() {
-    try {
-      const list = await api.listReminders();
-      reminders.set(list);
-      // Keep the OS-level scheduled notifications (AlarmManager on
-      // Android) in sync with whatever the canonical reminder list
-      // looks like now. No-op on desktop.
+  // Serialized form of the list currently in the store, so a refresh that
+  // fetches identical rows can skip re-publishing them. Every mutating
+  // command emits klaxon://reminders-changed AND its handler calls
+  // refresh(), so the same state is routinely fetched twice in a row;
+  // re-setting the store the second time re-derives every view and
+  // re-renders the board for nothing (issue #6). Safe to cache because
+  // this is the only place that writes the store.
+  let publishedReminders = "";
+
+  // Reconciling OS alarms is the expensive half — on Android it's a full
+  // AlarmManager pass; on desktop it's a no-op. Coalesce bursts into one
+  // trailing run rather than skipping any: a reconcile that is merely
+  // late still arms every future alarm, whereas one that is wrongly
+  // skipped does not, and cold alarms are not something to be clever
+  // about.
+  const RECONCILE_COALESCE_MS = 300;
+  let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleReconcile() {
+    if (reconcileTimer !== null) clearTimeout(reconcileTimer);
+    reconcileTimer = setTimeout(() => {
+      reconcileTimer = null;
       reconcileScheduledNotifications().catch((e) =>
         console.warn("reconcileScheduledNotifications failed", e),
       );
+    }, RECONCILE_COALESCE_MS);
+  }
+
+  async function refresh() {
+    try {
+      const list = await api.listReminders();
+      // Keep the OS-level scheduled notifications (AlarmManager on
+      // Android) in sync with whatever the canonical reminder list looks
+      // like now. No-op on desktop. Scheduled unconditionally — every
+      // refresh reconciles exactly as before, bursts just collapse into
+      // one pass instead of two.
+      scheduleReconcile();
+      const published = JSON.stringify(list);
+      if (published === publishedReminders) return;
+      publishedReminders = published;
+      reminders.set(list);
     } catch (e) {
       console.error("listReminders failed", e);
     }
@@ -308,6 +339,7 @@
   });
 
   onDestroy(() => {
+    if (reconcileTimer !== null) clearTimeout(reconcileTimer);
     if (unlistenNew) unlistenNew();
     if (unlistenChanged) unlistenChanged();
     window.removeEventListener("keydown", onKeydown);
