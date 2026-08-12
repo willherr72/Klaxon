@@ -96,11 +96,27 @@
     }
   });
 
+  // Which reminder the fields below were last seeded from ("__new__" for a
+  // blank editor). A plain `let`, not `$state`: the effect writes it, and a
+  // reactive write would re-trigger the effect that wrote it.
+  let seededFor: string | null = null;
+
   $effect(() => {
     // Re-seed every time the editor opens. Reading `open` makes the effect
     // re-run on null → null transitions (e.g. opening "new" twice in a row)
     // — without it, the previous title sticks around.
-    if (!open) return;
+    if (!open) {
+      seededFor = null;
+      return;
+    }
+    // Re-seed only when the editor is showing a DIFFERENT reminder — not
+    // merely because the `reminder` object was replaced. Any refresh of the
+    // reminders list (a sync pass, or now any mutating command) hands us a
+    // fresh object for the same row; re-seeding on that would discard
+    // whatever the user has typed but not yet saved.
+    const key = reminder?.id ?? "__new__";
+    if (seededFor === key) return;
+    seededFor = key;
     if (reminder) {
       title = reminder.title;
       description = reminder.description ?? "";

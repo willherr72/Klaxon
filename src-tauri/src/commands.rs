@@ -52,6 +52,7 @@ pub fn create_reminder(
 #[tauri::command]
 pub fn update_reminder(
     state: State<'_, AppState>,
+    app: AppHandle,
     id: String,
     patch: ReminderUpdate,
 ) -> AppResult<Reminder> {
@@ -60,6 +61,13 @@ pub fn update_reminder(
         repo::update(&conn, &id, patch)?
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    // Announce the change instead of trusting the caller to re-fetch. The
+    // editor happens to call refresh() after saving, which masked this for
+    // years; the Tasks board's star control has no such path, so its cards
+    // rendered stale priorities even though the write had landed. Emitting
+    // here means any caller that mutates a reminder gets a correct UI —
+    // matching place_task and sort_lane_by_stars.
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }

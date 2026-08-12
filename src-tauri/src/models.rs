@@ -245,7 +245,26 @@ pub struct ThoughtUpdate {
 
 #[cfg(test)]
 mod tests {
-    use super::{truncate_body, MAX_THOUGHT_CHARS};
+    use super::{truncate_body, ReminderUpdate, MAX_THOUGHT_CHARS};
+
+    /// The Tasks board's star control sends a one-field patch
+    /// (`{"priority":"high"}`) rather than the editor's full payload. Serde
+    /// fills absent `Option` fields with `None`, so the omitted fields must
+    /// read as "leave alone" — not as a deserialization error, and not as
+    /// "clear it".
+    #[test]
+    fn a_single_field_patch_deserializes_with_everything_else_none() {
+        let patch: ReminderUpdate = serde_json::from_str(r#"{"priority":"high"}"#).unwrap();
+        assert_eq!(patch.priority, Some(super::Priority::High));
+        assert!(patch.title.is_none());
+        assert!(patch.silent.is_none());
+        assert!(patch.tags.is_none());
+        // Double-Option fields: absent must be the OUTER None ("untouched"),
+        // never Some(None) ("clear it").
+        assert!(patch.sound_path.is_none());
+        assert!(patch.repeat_rule.is_none());
+        assert!(patch.task_lane_id.is_none());
+    }
 
     #[test]
     fn short_bodies_pass_through_untouched() {

@@ -291,9 +291,12 @@
     unlistenNew = await listen("klaxon://open-new-reminder", () => {
       openNew();
     });
-    // Backend signals this whenever it mutates reminders without a user
-    // command — sync push/pull applying remote changes, scheduler firing
-    // a reminder, scheduler rescheduling a recurring item. We just re-fetch.
+    // Backend signals this whenever it mutates reminders: sync push/pull
+    // applying remote changes, the scheduler firing or rescheduling, and
+    // the mutating commands themselves (update, place_task, sort lane).
+    // Commands emit too so a caller that can't re-fetch on its own — the
+    // Tasks board's star control, say — still shows the truth. We just
+    // re-fetch.
     unlistenChanged = await listen("klaxon://reminders-changed", () => {
       refresh();
     });
