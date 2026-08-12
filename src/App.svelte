@@ -171,13 +171,15 @@
   editorOpen.subscribe((v) => (isEditorOpen = v));
   nowTick.subscribe((v) => (now = v));
 
-  // Serialized form of the list currently in the store, so a refresh that
-  // fetches identical rows can skip re-publishing them. Every mutating
+  // Serialized form of the rows last published to the store, so a refresh
+  // that fetches identical rows can skip re-publishing them. Every mutating
   // command emits klaxon://reminders-changed AND its handler calls
   // refresh(), so the same state is routinely fetched twice in a row;
   // re-setting the store the second time re-derives every view and
   // re-renders the board for nothing (issue #6). Safe to cache because
-  // this is the only place that writes the store.
+  // this is the only place that writes the store. The "" start is a
+  // sentinel no JSON.stringify result can equal (the shortest is "[]"),
+  // so the first fetch always publishes.
   let publishedReminders = "";
 
   // Reconciling OS alarms is the expensive half — on Android it's a full
@@ -187,16 +189,40 @@
   // skipped does not, and cold alarms are not something to be clever
   // about.
   const RECONCILE_COALESCE_MS = 300;
+  // Ceiling on how long coalescing may defer a pass. A steady sub-300ms
+  // stream of events would otherwise push the deadline out forever; no
+  // current emitter can produce one, but alarms are the wrong place to
+  // rely on that staying true.
+  const RECONCILE_MAX_WAIT_MS = 1000;
   let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconcileDueBy = 0;
+
+  function runReconcile() {
+    if (reconcileTimer !== null) clearTimeout(reconcileTimer);
+    reconcileTimer = null;
+    reconcileDueBy = 0;
+    reconcileScheduledNotifications().catch((e) =>
+      console.warn("reconcileScheduledNotifications failed", e),
+    );
+  }
 
   function scheduleReconcile() {
-    if (reconcileTimer !== null) clearTimeout(reconcileTimer);
-    reconcileTimer = setTimeout(() => {
-      reconcileTimer = null;
-      reconcileScheduledNotifications().catch((e) =>
-        console.warn("reconcileScheduledNotifications failed", e),
-      );
-    }, RECONCILE_COALESCE_MS);
+    const nowMs = Date.now();
+    if (reconcileTimer === null) reconcileDueBy = nowMs + RECONCILE_MAX_WAIT_MS;
+    else clearTimeout(reconcileTimer);
+    const delay = Math.max(0, Math.min(RECONCILE_COALESCE_MS, reconcileDueBy - nowMs));
+    reconcileTimer = setTimeout(runReconcile, delay);
+  }
+
+  /// Run a pending reconcile NOW rather than losing it. On a device with
+  /// sync disabled — the default — this webview timer is the only thing
+  /// that ever arms an OS alarm: both background reconcilers short-circuit
+  /// when sync is off. So a pending pass must be flushed at the moments
+  /// the process may stop existing (backgrounding, teardown), or a
+  /// just-created reminder would silently never ring.
+  function flushReconcile() {
+    if (reconcileTimer === null) return;
+    runReconcile();
   }
 
   async function refresh() {
@@ -339,7 +365,7 @@
   });
 
   onDestroy(() => {
-    if (reconcileTimer !== null) clearTimeout(reconcileTimer);
+    flushReconcile();
     if (unlistenNew) unlistenNew();
     if (unlistenChanged) unlistenChanged();
     window.removeEventListener("keydown", onKeydown);
@@ -348,7 +374,13 @@
   });
 
   function onVisibilityChange() {
-    if (document.visibilityState !== "visible") return;
+    if (document.visibilityState !== "visible") {
+      // Going to background is exactly when the cold-alarm guarantee
+      // starts mattering, and when the process may be killed without
+      // warning — don't leave a coalesced reconcile pending.
+      flushReconcile();
+      return;
+    }
     api.syncNow().catch((e) => console.warn("syncNow failed", e));
   }
 

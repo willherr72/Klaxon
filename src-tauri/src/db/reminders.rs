@@ -170,7 +170,11 @@ pub fn list_all(conn: &Connection) -> AppResult<Vec<Reminder>> {
         "SELECT id, title, description, due_at, priority, sound_path, repeat_rule, state,
                 snooze_until, created_at, updated_at, source, external_id, last_synced_at, silent, tags, task_lane_id, task_sort_key
          FROM reminders
-         ORDER BY due_at ASC",
+         -- id breaks ties so the row order is stable across identical
+         -- reads. Tasks all share due_at = 0, and the frontend compares
+         -- consecutive fetches to skip redundant re-renders — an unstable
+         -- tie order would make that comparison miss.
+         ORDER BY due_at ASC, id ASC",
     )?;
     let rows = stmt.query_map([], row_to_reminder)?;
     let mut out = Vec::new();
