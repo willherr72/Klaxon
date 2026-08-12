@@ -21,7 +21,14 @@ use crate::sync::types::{ChangeSet, RemoteReminder, RemoteThought, RemoteTombsto
 
 /// Emit a "something changed about the reminders table" event so the
 /// frontend re-fetches. Called from anywhere the backend mutates reminders
-/// without a user-initiated command (sync push/pull, scheduler fire).
+/// — sync push/pull, scheduler fire, AND the mutating commands themselves.
+///
+/// Commands used to stay silent on the theory that a user-initiated change
+/// is the caller's job to redraw. That held only while every caller had a
+/// refresh path: the Tasks board's star control didn't, so its writes
+/// landed in SQLite and never appeared on screen. The alarm window and the
+/// Android notification actions are separate callers with the same gap.
+/// Announcing the change is the cheaper invariant.
 pub fn emit_reminders_changed(app: &AppHandle) {
     let _ = app.emit("klaxon://reminders-changed", ());
 }

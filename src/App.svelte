@@ -114,6 +114,10 @@
   // v0.3.1: when the user hits `+ Add task` on a swim-lane column, this
   // pre-seeds the editor so the saved task lands in the right lane.
   let editorDefaultLaneId = $state<string | null>(null);
+  // Bumped by every openNew*/openEdit call. Lets the editor tell a real
+  // open from the `reminder` prop being swapped by a list refresh, so it
+  // re-seeds for the former and leaves unsaved edits alone for the latter.
+  let editorSeedToken = $state(0);
   let tagFilter = $state<string | null>(null);
   let quickAddOpen = $state(false);
   let quickAddHotkey = $state("Ctrl+KeyK");
@@ -481,6 +485,7 @@
   }
 
   function openNew() {
+    editorSeedToken++;
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
     editorDefaultLaneId = null;
@@ -492,6 +497,7 @@
   /** Open the editor for a brand-new reminder/task, pre-seeded to the given
    * timestamp. Used by the calendar's right-click → context menu flow. */
   function openNewForDate(ms: number, silent: boolean) {
+    editorSeedToken++;
     editorDefaultDueAt = ms;
     editorDefaultSilent = silent;
     editorDefaultLaneId = null;
@@ -507,6 +513,7 @@
    * Only the first line becomes the title: a title field shouldn't hold a
    * paragraph, and the rest of the thought stays available in the feed. */
   function openNewFromThought(body: string, silent: boolean) {
+    editorSeedToken++;
     editorDefaultDueAt = null;
     editorDefaultSilent = silent;
     editorDefaultLaneId = null;
@@ -518,6 +525,7 @@
   /** Open the editor for a brand-new task that should land in a specific
    * swim lane. Used by the `+ Add task` button on a column. */
   function openNewInLane(laneId: string) {
+    editorSeedToken++;
     editorDefaultDueAt = null;
     editorDefaultSilent = true;
     editorDefaultLaneId = laneId;
@@ -527,6 +535,7 @@
   }
 
   function openEdit(r: Reminder) {
+    editorSeedToken++;
     editorDefaultDueAt = null;
     editorDefaultSilent = false;
     editorDefaultLaneId = null;
@@ -705,6 +714,7 @@
     defaultSilent={editorDefaultSilent}
     defaultLaneId={editorDefaultLaneId}
     defaultTitle={editorDefaultTitle}
+    seedToken={editorSeedToken}
     onClose={closeEditor}
     onSave={handleSave}
     onDelete={handleDelete}

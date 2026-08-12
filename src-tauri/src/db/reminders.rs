@@ -627,6 +627,39 @@ mod tests {
         }
     }
 
+    /// What the Tasks board's star control actually sends: a patch that
+    /// sets ONLY priority. Everything it omits must survive — above all the
+    /// lane and the board position, since a task that loses its lane
+    /// vanishes from both the board and the reminders list.
+    #[test]
+    fn a_priority_only_patch_leaves_lane_and_board_position_alone() {
+        let conn = test_conn();
+        let first = create(&conn, mk_task("first")).unwrap();
+        let target = create(&conn, mk_task("target")).unwrap();
+        let lane_before = target.task_lane_id.clone();
+        let key_before = target.task_sort_key;
+        assert!(lane_before.is_some() && key_before.is_some());
+
+        let updated = update(
+            &conn,
+            &target.id,
+            ReminderUpdate {
+                priority: Some(Priority::High),
+                ..blank_update()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.priority, Priority::High);
+        assert_eq!(updated.task_lane_id, lane_before, "lane must survive");
+        assert_eq!(updated.task_sort_key, key_before, "must not jump lane position");
+        assert!(updated.silent, "still a task");
+        assert_eq!(updated.title, target.title);
+        // And the neighbour is untouched.
+        let other = super::get_by_id(&conn, &first.id).unwrap();
+        assert_eq!(other.task_sort_key, first.task_sort_key);
+    }
+
     /// New tasks stack on top: first task in an empty lane gets
     /// KEY_STRIDE, each subsequent one gets (lane min − KEY_STRIDE).
     #[test]
