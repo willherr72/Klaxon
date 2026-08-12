@@ -5,6 +5,26 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — 2026-08-12
+
+Sync-compatible with 0.8.0 and 0.8.1 — update whenever suits you.
+
+### Fixed
+
+- **Tapping the stars on a task card now visibly sets its priority.** The
+  taps were always saving — the board just never redrew, so the stars
+  looked like they did nothing. If you tapped stars before updating, the
+  priorities you picked are already stored and will appear once you're on
+  this version.
+- **Changes made outside the main window show up right away.** Snoozing
+  or dismissing from the alarm popup, or from an Android notification,
+  used to leave the reminders list showing the old state until something
+  else refreshed it.
+- **The editor no longer loses what you're typing.** A sync arriving
+  mid-edit — or, after the fix above, any change elsewhere in the app —
+  could reset the fields you had open. Your unsaved edits now stay put
+  until you save or close.
+
 ## [0.8.1] — 2026-08-11
 
 Two follow-ups from the 0.8.0 review. Sync-compatible with 0.8.0 — no

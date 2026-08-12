@@ -34,6 +34,7 @@
     defaultSilent = false,
     defaultLaneId = null,
     defaultTitle = "",
+    seedToken = 0,
     onClose,
     onSave,
     onDelete,
@@ -47,6 +48,13 @@
     /** Pre-fill the title for a brand-new item. Used when promoting a
      * thought into a task or reminder. */
     defaultTitle?: string;
+    /** Bumped by every deliberate "open the editor" action. Distinguishes
+     * a real open — which must re-seed the fields, including the defaults
+     * above — from the `reminder` prop merely being replaced by a refresh
+     * of the reminders list. Without it, re-opening for a different lane
+     * or date while the editor is already open would silently keep the
+     * previous defaults. */
+    seedToken?: number;
     onClose: () => void;
     onSave: (input: ReminderCreate, id: string | null) => void;
     onDelete: (id: string) => void;
@@ -96,11 +104,31 @@
     }
   });
 
+  // Which reminder the fields below were last seeded from ("__new__" for a
+  // blank editor). A plain `let`, not `$state`: the effect writes it, and a
+  // reactive write would re-trigger the effect that wrote it.
+  let seededFor: string | null = null;
+
   $effect(() => {
     // Re-seed every time the editor opens. Reading `open` makes the effect
     // re-run on null → null transitions (e.g. opening "new" twice in a row)
     // — without it, the previous title sticks around.
-    if (!open) return;
+    if (!open) {
+      seededFor = null;
+      return;
+    }
+    // Re-seed on a deliberate open (seedToken) or a different reminder —
+    // NOT merely because the `reminder` object was replaced. Any refresh of
+    // the reminders list (a sync pass, or now any mutating command) hands
+    // us a fresh object for the same row; re-seeding on that would discard
+    // whatever the user has typed but not yet saved.
+    //
+    // The trade: a remote change to the row being edited no longer reaches
+    // these fields, and Save writes the whole payload, so your screen wins
+    // over the peer's edit. Deliberate — having your typing silently
+    // replaced mid-sentence is the worse failure.
+    const key = `${seedToken}:${reminder?.id ?? "__new__"}`;
+    if (seededFor === key) return;
     if (reminder) {
       title = reminder.title;
       description = reminder.description ?? "";
@@ -127,6 +155,9 @@
       laneId = defaultLaneId;
     }
     tagDraft = "";
+    // Latch only after seeding succeeded, so a throw above can't leave the
+    // editor permanently refusing to seed this reminder.
+    seededFor = key;
   });
 
   function buildRepeatRule(): RepeatRule | null {

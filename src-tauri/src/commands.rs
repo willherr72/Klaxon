@@ -38,6 +38,7 @@ fn nudge_write(state: &State<'_, AppState>) {
 #[tauri::command]
 pub fn create_reminder(
     state: State<'_, AppState>,
+    app: AppHandle,
     input: ReminderCreate,
 ) -> AppResult<Reminder> {
     let r = {
@@ -45,6 +46,7 @@ pub fn create_reminder(
         repo::create(&conn, input)?
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }
@@ -52,6 +54,7 @@ pub fn create_reminder(
 #[tauri::command]
 pub fn update_reminder(
     state: State<'_, AppState>,
+    app: AppHandle,
     id: String,
     patch: ReminderUpdate,
 ) -> AppResult<Reminder> {
@@ -60,6 +63,12 @@ pub fn update_reminder(
         repo::update(&conn, &id, patch)?
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    // Announce the change instead of trusting the caller to re-fetch. The
+    // editor happens to call refresh() after saving, which masked this;
+    // the Tasks board's star control has no such path, so its cards
+    // rendered stale priorities even though the write had landed. Every
+    // reminder-mutating command emits now, so no caller has to know.
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }
@@ -76,6 +85,7 @@ pub fn delete_reminder(
     }
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(())
 }
@@ -93,6 +103,10 @@ pub fn snooze_reminder(
     };
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    // The alarm window and the Android notification actions are separate
+    // callers with no way to refresh the main window's list — without this
+    // the countdown there keeps showing the pre-snooze time.
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }
@@ -121,6 +135,7 @@ pub fn dismiss_reminder(
         }
     };
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }
@@ -137,6 +152,7 @@ pub fn complete_reminder(
     };
     alerts::cancel_alert(&app, &id);
     let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
+    let _ = app.emit("klaxon://reminders-changed", ());
     nudge_write(&state);
     Ok(r)
 }
