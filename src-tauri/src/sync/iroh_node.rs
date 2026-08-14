@@ -39,9 +39,13 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// slower than this is indistinguishable from unreachable for our purposes.
 const SELF_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
-/// How long to give the probe endpoint to reach a relay before concluding
-/// this machine is offline. Measured ~3s on the incident machine.
-const PROBE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+/// How long to give the probe endpoint to reach a relay before treating the
+/// result as inconclusive. Measured ~3s on the incident machine, but this
+/// must clear iroh's own `NET_REPORT_TIMEOUT` (10s) — `online()` waits on a
+/// net report to pick a relay, so a shorter budget would call a merely slow
+/// network "offline" and quietly disarm the watchdog on exactly the
+/// degraded links it exists for.
+const PROBE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
 
 /// Cap on `Endpoint::bind()`.
 ///
@@ -215,9 +219,11 @@ pub fn relay_connected(endpoint: &Endpoint) -> bool {
 /// component reporting itself healthy is exactly what a self-report cannot
 /// catch, and this call cannot be fooled that way.
 ///
-/// The dial is deliberately UNSEEDED, so it takes the same route a real
-/// peer would: resolve our id, then reach us over relay or hole-punched
-/// direct path. Seeding it with our own addresses would be a much weaker
+/// The dial is deliberately UNSEEDED: it resolves our id and comes back at
+/// us over a relay, which is strictly HARDER than a real peer's dial (those
+/// carry persisted and mDNS seeds). That is the point — by the time this
+/// runs, the seeded paths have already failed five passes running. Seeding
+/// it with our own addresses would be a much weaker
 /// test — it would reach our router over loopback and prove only that the
 /// socket is bound and the accept loop alive, both of which were TRUE
 /// throughout the 42-hour outage. A test that passes during the failure it
@@ -243,17 +249,11 @@ pub async fn self_reachable(our_id: &str) -> Option<bool> {
         .ok()?
         .ok()?;
 
-    // Control: does the PROBE get a relay home? If not, we are offline and
-    // our endpoint's silence tells us nothing.
-    let mut probe_relay = probe.home_relay_status();
-    let mut online = false;
-    for _ in 0..(PROBE_RELAY_WAIT.as_millis() / 250) {
-        if probe_relay.get().iter().any(|s| s.is_connected()) {
-            online = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
+    // Control: can a brand-new endpoint reach a relay at all? If not, our
+    // own endpoint's silence tells us nothing about its health.
+    let online = tokio::time::timeout(PROBE_RELAY_WAIT, probe.online())
+        .await
+        .is_ok();
 
     let verdict = if online {
         Some(matches!(
@@ -261,9 +261,11 @@ pub async fn self_reachable(our_id: &str) -> Option<bool> {
             Ok(Ok(_))
         ))
     } else {
-        log::info!(
-            "self-test inconclusive: a fresh endpoint could not reach a relay either, \
-             so this machine is offline — not blaming ours"
+        // Offline, or a network that blocks n0's relays — we cannot tell
+        // which, and neither lets us judge our own endpoint.
+        log::warn!(
+            "self-test inconclusive: a fresh endpoint could not reach a relay either \
+             within {PROBE_RELAY_WAIT:?} — not blaming ours"
         );
         None
     };
