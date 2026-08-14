@@ -19,14 +19,22 @@ use crate::sync::proto::{
 };
 use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
-// Both must stay UNDER `sync::task::SYNC_PEER_TIMEOUT` (10s), or that outer
-// budget always wins the race and every failure reaches the log as the
-// generic "peer unreachable" — which is exactly what happened during the
-// 2026-08-12..14 incident: 42 hours of failures and not one line saying
-// what iroh actually objected to. A dial that hasn't landed in 7s was
-// already doomed under the old 10s cap, so this costs no patience.
-const DIAL_TIMEOUT: Duration = Duration::from_secs(7);
-const RPC_TIMEOUT: Duration = Duration::from_secs(7);
+// A sync attempt is hello → pull → push, each dialing fresh, all inside
+// `sync::task::SYNC_PEER_TIMEOUT` (10s). `hello` spends up to HELLO_TIMEOUT
+// first, so the budget left for the next dial is 10 - 3 = 7s; at 5s the
+// specific iroh error lands in the log before the outer cap can flatten it
+// into the generic "peer unreachable". That flattening is why the
+// 2026-08-12..14 incident ran 42 hours without one line saying what iroh
+// actually objected to. A dial that hasn't landed in 5s was already doomed
+// under the old 10s cap, so this costs no real patience.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+const RPC_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Pairing is NOT under the per-peer sync budget: it is a once-per-device,
+/// user-initiated action, typically with both devices cold and on different
+/// networks — the case where a short dial timeout produces a spurious
+/// failure the user reads as "pairing is broken".
+const PAIR_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// What actually happened on the wire for one RPC dial. Logged for
 /// diagnostics and, on success, persisted so the next dial can skip
@@ -210,9 +218,11 @@ pub async fn pair_initiate(
     // server-side 120s window.
     let pair_timeout = Duration::from_secs(150);
 
-    let conn = tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(id, ALPN_PAIR))
+    let conn = tokio::time::timeout(PAIR_DIAL_TIMEOUT, endpoint.connect(id, ALPN_PAIR))
         .await
-        .map_err(|_| AppError::Invalid(format!("pair connect timed out after {DIAL_TIMEOUT:?}")))?
+        .map_err(|_| {
+            AppError::Invalid(format!("pair connect timed out after {PAIR_DIAL_TIMEOUT:?}"))
+        })?
         .map_err(|e| AppError::Invalid(format!("pair connect failed: {e}")))?;
 
     let (mut send, mut recv) = conn

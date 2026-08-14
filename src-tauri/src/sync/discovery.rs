@@ -44,6 +44,29 @@ pub struct DiscoveryHandle {
 }
 
 impl DiscoveryHandle {
+    /// Stop the mDNS daemon and withdraw our service registration.
+    ///
+    /// Dropping the handle is NOT enough: `mdns-sd` implements no `Drop`,
+    /// and its run loop exits only on an explicit `Exit` command — it uses
+    /// `try_recv` and ignores channel disconnection. A dropped handle
+    /// therefore leaves the daemon thread alive, holding its multicast
+    /// sockets and still answering queries with a now-dead iroh port. That
+    /// matters because the endpoint watchdog re-registers on every rebuild:
+    /// without this, each rebuild would leak a daemon that actively
+    /// poisons peers' LAN dial seeds with stale ports.
+    pub fn shutdown(&self) {
+        // Only the last holder should stop the daemon — the handle is Clone
+        // and consumers may still be reading `peers`.
+        if Arc::strong_count(&self._daemon) > 1 {
+            log::debug!("mDNS shutdown skipped — handle still shared");
+            return;
+        }
+        match self._daemon.shutdown() {
+            Ok(_) => log::info!("mDNS daemon stopped"),
+            Err(e) => log::warn!("mDNS daemon shutdown failed: {e}"),
+        }
+    }
+
     /// Dialable iroh addresses for a peer, by its iroh node id — fresh from
     /// the LAN right now, or empty if the peer isn't currently visible.
     pub fn addrs_for_node(&self, node_id: &str) -> Vec<SocketAddr> {

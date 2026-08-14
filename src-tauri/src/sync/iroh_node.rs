@@ -31,6 +31,14 @@ use crate::sync::{DeviceIdentity, PendingPairs};
 /// Raw 32 bytes, not PEM — there's no interop need and binary keeps it tight.
 const SECRET_FILE: &str = "klaxon-iroh-secret.bin";
 
+/// Cap on how long a rebuild waits for the old endpoint to drain.
+const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Cap on the self-test dial. A reachable endpoint answers in well under a
+/// second (232ms measured over the relay on the incident machine); anything
+/// slower than this is indistinguishable from unreachable for our purposes.
+const SELF_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
 #[derive(Clone)]
 pub struct IrohNode {
     pub endpoint: Endpoint,
@@ -137,8 +145,21 @@ pub async fn bring_up(cfg: &BringUp) -> AppResult<String> {
         Some(node.node_id.clone()),
         iroh_port,
     ) {
-        Ok(h) => *cfg.discovery_state.lock() = Some(h),
-        Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
+        Ok(h) => {
+            // Swap, don't clear-then-fill: on a rebuild the old daemon must
+            // survive until its replacement exists, or a discovery failure
+            // (no non-loopback IP — very likely during the network trouble
+            // that triggered the rebuild) would leave LAN dialing dead
+            // until the next restart.
+            let previous = cfg.discovery_state.lock().replace(h);
+            if let Some(old) = previous {
+                old.shutdown();
+            }
+        }
+        Err(e) => log::warn!(
+            "mDNS discovery failed to start: {e} — keeping the previous \
+             registration rather than going dark on the LAN"
+        ),
     }
 
     Ok(node.node_id)
@@ -160,6 +181,35 @@ pub fn relay_connected(endpoint: &Endpoint) -> bool {
         .any(|status| status.is_connected())
 }
 
+/// Can anything actually reach us right now?
+///
+/// Binds a throwaway endpoint and dials our OWN endpoint id. This is
+/// positive evidence rather than inference: a healthy transport answers its
+/// own dial in milliseconds (232ms measured), while the dead one from the
+/// 2026-08-12..14 incident timed out even over loopback. That gap is what
+/// separates "our peer is asleep" — the ordinary overnight case, which must
+/// never cost a rebuild — from "we are unreachable and will stay that way".
+///
+/// Deliberately does NOT trust `relay_connected()` alone: a wedged
+/// component reporting itself healthy is exactly what a self-report cannot
+/// catch, and this call cannot be fooled that way.
+///
+/// Returns `None` when the test itself could not run (no throwaway endpoint
+/// could be bound), which is not evidence either way.
+pub async fn self_reachable(our_id: &str) -> Option<bool> {
+    use std::str::FromStr;
+
+    let id = iroh::EndpointId::from_str(our_id).ok()?;
+    let probe = Endpoint::builder(presets::N0).bind().await.ok()?;
+    let reachable = matches!(
+        tokio::time::timeout(SELF_TEST_TIMEOUT, probe.connect(id, ALPN_SYNC)).await,
+        Ok(Ok(_))
+    );
+    // Best-effort teardown; the probe is disposable either way.
+    let _ = tokio::time::timeout(CLOSE_TIMEOUT, probe.close()).await;
+    Some(reachable)
+}
+
 /// Tear the transport down and stand it back up from scratch.
 ///
 /// The endpoint id is stable across this — it comes from the persisted
@@ -170,16 +220,32 @@ pub async fn rebuild(cfg: &BringUp) -> AppResult<String> {
 
     // Take the handles out under the lock, then drop/close them OUTSIDE it:
     // `close()` is async and these are parking_lot mutexes, which must never
-    // be held across an await.
+    // be held across an await. Discovery is left alone here — `bring_up`
+    // swaps it only once a replacement exists.
     let old_router = cfg.router_state.lock().take();
     let old_node = cfg.node_state.lock().take();
-    *cfg.discovery_state.lock() = None;
 
     // Dropping the Router aborts its accept loop; closing the endpoint frees
     // the UDP sockets so the new bind doesn't race the old one for a port.
     drop(old_router);
     if let Some(node) = old_node {
-        node.endpoint.close().await;
+        // BOUNDED. `Endpoint::close()` waits for all connections to drain
+        // with no timeout of its own, and we only get here when the
+        // transport already looks dead — the exact state where draining may
+        // never finish. Awaiting it unbounded would hang the sync loop with
+        // both state arcs already emptied: no transport, no recovery, no
+        // log, restart-only. That is the v0.7.4 shape and it is strictly
+        // worse than the outage this function exists to end. A timed-out
+        // close leaks a socket until process exit; that is the cheaper bug.
+        if tokio::time::timeout(CLOSE_TIMEOUT, node.endpoint.close())
+            .await
+            .is_err()
+        {
+            log::warn!(
+                "endpoint close did not finish within {CLOSE_TIMEOUT:?} — \
+                 abandoning the old socket and rebinding anyway"
+            );
+        }
     }
 
     let id = bring_up(cfg).await?;
