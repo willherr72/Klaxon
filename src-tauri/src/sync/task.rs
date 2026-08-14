@@ -3,7 +3,7 @@
 //! not surfaced.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh::Endpoint;
 use parking_lot::Mutex;
@@ -46,7 +46,26 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 /// `connect` keeps trying to reach an offline node for a long time; without
 /// this cap one unreachable peer stalls the whole pass — and on mobile it
 /// holds the WorkManager background worker busy until the OS kills it.
+///
+/// Keep this ABOVE `iroh_client`'s own dial/RPC timeouts. When it was the
+/// tighter of the two, it always won the race and flattened every failure
+/// into "peer unreachable" — 42 hours of an incident with the specific iroh
+/// error never once reaching a log line.
 const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Consecutive passes where every peer failed before we stop assuming the
+/// peers are merely away and start suspecting our own transport.
+const FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT: u32 = 5;
+
+/// Backstop: rebuild after this many consecutive all-failed passes even if
+/// the endpoint still claims a healthy relay. The relay signal is the best
+/// evidence we have that the transport is dead, but "my health check says
+/// I'm fine" is exactly what a wedged component reports.
+const FAILED_PASSES_BEFORE_FORCED_REBUILD: u32 = 15;
+
+/// Never rebuild more often than this. A rebuild drops every in-flight
+/// connection, so a tight loop of them would be worse than the outage.
+const REBUILD_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// Outcome of syncing one peer under [`SYNC_PEER_TIMEOUT`].
 enum PeerSyncResult {
@@ -79,6 +98,101 @@ pub struct PassOutcome {
     pub failed: usize,
 }
 
+/// Should a run of failed passes be blamed on our own transport?
+///
+/// Two triggers, deliberately different in kind:
+///   * no relay home while passes keep failing — the observed signature of a
+///     dead endpoint, acted on quickly;
+///   * a much longer run of failures regardless of what the health check
+///     says — because a wedged component reporting itself healthy is the
+///     failure mode a health check cannot see.
+///
+/// Pure, so the thresholds and cooldown are testable: binding a real iroh
+/// endpoint under `#[cfg(test)]` trips the Windows loader (see
+/// `sync/iroh_handler.rs`), which rules out testing the caller directly.
+fn should_rebuild(
+    failed_passes: u32,
+    has_relay: bool,
+    since_last_rebuild: Option<Duration>,
+) -> bool {
+    if failed_passes < FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT {
+        return false;
+    }
+    if has_relay && failed_passes < FAILED_PASSES_BEFORE_FORCED_REBUILD {
+        return false;
+    }
+    match since_last_rebuild {
+        Some(elapsed) => elapsed >= REBUILD_COOLDOWN,
+        None => true,
+    }
+}
+
+/// Act on [`should_rebuild`]: stand a fresh transport up when the current
+/// one looks dead. Returns true when a rebuild actually happened.
+async fn maybe_rebuild_endpoint(
+    app: &AppHandle,
+    failed_passes: u32,
+    last_rebuild: &mut Option<Instant>,
+) -> bool {
+    let Some(state) = app.try_state::<crate::AppState>() else {
+        return false;
+    };
+    // Clone the handle out; never hold the lock across the await below.
+    let endpoint = state.iroh_node.lock().as_ref().map(|n| n.endpoint.clone());
+    let Some(endpoint) = endpoint else {
+        return false; // transport never came up; nothing to rebuild
+    };
+
+    let has_relay = crate::sync::iroh_node::relay_connected(&endpoint);
+    if !should_rebuild(
+        failed_passes,
+        has_relay,
+        last_rebuild.map(|at| at.elapsed()),
+    ) {
+        if has_relay {
+            log::debug!(
+                "{failed_passes} failed passes but our relay home is up — \
+                 treating peers as away, not rebuilding"
+            );
+        }
+        return false;
+    }
+
+    let app_dir = match app.path().app_data_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            log::error!("endpoint rebuild: cannot resolve app data dir: {e}");
+            return false;
+        }
+    };
+    log::warn!(
+        "sync has failed {failed_passes} consecutive passes (relay home: {}) — \
+         rebuilding the iroh endpoint",
+        if has_relay { "up" } else { "DOWN" }
+    );
+    let cfg = crate::sync::iroh_node::BringUp {
+        db: state.db.clone(),
+        app: app.clone(),
+        app_dir,
+        identity: crate::sync::read_identity(&state.db),
+        pending_pairs: state.pending_pairs.clone(),
+        node_state: state.iroh_node.clone(),
+        router_state: state.iroh_router.clone(),
+        discovery_state: state.discovery.clone(),
+    };
+    *last_rebuild = Some(Instant::now());
+    match crate::sync::iroh_node::rebuild(&cfg).await {
+        Ok(_) => true,
+        Err(e) => {
+            // State arcs are left empty by a failed rebuild, which every
+            // consumer already reads as "endpoint not ready". The next
+            // cooldown expiry tries again.
+            log::error!("iroh endpoint rebuild failed: {e}");
+            false
+        }
+    }
+}
+
 pub async fn run(
     db: Arc<Mutex<Connection>>,
     app: AppHandle,
@@ -88,6 +202,8 @@ pub async fn run(
     log::info!("sync task online (event-driven)");
     let mut tick = tokio::time::interval(SYNC_INTERVAL);
     tick.tick().await; // first tick fires immediately; skip
+    let mut consecutive_failed_passes: u32 = 0;
+    let mut last_rebuild: Option<Instant> = None;
     loop {
         let triggered: Option<Nudge> = tokio::select! {
             _ = tick.tick() => None,
@@ -156,6 +272,27 @@ pub async fn run(
         }
 
         let outcome = run_one_pass(&db, &app).await;
+
+        // ── Endpoint watchdog ────────────────────────────────────────
+        // A pass where every peer failed is normal — the other device is
+        // usually just asleep. A long RUN of them, with no relay home of
+        // our own, means the transport underneath us has died: nothing can
+        // reach us and our dials go nowhere. iroh does not recover from
+        // this on its own and neither did we, so the loop retried a corpse
+        // every 20 seconds for 42 hours (field incident 2026-08-12..14).
+        if outcome.attempted > 0 && outcome.failed == outcome.attempted {
+            consecutive_failed_passes = consecutive_failed_passes.saturating_add(1);
+        } else {
+            consecutive_failed_passes = 0;
+        }
+        if consecutive_failed_passes >= FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT
+            && maybe_rebuild_endpoint(&app, consecutive_failed_passes, &mut last_rebuild).await
+        {
+            consecutive_failed_passes = 0;
+            // Retry immediately against the fresh endpoint instead of
+            // waiting out the tick.
+            let _ = nudge_tx.send(Nudge::Retry(0));
+        }
 
         // Only nudge-triggered passes retry; the 20s tick is its own retry.
         if triggered.is_some() && outcome.failed > 0 {
@@ -509,9 +646,60 @@ fn silences_alert(state: ReminderState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{with_peer_timeout, PeerSyncResult, SYNC_PEER_TIMEOUT};
+    use super::{
+        should_rebuild, with_peer_timeout, PeerSyncResult,
+        FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, FAILED_PASSES_BEFORE_FORCED_REBUILD,
+        REBUILD_COOLDOWN, SYNC_PEER_TIMEOUT,
+    };
     use crate::error::{AppError, AppResult};
     use std::time::Duration;
+
+    /// A peer being asleep is the ordinary case and must never cost a
+    /// rebuild — this is what keeps the watchdog from thrashing the
+    /// transport every night while the phone is in Android's freezer.
+    #[test]
+    fn a_healthy_relay_means_the_peer_is_away_not_our_transport() {
+        assert!(!should_rebuild(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, true, None));
+        assert!(!should_rebuild(FAILED_PASSES_BEFORE_FORCED_REBUILD - 1, true, None));
+    }
+
+    /// The signature actually observed in the field: passes failing AND no
+    /// relay home of our own.
+    #[test]
+    fn sustained_failures_with_no_relay_home_rebuild() {
+        assert!(should_rebuild(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, false, None));
+    }
+
+    /// A short run of failures is just a peer that hasn't woken up yet.
+    #[test]
+    fn a_brief_run_of_failures_is_not_enough() {
+        assert!(!should_rebuild(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT - 1, false, None));
+        assert!(!should_rebuild(0, false, None));
+    }
+
+    /// The backstop. A wedged transport that still reports a healthy relay
+    /// is exactly what a health check cannot see, so a long enough run of
+    /// failures rebuilds regardless of what it claims about itself.
+    #[test]
+    fn a_long_enough_run_rebuilds_even_when_the_relay_claims_health() {
+        assert!(should_rebuild(FAILED_PASSES_BEFORE_FORCED_REBUILD, true, None));
+    }
+
+    /// Rebuilding drops every in-flight connection, so a tight loop of them
+    /// would be worse than the outage it exists to fix.
+    #[test]
+    fn the_cooldown_prevents_back_to_back_rebuilds() {
+        assert!(!should_rebuild(
+            FAILED_PASSES_BEFORE_FORCED_REBUILD,
+            false,
+            Some(REBUILD_COOLDOWN - Duration::from_secs(1))
+        ));
+        assert!(should_rebuild(
+            FAILED_PASSES_BEFORE_FORCED_REBUILD,
+            false,
+            Some(REBUILD_COOLDOWN)
+        ));
+    }
 
     /// The whole point of the fix: a peer whose sync never completes (iroh
     /// hanging on an offline node, modelled here by a never-resolving future)

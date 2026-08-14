@@ -19,8 +19,14 @@ use crate::sync::proto::{
 };
 use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
-const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
-const RPC_TIMEOUT: Duration = Duration::from_secs(15);
+// Both must stay UNDER `sync::task::SYNC_PEER_TIMEOUT` (10s), or that outer
+// budget always wins the race and every failure reaches the log as the
+// generic "peer unreachable" — which is exactly what happened during the
+// 2026-08-12..14 incident: 42 hours of failures and not one line saying
+// what iroh actually objected to. A dial that hasn't landed in 7s was
+// already doomed under the old 10s cap, so this costs no patience.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(7);
+const RPC_TIMEOUT: Duration = Duration::from_secs(7);
 
 /// What actually happened on the wire for one RPC dial. Logged for
 /// diagnostics and, on success, persisted so the next dial can skip
