@@ -151,7 +151,14 @@ async fn maybe_rebuild_endpoint(
         }
     };
 
-    match crate::sync::iroh_node::self_reachable(&our_id).await {
+    // Seed with our own addresses so the probe reaches us over
+    // loopback/LAN rather than via a DNS lookup — otherwise being merely
+    // offline would read as a dead transport.
+    let seeds: Vec<iroh::TransportAddr> = node
+        .as_ref()
+        .map(|(_, ep)| ep.addr().addrs.into_iter().collect())
+        .unwrap_or_default();
+    match crate::sync::iroh_node::self_reachable(&our_id, seeds).await {
         Some(true) => {
             log::info!(
                 "{failed_passes} failed passes, but our endpoint answered its own dial — \
@@ -321,20 +328,34 @@ pub async fn run(
             // counting it as a success would pin the streak at zero and
             // disable the watchdog for exactly the user who needs it.
             let dialed = outcome.attempted.saturating_sub(outcome.skipped);
-            if dialed > 0 && outcome.failed == dialed {
-                consecutive_failed_passes = consecutive_failed_passes.saturating_add(1);
-            } else if dialed > 0 {
-                consecutive_failed_passes = 0;
+            if dialed > 0 {
+                if outcome.failed == dialed {
+                    consecutive_failed_passes = consecutive_failed_passes.saturating_add(1);
+                } else {
+                    consecutive_failed_passes = 0;
+                }
+            } else {
+                // Nothing was dialed. A pass reports that for four
+                // different reasons, and only one of them should keep the
+                // watchdog armed: a missing transport, which is how a
+                // failed rebuild gets retried. Sync switched off, no peers
+                // paired, or a peer-list error must clear the streak —
+                // otherwise removing your last peer would leave a probe
+                // firing every five minutes forever.
+                let transport_missing = app
+                    .try_state::<crate::AppState>()
+                    .map(|st| st.iroh_node.lock().is_none())
+                    .unwrap_or(false);
+                if !transport_missing {
+                    consecutive_failed_passes = 0;
+                }
             }
-            // `dialed == 0` leaves the streak alone: with no transport
-            // there is nothing to attempt, and resetting here would erase
-            // the evidence that gets a failed rebuild retried.
             if maybe_rebuild_endpoint(&app, consecutive_failed_passes, &mut last_self_test).await {
                 consecutive_failed_passes = 0;
                 // Try the fresh transport at once rather than waiting out
-                // the tick. Launch, not Retry — Retry starts a fresh
-                // backoff chain of extra dials at a peer that may simply
-                // be asleep.
+                // the tick. (Launch and Retry(0) both start the retry
+                // chain from zero; Launch just takes the debounce, which
+                // is fine here — nothing is racing it.)
                 let _ = nudge_tx.send(Nudge::Launch);
             }
         }

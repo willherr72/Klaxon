@@ -39,6 +39,23 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// slower than this is indistinguishable from unreachable for our purposes.
 const SELF_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// Cap on `Endpoint::bind()`.
+///
+/// `bind()` is the most dangerous await in this codebase. It initializes
+/// iroh's network monitor, which on Windows reaches
+/// `netwatch::interfaces::windows::default_route()` → a WMI query. That
+/// path has already produced two shipped hotfixes: v0.7.3 (deadlock at
+/// `CoSetProxyBlanket`, window never appeared) and v0.7.4 (four days of
+/// sync silence). `spawn_blocking` keeps it off the worker thread but puts
+/// no bound on the wait.
+///
+/// At launch that risk is contained by running bring-up on its own task.
+/// The watchdog has no such shelter: it awaits inline in the sync loop, and
+/// only after five failed passes — exactly the network conditions where
+/// netmon misbehaves. Unbounded here would mean no passes, no retries, no
+/// watchdog, no log, restart-only: worse than the outage it exists to fix.
+const BIND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone)]
 pub struct IrohNode {
     pub endpoint: Endpoint,
@@ -194,15 +211,32 @@ pub fn relay_connected(endpoint: &Endpoint) -> bool {
 /// component reporting itself healthy is exactly what a self-report cannot
 /// catch, and this call cannot be fooled that way.
 ///
+/// `seeds` must be the live endpoint's own addresses (`Endpoint::addr()`).
+/// Seeding the dial makes this a LOCAL test: it reaches our router over
+/// loopback/LAN without any address lookup, so a machine that is merely
+/// offline answers its own dial and is correctly judged healthy. Without
+/// seeds the probe's only route to our id is a DNS round trip to n0, and
+/// every offline moment would look like a dead transport — and would also
+/// publish a throwaway keypair to a public service every five minutes.
+///
 /// Returns `None` when the test itself could not run (no throwaway endpoint
-/// could be bound), which is not evidence either way.
-pub async fn self_reachable(our_id: &str) -> Option<bool> {
+/// could be bound in time), which is not evidence either way.
+pub async fn self_reachable(our_id: &str, seeds: Vec<iroh::TransportAddr>) -> Option<bool> {
+    use std::collections::BTreeSet;
     use std::str::FromStr;
 
     let id = iroh::EndpointId::from_str(our_id).ok()?;
-    let probe = Endpoint::builder(presets::N0).bind().await.ok()?;
+    let probe = tokio::time::timeout(BIND_TIMEOUT, Endpoint::builder(presets::N0).bind())
+        .await
+        .map_err(|_| log::warn!("self-test: binding a probe endpoint timed out"))
+        .ok()?
+        .ok()?;
+    let target = iroh::EndpointAddr {
+        id,
+        addrs: seeds.into_iter().collect::<BTreeSet<_>>(),
+    };
     let reachable = matches!(
-        tokio::time::timeout(SELF_TEST_TIMEOUT, probe.connect(id, ALPN_SYNC)).await,
+        tokio::time::timeout(SELF_TEST_TIMEOUT, probe.connect(target, ALPN_SYNC)).await,
         Ok(Ok(_))
     );
     // Best-effort teardown; the probe is disposable either way.
@@ -248,7 +282,16 @@ pub async fn rebuild(cfg: &BringUp) -> AppResult<String> {
         }
     }
 
-    let id = bring_up(cfg).await?;
+    // Bounded for the same reason as the teardown above: this reaches
+    // `Endpoint::bind()`, and we are inline in the sync loop with both
+    // state arcs already emptied. A hang here is the one outcome strictly
+    // worse than the outage — and a timed-out bring-up is already a
+    // recoverable state (the watchdog's no-endpoint branch retries).
+    let id = tokio::time::timeout(BIND_TIMEOUT, bring_up(cfg))
+        .await
+        .map_err(|_| {
+            AppError::Invalid(format!("iroh bring-up did not finish within {BIND_TIMEOUT:?}"))
+        })??;
     log::warn!("iroh endpoint rebuilt — id={} (unchanged)", short(&id));
     Ok(id)
 }

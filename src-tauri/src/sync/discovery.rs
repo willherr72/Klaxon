@@ -44,7 +44,7 @@ pub struct DiscoveryHandle {
 }
 
 impl DiscoveryHandle {
-    /// Stop the mDNS daemon and withdraw our service registration.
+    /// Stop the mDNS daemon.
     ///
     /// Dropping the handle is NOT enough: `mdns-sd` implements no `Drop`,
     /// and its run loop exits only on an explicit `Exit` command — it uses
@@ -54,6 +54,12 @@ impl DiscoveryHandle {
     /// matters because the endpoint watchdog re-registers on every rebuild:
     /// without this, each rebuild would leak a daemon that actively
     /// poisons peers' LAN dial seeds with stale ports.
+    ///
+    /// Note this does NOT send a goodbye — `mdns-sd`'s Exit path returns
+    /// from the run loop without unregistering. Peers keep the stale record
+    /// until its TTL expires or our replacement announcement displaces it.
+    /// That cuts the right way here: an old daemon cannot withdraw the new
+    /// registration `bring_up` just published under the same instance name.
     pub fn shutdown(&self) {
         // Only the last holder should stop the daemon — the handle is Clone
         // and consumers may still be reading `peers`.

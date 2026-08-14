@@ -79,9 +79,25 @@ async fn main() {
         println!("     inconclusive about the peer.");
     }
 
-    println!("dialing {} on klaxon/sync/0 ...", &target[..16]);
+    // Optional seed addresses (`ip:port`, repeatable). Seeding makes the
+    // dial local — no address lookup — which is exactly what the in-app
+    // self-test does, so this reproduces it faithfully.
+    let seeds: std::collections::BTreeSet<iroh::TransportAddr> = std::env::args()
+        .skip(2)
+        .filter_map(|a| a.parse::<std::net::SocketAddr>().ok())
+        .map(iroh::TransportAddr::Ip)
+        .collect();
+    let target_addr = iroh::EndpointAddr {
+        id,
+        addrs: seeds.clone(),
+    };
+    if seeds.is_empty() {
+        println!("dialing {} on klaxon/sync/0 (no seeds — via lookup) ...", &target[..16]);
+    } else {
+        println!("dialing {} on klaxon/sync/0 seeded with {seeds:?} ...", &target[..16]);
+    }
     let dial_start = Instant::now();
-    match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(id, ALPN_SYNC)).await {
+    match tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(target_addr, ALPN_SYNC)).await {
         Ok(Ok(conn)) => {
             println!("RESULT: CONNECTED in {:?}", dial_start.elapsed());
             println!("  paths: {:?}", conn.paths());
