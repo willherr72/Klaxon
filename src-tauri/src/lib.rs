@@ -268,55 +268,23 @@ pub fn run() {
                 let pairs = pending_pairs.clone();
                 let launch_tx = nudge_tx.clone();
                 tauri::async_runtime::spawn(async move {
-                    let node = match sync::iroh_node::start(&iroh_app_dir).await {
-                        Ok(n) => n,
-                        Err(e) => {
-                            // Sync subsystem stays down; the rest of the
-                            // app runs. Same failure posture as before.
-                            log::error!("iroh endpoint failed to start: {e}");
-                            return;
-                        }
-                    };
-                    *node_state.lock() = Some(node.clone());
-
-                    // Router dispatches `klaxon/sync/0` (authed RPC) and
-                    // `klaxon/pair/0` (pre-auth handshake); its spawn
-                    // needs a runtime context, which we're now in.
-                    let sync_handler = sync::iroh_handler::SyncHandler {
-                        db: db_for_iroh.clone(),
-                        identity: identity.clone(),
-                        app: Some(app_handle.clone()),
-                    };
-                    let pair_handler = sync::pair_handler::PairHandler {
+                    // Same path the endpoint watchdog uses to rebuild after
+                    // the transport dies — see sync::iroh_node::BringUp.
+                    let cfg = sync::iroh_node::BringUp {
                         db: db_for_iroh,
-                        identity: identity.clone(),
-                        pending_pairs: pairs,
                         app: app_handle,
-                        local_node_id: node.node_id.clone(),
-                    };
-                    let router = sync::iroh_node::spawn_sync_router(
-                        node.endpoint.clone(),
-                        sync_handler,
-                        pair_handler,
-                    );
-                    *router_state.lock() = Some(router);
-                    log::info!(
-                        "iroh router attached: ALPNs {} + {}",
-                        String::from_utf8_lossy(sync::proto::ALPN_SYNC),
-                        String::from_utf8_lossy(sync::proto::ALPN_PAIR),
-                    );
-
-                    // mDNS carries the iroh QUIC port so LAN peers dial
-                    // direct instead of via address lookup.
-                    let iroh_port =
-                        node.endpoint.bound_sockets().first().map(|sa| sa.port());
-                    match sync::discovery::start(
+                        app_dir: iroh_app_dir,
                         identity,
-                        Some(node.node_id.clone()),
-                        iroh_port,
-                    ) {
-                        Ok(h) => *discovery_state.lock() = Some(h),
-                        Err(e) => log::warn!("mDNS discovery failed to start: {e}"),
+                        pending_pairs: pairs,
+                        node_state,
+                        router_state,
+                        discovery_state,
+                    };
+                    if let Err(e) = sync::iroh_node::bring_up(&cfg).await {
+                        // Sync subsystem stays down; the rest of the
+                        // app runs. Same failure posture as before.
+                        log::error!("iroh endpoint failed to start: {e}");
+                        return;
                     }
 
                     // Eager launch pass — boot → synced in seconds.
