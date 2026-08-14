@@ -39,6 +39,10 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// slower than this is indistinguishable from unreachable for our purposes.
 const SELF_TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
 
+/// How long to give the probe endpoint to reach a relay before concluding
+/// this machine is offline. Measured ~3s on the incident machine.
+const PROBE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Cap on `Endpoint::bind()`.
 ///
 /// `bind()` is the most dangerous await in this codebase. It initializes
@@ -211,18 +215,25 @@ pub fn relay_connected(endpoint: &Endpoint) -> bool {
 /// component reporting itself healthy is exactly what a self-report cannot
 /// catch, and this call cannot be fooled that way.
 ///
-/// `seeds` must be the live endpoint's own addresses (`Endpoint::addr()`).
-/// Seeding the dial makes this a LOCAL test: it reaches our router over
-/// loopback/LAN without any address lookup, so a machine that is merely
-/// offline answers its own dial and is correctly judged healthy. Without
-/// seeds the probe's only route to our id is a DNS round trip to n0, and
-/// every offline moment would look like a dead transport — and would also
-/// publish a throwaway keypair to a public service every five minutes.
+/// The dial is deliberately UNSEEDED, so it takes the same route a real
+/// peer would: resolve our id, then reach us over relay or hole-punched
+/// direct path. Seeding it with our own addresses would be a much weaker
+/// test — it would reach our router over loopback and prove only that the
+/// socket is bound and the accept loop alive, both of which were TRUE
+/// throughout the 42-hour outage. A test that passes during the failure it
+/// exists to detect is worse than no test: it disarms the watchdog
+/// silently.
 ///
-/// Returns `None` when the test itself could not run (no throwaway endpoint
-/// could be bound in time), which is not evidence either way.
-pub async fn self_reachable(our_id: &str, seeds: Vec<iroh::TransportAddr>) -> Option<bool> {
-    use std::collections::BTreeSet;
+/// The probe's own relay connection is the control that keeps an offline
+/// machine from looking like a dead endpoint. If the probe cannot reach a
+/// relay either, this machine has no working internet and nothing can be
+/// concluded about our endpoint — so the answer is `None`, not `false`.
+///
+/// Returns `None` when the test could not run at all (no probe endpoint
+/// bound in time, or no connectivity to judge against), which is not
+/// evidence either way. Measured on the incident machine: 232ms when
+/// healthy, 30s timeout when dead.
+pub async fn self_reachable(our_id: &str) -> Option<bool> {
     use std::str::FromStr;
 
     let id = iroh::EndpointId::from_str(our_id).ok()?;
@@ -231,17 +242,35 @@ pub async fn self_reachable(our_id: &str, seeds: Vec<iroh::TransportAddr>) -> Op
         .map_err(|_| log::warn!("self-test: binding a probe endpoint timed out"))
         .ok()?
         .ok()?;
-    let target = iroh::EndpointAddr {
-        id,
-        addrs: seeds.into_iter().collect::<BTreeSet<_>>(),
+
+    // Control: does the PROBE get a relay home? If not, we are offline and
+    // our endpoint's silence tells us nothing.
+    let mut probe_relay = probe.home_relay_status();
+    let mut online = false;
+    for _ in 0..(PROBE_RELAY_WAIT.as_millis() / 250) {
+        if probe_relay.get().iter().any(|s| s.is_connected()) {
+            online = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    let verdict = if online {
+        Some(matches!(
+            tokio::time::timeout(SELF_TEST_TIMEOUT, probe.connect(id, ALPN_SYNC)).await,
+            Ok(Ok(_))
+        ))
+    } else {
+        log::info!(
+            "self-test inconclusive: a fresh endpoint could not reach a relay either, \
+             so this machine is offline — not blaming ours"
+        );
+        None
     };
-    let reachable = matches!(
-        tokio::time::timeout(SELF_TEST_TIMEOUT, probe.connect(target, ALPN_SYNC)).await,
-        Ok(Ok(_))
-    );
+
     // Best-effort teardown; the probe is disposable either way.
     let _ = tokio::time::timeout(CLOSE_TIMEOUT, probe.close()).await;
-    Some(reachable)
+    verdict
 }
 
 /// Tear the transport down and stand it back up from scratch.

@@ -151,14 +151,7 @@ async fn maybe_rebuild_endpoint(
         }
     };
 
-    // Seed with our own addresses so the probe reaches us over
-    // loopback/LAN rather than via a DNS lookup — otherwise being merely
-    // offline would read as a dead transport.
-    let seeds: Vec<iroh::TransportAddr> = node
-        .as_ref()
-        .map(|(_, ep)| ep.addr().addrs.into_iter().collect())
-        .unwrap_or_default();
-    match crate::sync::iroh_node::self_reachable(&our_id, seeds).await {
+    match crate::sync::iroh_node::self_reachable(&our_id).await {
         Some(true) => {
             log::info!(
                 "{failed_passes} failed passes, but our endpoint answered its own dial — \
@@ -335,13 +328,13 @@ pub async fn run(
                     consecutive_failed_passes = 0;
                 }
             } else {
-                // Nothing was dialed. A pass reports that for four
-                // different reasons, and only one of them should keep the
-                // watchdog armed: a missing transport, which is how a
-                // failed rebuild gets retried. Sync switched off, no peers
-                // paired, or a peer-list error must clear the streak —
-                // otherwise removing your last peer would leave a probe
-                // firing every five minutes forever.
+                // Nothing was dialed. A pass reports that for several
+                // reasons, and only one of them should keep the watchdog
+                // armed: a missing transport, which is how a failed
+                // rebuild gets retried. Sync switched off, no peers
+                // paired, only pre-v0.3 peers, or a peer-list error must
+                // all clear the streak — otherwise removing your last peer
+                // would leave a probe firing every five minutes forever.
                 let transport_missing = app
                     .try_state::<crate::AppState>()
                     .map(|st| st.iroh_node.lock().is_none())
