@@ -5,6 +5,7 @@
   import { api, type Lane } from "../api";
   import type { Reminder } from "../types";
   import { starCount, priorityForStars } from "../stars";
+  import { neighboursFor } from "../board";
   import ConfirmModal from "./ConfirmModal.svelte";
   import EmptyState from "./EmptyState.svelte";
 
@@ -171,13 +172,9 @@
       // and only releases if nothing is left pending.
       if (e.detail.info.trigger === TRIGGERS.DROPPED_INTO_ZONE) {
         const droppedId = e.detail.info.id;
-        const items = e.detail.items;
-        const idx = items.findIndex((r) => r.id === droppedId);
-        // Neighbors in the finalized visual order; the backend recomputes
+        // Neighbours in the finalized visual order; the backend recomputes
         // their keys fresh, so this is a position hint, not float math.
-        const beforeId = idx > 0 ? items[idx - 1].id : null;
-        const afterId =
-          idx >= 0 && idx < items.length - 1 ? items[idx + 1].id : null;
+        const { beforeId, afterId } = neighboursFor(e.detail.items, droppedId);
         pendingWrites++;
         api
           .placeTask(droppedId, laneId, beforeId, afterId)

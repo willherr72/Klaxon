@@ -41,6 +41,12 @@ jobs:
       - name: svelte-check (0 errors)
         run: npx svelte-check --threshold error
 
+      # Component + logic tests for the frontend. Worth its own gate: every
+      # user-visible bug in the 0.7.5–0.8.2 run lived in Svelte, where
+      # svelte-check only ever proved the types lined up.
+      - name: Frontend tests
+        run: npm test
+
       - name: Build frontend
         # tauri::generate_context!() panics at compile time if frontendDist
         # (../dist) doesn't exist — a fresh checkout has no built frontend.
