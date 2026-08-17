@@ -1,0 +1,65 @@
+# Installer builds, so a downloadable desktop build exists without anyone's
+# laptop being involved.
+#
+# Deliberately separate from ci.yml: that workflow is the fast gate on every
+# push and PR (~5 minutes), and a release-profile Rust build is several times
+# that. Keeping them apart means slow builds never delay review feedback.
+#
+# Android is NOT built here, and that is a considered omission rather than an
+# oversight. `src-tauri/gen/` is gitignored except for eleven hand-maintained
+# files (the Kotlin sources, the customized build.gradle.kts, the manifest),
+# so a fresh checkout has no Gradle project to build. CI would have to run
+# `tauri android init` to regenerate the other ~1000 files — which overwrites
+# several of the eleven — and then restore them. A green run on a
+# reconstructed project would not prove the real release build works, which
+# is worse than no signal. Fixing it properly means tracking gen/android.
+# Until then the APK is built locally, where the signing key also lives.
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Separate cache key from ci.yml's: that job builds the dev profile,
+      # this one release, and sharing a key means each evicts the other.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build installer
+        run: npm run tauri build
+
+      # Asset names are a contract with the updater: it looks for an exact
+      # `x64-setup.exe` suffix (see updates.rs). Uploading the bundle
+      # directory keeps whatever names Tauri produced.
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: klaxon-windows-x64
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
