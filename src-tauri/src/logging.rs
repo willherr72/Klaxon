@@ -36,15 +36,15 @@ use std::path::{Path, PathBuf};
 /// small enough to attach to a bug report.
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
 
-/// Writes every record to stderr AND a size-capped file.
-///
-/// stderr stays first so a terminal run behaves exactly as before, and so a
-/// failing file sink can never cost us the console output.
 /// Consecutive file-write failures tolerated before dropping the sink. A
 /// transient lock (antivirus, a backup agent, a log viewer) must not cost
 /// every later line on a tray-resident app that runs for weeks.
 const MAX_FILE_ERRORS: u32 = 20;
 
+/// Writes every record to stderr AND a size-capped file.
+///
+/// stderr stays first so a terminal run behaves exactly as before, and so a
+/// failing file sink can never cost us the console output.
 struct Tee {
     file: Option<RotatingFile>,
     errors: u32,
@@ -206,21 +206,13 @@ impl Write for RotatingFile {
 /// which `build.rs` reads out of `tauri.conf.json` so the two cannot drift.
 pub fn log_dir() -> Option<PathBuf> {
     const IDENTIFIER: &str = env!("KLAXON_IDENTIFIER");
-    #[cfg(windows)]
-    // Tauri resolves this through the RoamingAppData known folder rather
-    // than the environment; they agree except when APPDATA has been
-    // overridden, in which case the logs follow the override and the
-    // database does not.
-    let base = std::env::var_os("APPDATA").map(PathBuf::from);
-    #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join("Library/Application Support"));
-    #[cfg(not(any(windows, target_os = "macos")))]
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute()) // matches `dirs`, which rejects relative
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
-    Some(base?.join(IDENTIFIER).join("logs"))
+    // `dirs::data_dir()` is what Tauri's `app_data_dir()` resolves through,
+    // so this agrees with it by construction on every platform — including
+    // the cases hand-rolled env lookups get wrong: Windows reads the
+    // RoamingAppData *known folder* rather than %APPDATA%, macOS wants
+    // ~/Library/Application Support, and a relative XDG_DATA_HOME is
+    // rejected rather than resolved against the working directory.
+    Some(dirs::data_dir()?.join(IDENTIFIER).join("logs"))
 }
 
 /// A `Write` sink for `env_logger` that tees to stderr and the log file.
@@ -249,7 +241,20 @@ pub fn tee_target() -> Box<dyn Write + Send + 'static> {
 /// needs it. Dropping a file next to the log and restarting now does it:
 /// write e.g. `info,iroh=debug` into `loglevel.txt`.
 pub fn filter_override() -> Option<String> {
+    /// A filter directive is a few dozen bytes. Cap the read so a stray
+    /// large file where this one is expected can't be pulled into memory
+    /// before the app has even started.
+    const MAX_LEN: u64 = 4096;
+
     let path = log_dir()?.join("loglevel.txt");
+    if std::fs::metadata(&path).ok()?.len() > MAX_LEN {
+        let _ = writeln!(
+            io::stderr(),
+            "klaxon: ignoring {} — larger than {MAX_LEN} bytes",
+            path.display()
+        );
+        return None;
+    }
     let raw = std::fs::read_to_string(path).ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -262,33 +267,83 @@ pub fn filter_override() -> Option<String> {
 mod tests {
     use super::RotatingFile;
     use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    /// Removes the directory even when the test fails, so a red run doesn't
+    /// leave litter in temp.
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let p =
+                std::env::temp_dir().join(format!("klaxon-log-test-{}", uuid::Uuid::new_v4()));
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).ok();
+        }
+    }
+
+    /// The retry that recovers a lost handle must MEASURE the file it
+    /// reopened, not assume it is empty. If the rotation that dropped the
+    /// handle never managed its rename, that file still holds its over-cap
+    /// contents — and calling it empty pushes the cap out by that much,
+    /// compounding every time it recurs. This is the branch that hid
+    /// exactly that bug.
+    #[test]
+    fn recovering_a_lost_handle_measures_the_file_instead_of_assuming_empty() {
+        let dir = TempDir::new();
+        let mut f = RotatingFile::open(dir.path(), 100).unwrap();
+        f.write_all(&[b'a'; 80]).unwrap();
+        f.flush().unwrap();
+
+        // Simulate a rotation that lost its handle without renaming: the
+        // file on disk keeps its 80 bytes.
+        f.handle = None;
+        f.written = 0;
+
+        f.write_all(&[b'b'; 5]).unwrap();
+        f.flush().unwrap();
+
+        assert_eq!(
+            f.written, 85,
+            "written must reflect the real file (80 pre-existing + 5), not 5"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("klaxon.log")).unwrap().len(),
+            85,
+            "the pre-existing content was appended to, not discarded"
+        );
+    }
 
     /// The cap has to actually cap. An unbounded log is its own incident —
     /// it fills the disk of the machine you were trying to diagnose.
     #[test]
     fn the_log_rotates_once_it_outgrows_its_cap_and_keeps_one_backup() {
-        let dir = std::env::temp_dir().join(format!("klaxon-log-test-{}", uuid::Uuid::new_v4()));
-        let mut f = RotatingFile::open(&dir, 100).unwrap();
+        let dir = TempDir::new();
+        let mut f = RotatingFile::open(dir.path(), 100).unwrap();
 
         f.write_all(&[b'a'; 60]).unwrap();
-        assert!(!dir.join("klaxon.log.1").exists(), "no rotation before the cap");
+        assert!(!dir.path().join("klaxon.log.1").exists(), "no rotation before the cap");
 
         // Crossing the cap moves the current file aside and starts fresh.
         f.write_all(&[b'b'; 60]).unwrap();
         f.flush().unwrap();
-        let rotated = std::fs::read(dir.join("klaxon.log.1")).unwrap();
-        let current = std::fs::read(dir.join("klaxon.log")).unwrap();
+        let rotated = std::fs::read(dir.path().join("klaxon.log.1")).unwrap();
+        let current = std::fs::read(dir.path().join("klaxon.log")).unwrap();
         assert_eq!(rotated, vec![b'a'; 60], "the old content is preserved");
         assert_eq!(current, vec![b'b'; 60], "the new content starts a fresh file");
 
         // A second rotation replaces the backup rather than accumulating.
         f.write_all(&[b'c'; 60]).unwrap();
         f.flush().unwrap();
-        assert_eq!(std::fs::read(dir.join("klaxon.log.1")).unwrap(), vec![b'b'; 60]);
-        assert_eq!(std::fs::read(dir.join("klaxon.log")).unwrap(), vec![b'c'; 60]);
-        assert!(!dir.join("klaxon.log.2").exists(), "only ever one backup");
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(std::fs::read(dir.path().join("klaxon.log.1")).unwrap(), vec![b'b'; 60]);
+        assert_eq!(std::fs::read(dir.path().join("klaxon.log")).unwrap(), vec![b'c'; 60]);
+        assert!(!dir.path().join("klaxon.log.2").exists(), "only ever one backup");
     }
 
     /// A rotation that cannot succeed must not cost log data, and must not
@@ -296,9 +351,9 @@ mod tests {
     /// directory, which `rename` refuses to overwrite on either platform.
     #[test]
     fn a_failing_rotation_keeps_recording_and_backs_off() {
-        let dir = std::env::temp_dir().join(format!("klaxon-log-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join("klaxon.log.1")).unwrap();
-        let mut f = RotatingFile::open(&dir, 100).unwrap();
+        let dir = TempDir::new();
+        std::fs::create_dir_all(dir.path().join("klaxon.log.1")).unwrap();
+        let mut f = RotatingFile::open(dir.path(), 100).unwrap();
 
         f.write_all(&[b'a'; 60]).unwrap();
         // Crossing the cap: rotation fails, but the record still lands.
@@ -306,7 +361,7 @@ mod tests {
         f.flush().unwrap();
         assert_eq!(f.deferred_rotations, 1, "the failure was recorded");
         assert_eq!(
-            std::fs::read(dir.join("klaxon.log")).unwrap().len(),
+            std::fs::read(dir.path().join("klaxon.log")).unwrap().len(),
             120,
             "no data lost when rotation cannot proceed"
         );
@@ -318,33 +373,30 @@ mod tests {
         assert_eq!(f.deferred_rotations, 1, "did not re-attempt on the next record");
 
         // Once the backup path is renameable, rotation resumes normally.
-        std::fs::remove_dir(dir.join("klaxon.log.1")).unwrap();
+        std::fs::remove_dir(dir.path().join("klaxon.log.1")).unwrap();
         f.write_all(&[b'd'; 120]).unwrap();
         f.flush().unwrap();
         assert_eq!(f.deferred_rotations, 0, "recovered");
-        assert!(dir.join("klaxon.log.1").is_file());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("klaxon.log.1").is_file());
     }
 
     /// Reopening must append rather than truncate — a restart is exactly
     /// when the preceding lines matter most.
     #[test]
     fn reopening_appends_instead_of_truncating() {
-        let dir = std::env::temp_dir().join(format!("klaxon-log-test-{}", uuid::Uuid::new_v4()));
+        let dir = TempDir::new();
         {
-            let mut f = RotatingFile::open(&dir, 1000).unwrap();
+            let mut f = RotatingFile::open(dir.path(), 1000).unwrap();
             f.write_all(b"before restart\n").unwrap();
             f.flush().unwrap();
         }
         {
-            let mut f = RotatingFile::open(&dir, 1000).unwrap();
+            let mut f = RotatingFile::open(dir.path(), 1000).unwrap();
             f.write_all(b"after restart\n").unwrap();
             f.flush().unwrap();
         }
-        let body = std::fs::read_to_string(dir.join("klaxon.log")).unwrap();
+        let body = std::fs::read_to_string(dir.path().join("klaxon.log")).unwrap();
         assert!(body.contains("before restart"), "prior run survived");
         assert!(body.contains("after restart"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -65,6 +65,11 @@ custom-protocol = ["tauri/custom-protocol"]
 # the single-instance plugin all assume a windowed desktop OS. Gating
 # them by target so the Android build doesn't try to compile them.
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Same crate Tauri resolves app_data_dir() through, so the log directory
+# (chosen before the app exists, so it can't ask the path resolver) lands
+# exactly where app data does — including when the environment disagrees
+# with the OS's known folders.
+dirs = "6"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"

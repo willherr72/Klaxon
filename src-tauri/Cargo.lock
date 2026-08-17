@@ -3273,6 +3273,7 @@ dependencies = [
  "android_logger",
  "argon2",
  "chrono",
+ "dirs 6.0.0",
  "env_logger",
  "hex",
  "iroh",
