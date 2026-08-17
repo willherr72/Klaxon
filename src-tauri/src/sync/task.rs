@@ -363,7 +363,7 @@ pub async fn run(
                     let _ = tx.send(Nudge::Retry(next));
                 });
             } else {
-                log::debug!("sync retries exhausted; waiting for next trigger");
+                log::warn!("sync retries exhausted; waiting for next trigger");
             }
         }
     }

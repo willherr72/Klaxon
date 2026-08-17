@@ -169,9 +169,17 @@ impl Write for RotatingFile {
         // lifetime of the process.
         if self.handle.is_none() {
             self.handle = OpenOptions::new().create(true).append(true).open(&self.path).ok();
-            if self.handle.is_some() {
-                self.written = 0;
-            }
+            // Measure, don't assume. We cannot tell from here whether the
+            // rotation that lost the handle managed its rename first: if it
+            // did not, this file still holds its old over-cap contents, and
+            // calling it empty would under-count by that much and push the
+            // cap out indefinitely.
+            self.written = self
+                .handle
+                .as_ref()
+                .and_then(|h| h.metadata().ok())
+                .map(|m| m.len())
+                .unwrap_or(self.written);
         }
         let Some(handle) = self.handle.as_mut() else {
             return Err(io::Error::other("log file handle unavailable"));
