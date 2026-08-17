@@ -131,14 +131,21 @@ jobs:
           test -d "$NDK_HOME" || { echo "pinned NDK $NDK_VERSION missing"; exit 1; }
           npm run tauri -- android build --target aarch64 --apk
 
+      # Reads the symlink TARGET. An earlier version of this check used
+      # `grep -r` over the jniLibs directory, which follows symlinks and
+      # searches the binary they point at — it found nothing, reported
+      # "<none>", and passed while the build was in fact using the wrong NDK.
+      # A check that cannot fail is worse than no check.
       - name: Confirm the pinned NDK was the one used
         run: |
-          used=$(grep -rhoE 'ndk/[0-9.]+' src-tauri/gen/android/app/src/main/jniLibs 2>/dev/null | sort -u || true)
-          echo "jniLibs symlinks reference: ${used:-<none>}"
-          if [ -n "$used" ] && ! echo "$used" | grep -q "$NDK_VERSION"; then
-            echo "::error::built against $used, expected $NDK_VERSION"
-            exit 1
-          fi
+          link=src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
+          test -e "$link" || { echo "::error::$link missing — nothing to verify"; exit 1; }
+          target=$(readlink -f "$link")
+          echo "libc++_shared.so resolves to: $target"
+          case "$target" in
+            */ndk/$NDK_VERSION/*) echo "pinned NDK $NDK_VERSION confirmed" ;;
+            *) echo "::error::built against $target, expected ndk/$NDK_VERSION"; exit 1 ;;
+          esac
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

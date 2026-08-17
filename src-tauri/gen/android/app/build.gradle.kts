@@ -25,6 +25,13 @@ val keystoreProperties = Properties().apply {
 
 android {
     compileSdk = 36
+    // Pin the NDK. Without this both Gradle and Tauri's jniLibs symlink step
+    // pick the newest NDK installed, so a CI runner shipping a newer one
+    // silently builds against a different toolchain than releases do —
+    // observed as CI using 29.0 while local releases used 27.1, and setting
+    // NDK_HOME / ANDROID_NDK_ROOT did NOT override it. This is the only
+    // lever that actually decides, and it pins local builds too.
+    ndkVersion = "27.1.12297006"
     namespace = "com.klaxon.app"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
