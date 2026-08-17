@@ -65,6 +65,10 @@ jobs:
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Must match the NDK used for local release builds, or this job stops
+      # being evidence about the artifact that actually ships.
+      NDK_VERSION: 27.1.12297006
     steps:
       - uses: actions/checkout@v4
 
@@ -75,8 +79,14 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install the NDK the Rust plugin links against
-        run: sdkmanager --install "ndk;27.1.12297006"
+      # Pin to the NDK used locally. The runner ships a newer one and
+      # exports ANDROID_NDK_ROOT/ANDROID_NDK_LATEST_HOME pointing at it,
+      # which wins over a step-level NDK_HOME — the first green run here was
+      # built with NDK 29 while releases are built with 27.1. A build
+      # canary is only worth as much as its fidelity to the real thing, so
+      # both variables are overridden for the whole job below.
+      - name: Install the pinned NDK
+        run: sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -113,8 +123,22 @@ jobs:
 
       - name: Build APK (unsigned)
         env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
-        run: npm run tauri -- android build --target aarch64 --apk
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          ANDROID_NDK_LATEST_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          # Fail loudly rather than silently falling back to the runner's NDK.
+          test -d "$NDK_HOME" || { echo "pinned NDK $NDK_VERSION missing"; exit 1; }
+          npm run tauri -- android build --target aarch64 --apk
+
+      - name: Confirm the pinned NDK was the one used
+        run: |
+          used=$(grep -rhoE 'ndk/[0-9.]+' src-tauri/gen/android/app/src/main/jniLibs 2>/dev/null | sort -u || true)
+          echo "jniLibs symlinks reference: ${used:-<none>}"
+          if [ -n "$used" ] && ! echo "$used" | grep -q "$NDK_VERSION"; then
+            echo "::error::built against $used, expected $NDK_VERSION"
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
