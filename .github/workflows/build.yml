@@ -5,15 +5,13 @@
 # push and PR (~5 minutes), and a release-profile Rust build is several times
 # that. Keeping them apart means slow builds never delay review feedback.
 #
-# Android is NOT built here, and that is a considered omission rather than an
-# oversight. `src-tauri/gen/` is gitignored except for eleven hand-maintained
-# files (the Kotlin sources, the customized build.gradle.kts, the manifest),
-# so a fresh checkout has no Gradle project to build. CI would have to run
-# `tauri android init` to regenerate the other ~1000 files — which overwrites
-# several of the eleven — and then restore them. A green run on a
-# reconstructed project would not prove the real release build works, which
-# is worse than no signal. Fixing it properly means tracking gen/android.
-# Until then the APK is built locally, where the signing key also lives.
+# The Android APK produced here is UNSIGNED, on purpose. The release keystore
+# stays on the maintainer's machine — Android refuses to update an app across
+# a signing-key change, so a leaked or rotated key would force every device to
+# reinstall and lose its data. This job exists to catch build breakage (NDK,
+# Gradle, the vendored notification plugin, the Kotlin sources), which
+# previously only surfaced while cutting a release. Shippable APKs are still
+# built locally.
 
 name: Build
 
@@ -61,5 +59,111 @@ jobs:
         with:
           name: klaxon-windows-x64
           path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Must match the NDK used for local release builds, or this job stops
+      # being evidence about the artifact that actually ships.
+      NDK_VERSION: 27.1.12297006
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      # Pin to the NDK used locally. The runner ships a newer one and
+      # exports ANDROID_NDK_ROOT/ANDROID_NDK_LATEST_HOME pointing at it,
+      # which wins over a step-level NDK_HOME — the first green run here was
+      # built with NDK 29 while releases are built with 27.1. A build
+      # canary is only worth as much as its fidelity to the real thing, so
+      # both variables are overridden for the whole job below.
+      # Install the pinned NDK and remove every other one, so NDK selection
+      # cannot depend on which tool reads which variable. Two rounds of env
+      # vars (NDK_HOME, ANDROID_NDK_ROOT, ANDROID_NDK_LATEST_HOME) and a
+      # Gradle `ndkVersion` all failed to redirect it: Gradle's setting
+      # governs its own native compilation, but the libc++_shared.so symlink
+      # is made by the Tauri CLI, which resolves the NDK on its own. Leaving
+      # exactly one installed is the only thing that makes the outcome
+      # independent of that resolution order.
+      - name: Install the pinned NDK and remove the others
+        run: |
+          sdkmanager --install "ndk;$NDK_VERSION"
+          for d in "$ANDROID_HOME"/ndk/*; do
+            [ "$(basename "$d")" = "$NDK_VERSION" ] || { echo "removing $(basename "$d")"; rm -rf "$d"; }
+          done
+          echo "NDKs now present:"; ls -1 "$ANDROID_HOME/ndk"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Only arm64. Every device this ships to is arm64, and building the
+          # other three ABIs triples the job for no extra signal.
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # `gen/android` is tracked, but the handful of files Tauri derives from
+      # tauri.conf.json are not (its own .gitignore excludes them):
+      # tauri.settings.gradle, app/tauri.build.gradle.kts, app/tauri.properties.
+      # settings.gradle and app/build.gradle.kts `apply from` them, so Gradle
+      # cannot configure without them. `android init` regenerates the lot —
+      # including our customized build.gradle.kts, manifest and Kotlin — so we
+      # immediately restore the tracked versions and keep only the generated
+      # extras. Regenerating rather than tracking them is also correct: they
+      # encode the app version, which must never be stale.
+      - name: Regenerate Tauri's derived Gradle files
+        run: |
+          npm run tauri -- android init
+          git checkout -- src-tauri/gen/android
+          git status --short src-tauri/gen/android
+
+      - name: Build APK (unsigned)
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          ANDROID_NDK_ROOT: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          ANDROID_NDK_LATEST_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+        run: |
+          # Fail loudly rather than silently falling back to the runner's NDK.
+          test -d "$NDK_HOME" || { echo "pinned NDK $NDK_VERSION missing"; exit 1; }
+          npm run tauri -- android build --target aarch64 --apk
+
+      # Reads the symlink TARGET. An earlier version of this check used
+      # `grep -r` over the jniLibs directory, which follows symlinks and
+      # searches the binary they point at — it found nothing, reported
+      # "<none>", and passed while the build was in fact using the wrong NDK.
+      # A check that cannot fail is worse than no check.
+      - name: Confirm the pinned NDK was the one used
+        run: |
+          link=src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
+          test -e "$link" || { echo "::error::$link missing — nothing to verify"; exit 1; }
+          target=$(readlink -f "$link")
+          echo "libc++_shared.so resolves to: $target"
+          case "$target" in
+            */ndk/$NDK_VERSION/*) echo "pinned NDK $NDK_VERSION confirmed" ;;
+            *) echo "::error::built against $target, expected ndk/$NDK_VERSION"; exit 1 ;;
+          esac
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: klaxon-android-arm64-unsigned
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 14
