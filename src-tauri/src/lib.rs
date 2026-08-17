@@ -90,10 +90,16 @@ pub fn run() {
     #[cfg(not(target_os = "android"))]
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or(
-            "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
-             iroh_base=warn,iroh_metrics=warn,n0_future=warn,n0_watcher=warn,\
-             tracing::span=error,\
-             iroh::net_report=error,iroh::net_report::reportgen=error",
+            // A `loglevel.txt` beside the log file overrides this, so
+            // verbosity can be raised for an autostart launch that has no
+            // console to set RUST_LOG on. RUST_LOG still wins over both.
+            logging::filter_override().unwrap_or_else(|| {
+                "info,iroh=warn,iroh_quinn=warn,iroh_relay=warn,iroh_dns=warn,\
+                 iroh_base=warn,iroh_metrics=warn,n0_future=warn,n0_watcher=warn,\
+                 tracing::span=error,\
+                 iroh::net_report=error,iroh::net_report::reportgen=error"
+                    .to_string()
+            }),
         ),
     )
     // Tee to <app data>/logs/klaxon.log. A GUI app launched from Explorer

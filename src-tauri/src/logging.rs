@@ -12,7 +12,20 @@
 //! different logging stack: the filter string in `lib.rs` is load-bearing
 //! (iroh floods at info), and `RUST_LOG=debug klaxon.exe` from a terminal is
 //! the ritual that cracked the v0.7.3 launch hang. Both keep working
-//! untouched — output is simply written twice.
+//! untouched — output is simply written twice. Every record is flushed as
+//! it is emitted, so a hang or a hard kill keeps the whole tail.
+//!
+//! Two caveats worth knowing before relying on this during an incident:
+//!
+//! * **Capacity is size-based, not time-based.** Steady-state failure logs
+//!   roughly one line per 20s sync tick, so 5 MB holds days — but a relay
+//!   reconnect storm or a `loglevel.txt` escalation can churn both files in
+//!   hours and evict the onset you went looking for. Copy the files aside
+//!   before escalating verbosity.
+//! * **Two processes are not coordinated.** `single_instance` normally
+//!   prevents it, but the sink opens before that plugin runs, so a
+//!   short-lived second instance can rotate the file underneath the first.
+//!   The result is misordered or lost records, never corruption or a hang.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
@@ -27,22 +40,44 @@ const MAX_BYTES: u64 = 5 * 1024 * 1024;
 ///
 /// stderr stays first so a terminal run behaves exactly as before, and so a
 /// failing file sink can never cost us the console output.
+/// Consecutive file-write failures tolerated before dropping the sink. A
+/// transient lock (antivirus, a backup agent, a log viewer) must not cost
+/// every later line on a tray-resident app that runs for weeks.
+const MAX_FILE_ERRORS: u32 = 20;
+
 struct Tee {
     file: Option<RotatingFile>,
+    errors: u32,
 }
 
 impl Write for Tee {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = io::stderr().write(buf)?;
+        // `write_all`, not `write`: a partial stderr write (Windows consoles
+        // cap at 4 KB) would make our caller retry with the remainder while
+        // the file had already taken the whole buffer — duplicating the tail
+        // of every large record, exactly during a `RUST_LOG=…debug` run.
+        io::stderr().write_all(buf)?;
         if let Some(f) = self.file.as_mut() {
-            // A failed file write must not break logging. Drop the sink so
-            // we stop retrying on every record, and say so on stderr once.
             if let Err(e) = f.write_all(buf) {
-                eprintln!("klaxon: file logging disabled after write error: {e}");
-                self.file = None;
+                // NOT eprintln!, which panics on a stderr error. env_logger
+                // calls this while holding its pipe mutex, so a panic here
+                // poisons that lock and every later log:: call panics with
+                // it — on the main thread, during startup.
+                let _ = writeln!(io::stderr(), "klaxon: file logging error: {e}");
+                self.errors += 1;
+                if self.errors >= MAX_FILE_ERRORS {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "klaxon: giving up on file logging after {} errors",
+                        self.errors
+                    );
+                    self.file = None;
+                }
+            } else {
+                self.errors = 0;
             }
         }
-        Ok(n)
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -57,13 +92,18 @@ impl Write for Tee {
 struct RotatingFile {
     path: PathBuf,
     previous: PathBuf,
-    /// `None` only for the instant between closing the old file and opening
-    /// the new one during a rotation — Windows will not rename a file that
-    /// still has an open handle, so the handle genuinely has to go away.
+    /// `None` between closing the old file and opening the new one during a
+    /// rotation, and after a failed reopen — the next `write` retries.
+    /// (Rust opens with FILE_SHARE_DELETE so Windows would permit renaming
+    /// with the handle open; closing first is defensive, not required.)
     handle: Option<File>,
     written: u64,
     /// Injectable so rotation is testable without writing megabytes.
     max_bytes: u64,
+    /// How many times rotation has failed in a row. Each one pushes the next
+    /// attempt out by another `max_bytes` so a permanently unrenameable file
+    /// costs one attempt per cap rather than one per record.
+    deferred_rotations: u32,
 }
 
 impl RotatingFile {
@@ -78,38 +118,59 @@ impl RotatingFile {
             handle: Some(handle),
             written,
             max_bytes,
+            deferred_rotations: 0,
         })
     }
 
+    /// Size at which the next rotation is attempted, backed off after
+    /// consecutive failures.
+    fn rotate_at(&self) -> u64 {
+        self.max_bytes
+            .saturating_mul(u64::from(self.deferred_rotations) + 1)
+    }
+
     fn rotate(&mut self) -> io::Result<()> {
-        // Close, move aside, reopen. If the rename fails we still reopen the
-        // original path below, so the worst case is a log that grows past
-        // its cap rather than one that stops recording.
+        // Close, move aside, reopen. No `remove_file` first: rename replaces
+        // the destination atomically on both platforms, and deleting the
+        // backup up front would throw away the only copy we had if the
+        // rename then failed.
         self.handle = None;
-        let _ = std::fs::remove_file(&self.previous);
         let renamed = std::fs::rename(&self.path, &self.previous);
         self.handle = Some(OpenOptions::new().create(true).append(true).open(&self.path)?);
-        self.written = if renamed.is_ok() {
-            0
-        } else {
-            // Rename failed: we reopened the same file, so keep counting
-            // from its real length instead of pretending it is empty.
-            self.handle
-                .as_ref()
-                .and_then(|h| h.metadata().ok())
-                .map(|m| m.len())
-                .unwrap_or(0)
-        };
-        renamed.map(|_| ())
+        self.written = self
+            .handle
+            .as_ref()
+            .and_then(|h| h.metadata().ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        renamed
     }
 }
 
 impl Write for RotatingFile {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.written + buf.len() as u64 > self.max_bytes {
-            // A failed rotation must not swallow the record it interrupted.
+        if self.written + buf.len() as u64 > self.rotate_at() {
             if let Err(e) = self.rotate() {
-                eprintln!("klaxon: log rotation failed, continuing in place: {e}");
+                // Rotation failed, so the current file is still over its
+                // cap. Push the next attempt out by a full cap's worth of
+                // growth: retrying per-record would rename-and-reopen on
+                // every single line, forever.
+                let _ = writeln!(
+                    io::stderr(),
+                    "klaxon: log rotation failed, continuing in place: {e}"
+                );
+                self.deferred_rotations = self.deferred_rotations.saturating_add(1);
+            } else {
+                self.deferred_rotations = 0;
+            }
+        }
+        // A rotation whose reopen failed leaves no handle. Try once more here
+        // rather than letting one transient lock end file logging for the
+        // lifetime of the process.
+        if self.handle.is_none() {
+            self.handle = OpenOptions::new().create(true).append(true).open(&self.path).ok();
+            if self.handle.is_some() {
+                self.written = 0;
             }
         }
         let Some(handle) = self.handle.as_mut() else {
@@ -138,10 +199,18 @@ impl Write for RotatingFile {
 pub fn log_dir() -> Option<PathBuf> {
     const IDENTIFIER: &str = env!("KLAXON_IDENTIFIER");
     #[cfg(windows)]
+    // Tauri resolves this through the RoamingAppData known folder rather
+    // than the environment; they agree except when APPDATA has been
+    // overridden, in which case the logs follow the override and the
+    // database does not.
     let base = std::env::var_os("APPDATA").map(PathBuf::from);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library/Application Support"));
+    #[cfg(not(any(windows, target_os = "macos")))]
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
+        .filter(|p| p.is_absolute()) // matches `dirs`, which rejects relative
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
     Some(base?.join(IDENTIFIER).join("logs"))
 }
@@ -153,11 +222,32 @@ pub fn tee_target() -> Box<dyn Write + Send + 'static> {
     let file = log_dir().and_then(|dir| match RotatingFile::open(&dir, MAX_BYTES) {
         Ok(f) => Some(f),
         Err(e) => {
-            eprintln!("klaxon: could not open log file in {}: {e}", dir.display());
+            let _ = writeln!(
+                io::stderr(),
+                "klaxon: could not open log file in {}: {e}",
+                dir.display()
+            );
             None
         }
     });
-    Box::new(Tee { file })
+    Box::new(Tee { file, errors: 0 })
+}
+
+/// An optional log-filter override read from `<log dir>/loglevel.txt`.
+///
+/// `RUST_LOG` still wins, but it needs a console — and the launch contexts
+/// where an intermittent failure actually happens (Explorer, autostart) have
+/// none, so it was impossible to raise verbosity in the situation that most
+/// needs it. Dropping a file next to the log and restarting now does it:
+/// write e.g. `info,iroh=debug` into `loglevel.txt`.
+pub fn filter_override() -> Option<String> {
+    let path = log_dir()?.join("loglevel.txt");
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_owned())
 }
 
 #[cfg(test)]
@@ -189,6 +279,42 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("klaxon.log.1")).unwrap(), vec![b'b'; 60]);
         assert_eq!(std::fs::read(dir.join("klaxon.log")).unwrap(), vec![b'c'; 60]);
         assert!(!dir.join("klaxon.log.2").exists(), "only ever one backup");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A rotation that cannot succeed must not cost log data, and must not
+    /// retry on every single record. Forced by making the backup path a
+    /// directory, which `rename` refuses to overwrite on either platform.
+    #[test]
+    fn a_failing_rotation_keeps_recording_and_backs_off() {
+        let dir = std::env::temp_dir().join(format!("klaxon-log-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("klaxon.log.1")).unwrap();
+        let mut f = RotatingFile::open(&dir, 100).unwrap();
+
+        f.write_all(&[b'a'; 60]).unwrap();
+        // Crossing the cap: rotation fails, but the record still lands.
+        f.write_all(&[b'b'; 60]).unwrap();
+        f.flush().unwrap();
+        assert_eq!(f.deferred_rotations, 1, "the failure was recorded");
+        assert_eq!(
+            std::fs::read(dir.join("klaxon.log")).unwrap().len(),
+            120,
+            "no data lost when rotation cannot proceed"
+        );
+
+        // Backed off: the next attempt is a whole cap away, not next record.
+        assert_eq!(f.rotate_at(), 200);
+        f.write_all(&[b'c'; 10]).unwrap();
+        f.flush().unwrap();
+        assert_eq!(f.deferred_rotations, 1, "did not re-attempt on the next record");
+
+        // Once the backup path is renameable, rotation resumes normally.
+        std::fs::remove_dir(dir.join("klaxon.log.1")).unwrap();
+        f.write_all(&[b'd'; 120]).unwrap();
+        f.flush().unwrap();
+        assert_eq!(f.deferred_rotations, 0, "recovered");
+        assert!(dir.join("klaxon.log.1").is_file());
 
         std::fs::remove_dir_all(&dir).ok();
     }

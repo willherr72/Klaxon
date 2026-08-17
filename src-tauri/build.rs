@@ -27,16 +27,21 @@ fn main() {
     // `com.klaxon.drill`. Reading the one source of truth removes the
     // possibility.
     println!("cargo:rerun-if-changed=tauri.conf.json");
-    let identifier = std::fs::read_to_string("tauri.conf.json")
-        .ok()
-        .and_then(|conf| {
-            conf.split("\"identifier\"")
-                .nth(1)?
-                .split('"')
-                .nth(1)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "com.klaxon.app".to_string());
+    //
+    // Panics rather than falling back to a literal: a default here would be
+    // the very hardcoded copy this exists to eliminate, and it would drift
+    // silently. A build script is the one place where failing loudly costs
+    // nothing. Note this reads tauri.conf.json only — an identifier
+    // overridden via TAURI_CONFIG or a tauri.<platform>.conf.json overlay
+    // (neither used here) would not be seen.
+    let conf = std::fs::read_to_string("tauri.conf.json")
+        .expect("build.rs: cannot read tauri.conf.json to resolve the bundle identifier");
+    let identifier = conf
+        .split("\"identifier\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').nth(1))
+        .filter(|id| !id.is_empty())
+        .expect("build.rs: could not parse \"identifier\" out of tauri.conf.json");
     println!("cargo:rustc-env=KLAXON_IDENTIFIER={identifier}");
 
     tauri_build::build()

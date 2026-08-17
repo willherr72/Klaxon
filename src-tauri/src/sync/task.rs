@@ -392,7 +392,7 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
         .try_state::<crate::AppState>()
         .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
     let Some(endpoint) = iroh_endpoint else {
-        log::debug!("sync pass: iroh endpoint not ready, skipping");
+        log::warn!("sync pass: iroh endpoint not ready, skipping");
         return NONE;
     };
     let mut attempted = 0usize;
