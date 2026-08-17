@@ -242,6 +242,17 @@ pub fn relay_connected(endpoint: &Endpoint) -> bool {
 pub async fn self_reachable(our_id: &str) -> Option<bool> {
     use std::str::FromStr;
 
+    // Drill hook. The rebuild path is the one part of this mechanism that
+    // cannot be unit-tested (it needs a live AppHandle and a real socket),
+    // so there has to be SOME way to make it run on demand — an untested
+    // recovery path is not a recovery path. Debug builds only: this cannot
+    // exist in anything that ships.
+    #[cfg(debug_assertions)]
+    if std::env::var("KLAXON_DEBUG_FORCE_DEAD_ENDPOINT").is_ok() {
+        log::warn!("self-test: FORCED failure via KLAXON_DEBUG_FORCE_DEAD_ENDPOINT");
+        return Some(false);
+    }
+
     let id = iroh::EndpointId::from_str(our_id).ok()?;
     let probe = tokio::time::timeout(BIND_TIMEOUT, Endpoint::builder(presets::N0).bind())
         .await
