@@ -18,5 +18,26 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,--as-needed");
     }
 
+    // Hand the bundle identifier to the crate so the log file can be
+    // written to the same directory Tauri resolves for app data. Logging is
+    // initialized before the app exists, so it cannot ask the path
+    // resolver, and a hardcoded copy would silently diverge — during the
+    // 2026-08-17 drill it did exactly that, writing logs under
+    // `com.klaxon.app` while the instance's data lived under
+    // `com.klaxon.drill`. Reading the one source of truth removes the
+    // possibility.
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    let identifier = std::fs::read_to_string("tauri.conf.json")
+        .ok()
+        .and_then(|conf| {
+            conf.split("\"identifier\"")
+                .nth(1)?
+                .split('"')
+                .nth(1)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "com.klaxon.app".to_string());
+    println!("cargo:rustc-env=KLAXON_IDENTIFIER={identifier}");
+
     tauri_build::build()
 }

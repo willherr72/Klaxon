@@ -8,6 +8,9 @@ mod commands;
 mod mobile_bg;
 pub mod db;
 pub mod error;
+/// Desktop file logging. Android routes `log::` to logcat instead.
+#[cfg(not(target_os = "android"))]
+mod logging;
 pub mod models;
 mod nl;
 pub mod os_alarms;
@@ -93,6 +96,12 @@ pub fn run() {
              iroh::net_report=error,iroh::net_report::reportgen=error",
         ),
     )
+    // Tee to <app data>/logs/klaxon.log. A GUI app launched from Explorer
+    // or autostart has no console, so stderr alone meant 42 hours of the
+    // v0.8.x sync outage went unrecorded on the desktop while the phone's
+    // half was readable from logcat in ninety seconds. `RUST_LOG` and the
+    // filter above are untouched — this only adds a second destination.
+    .target(env_logger::Target::Pipe(logging::tee_target()))
     .init();
     // Android: env_logger writes to stderr, which the OS discards.
     // android_logger routes log:: to logcat (tag "KlaxonRust"); the same
