@@ -60,7 +60,15 @@ const FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT: u32 = 5;
 /// Never self-test (and therefore never rebuild) more often than this. The
 /// test binds a throwaway endpoint and a rebuild drops every in-flight
 /// connection, so a tight loop of either would be worse than the outage.
-const SELF_TEST_COOLDOWN: Duration = Duration::from_secs(300);
+///
+/// 30 minutes rather than 5, because "every pass is failing" is the NORMAL
+/// overnight state, not an exceptional one: the phone sits frozen in
+/// Android's freezer, so the streak is permanently past its threshold and
+/// the cooldown alone decides how often we probe. At 5 minutes that is ~96
+/// throwaway endpoints a night, each publishing a one-shot keypair to a
+/// public DNS service, forever. Against a fault that went unnoticed for 42
+/// hours, detecting it within half an hour is ample.
+const SELF_TEST_COOLDOWN: Duration = Duration::from_secs(1800);
 
 /// Outcome of syncing one peer under [`SYNC_PEER_TIMEOUT`].
 enum PeerSyncResult {

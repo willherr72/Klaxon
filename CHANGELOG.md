@@ -5,6 +5,40 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-08-17
+
+Sync recovers from a failure that previously needed a restart, and the
+desktop finally keeps a log of what it did. Sync-compatible with 0.8.x —
+update whenever suits you.
+
+### Fixed
+
+- **Sync recovers on its own when the connection dies.** Klaxon could end
+  up in a state where it looked completely healthy — window open, no
+  errors, retrying every 20 seconds — while nothing could actually reach
+  it. It stayed that way until you restarted it; one occurrence went 42
+  hours. It now notices, rebuilds its connection in about six seconds, and
+  carries on. Your devices keep their pairing.
+- **Changes made outside the main window refresh it properly.** Snoozing
+  or dismissing from the alarm popup or an Android notification no longer
+  leaves the list showing the old state.
+
+### Added
+
+- **A log file, at `logs/klaxon.log` inside Klaxon's data folder.** The
+  desktop kept no record of itself, which is why the outage above took
+  hours to work out rather than minutes. Capped at 5 MB with one previous
+  file kept, so it stays small enough to send along with a bug report. To
+  capture more detail, put a filter such as `info,iroh=debug` in
+  `logs/loglevel.txt` and restart.
+
+### Changed
+
+- Under the hood: frontend tests now run on every change alongside the
+  existing Rust ones, and both the Windows installer and an Android build
+  are produced automatically, so breakage surfaces before a release rather
+  than during one.
+
 ## [0.8.2] — 2026-08-12
 
 Sync-compatible with 0.8.0 and 0.8.1 — update whenever suits you.
