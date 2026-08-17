@@ -18,5 +18,31 @@ fn main() {
         println!("cargo:rustc-link-arg=-Wl,--as-needed");
     }
 
+    // Hand the bundle identifier to the crate so the log file can be
+    // written to the same directory Tauri resolves for app data. Logging is
+    // initialized before the app exists, so it cannot ask the path
+    // resolver, and a hardcoded copy would silently diverge — during the
+    // 2026-08-17 drill it did exactly that, writing logs under
+    // `com.klaxon.app` while the instance's data lived under
+    // `com.klaxon.drill`. Reading the one source of truth removes the
+    // possibility.
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+    //
+    // Panics rather than falling back to a literal: a default here would be
+    // the very hardcoded copy this exists to eliminate, and it would drift
+    // silently. A build script is the one place where failing loudly costs
+    // nothing. Note this reads tauri.conf.json only — an identifier
+    // overridden via TAURI_CONFIG or a tauri.<platform>.conf.json overlay
+    // (neither used here) would not be seen.
+    let conf = std::fs::read_to_string("tauri.conf.json")
+        .expect("build.rs: cannot read tauri.conf.json to resolve the bundle identifier");
+    let identifier = conf
+        .split("\"identifier\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').nth(1))
+        .filter(|id| !id.is_empty())
+        .expect("build.rs: could not parse \"identifier\" out of tauri.conf.json");
+    println!("cargo:rustc-env=KLAXON_IDENTIFIER={identifier}");
+
     tauri_build::build()
 }
