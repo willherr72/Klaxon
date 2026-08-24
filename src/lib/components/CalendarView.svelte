@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { api } from "../api";
+  import { localDayKey, dayBounds } from "../day";
   import { effectiveDueAt } from "../time";
   import type { Reminder } from "../types";
+  import DayPanel from "./DayPanel.svelte";
   import SignalLight from "./SignalLight.svelte";
 
   let {
@@ -131,6 +134,45 @@
     return result;
   });
 
+  let selectedDate = $state<Date | null>(null);
+  let panelOpen = $state(false);
+  let daysWithNotes = $state<Set<string>>(new Set());
+  let daysWithThoughts = $state<Set<string>>(new Set());
+
+  function openDay(d: Date) {
+    selectedDate = d;
+    panelOpen = true;
+  }
+
+  function onCellKeydown(d: Date, e: KeyboardEvent) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openDay(d);
+    }
+  }
+
+  // Markers for the visible range. The backend hands back raw thought
+  // timestamps rather than per-day counts — bucketing needs the local
+  // calendar, which only the frontend has.
+  $effect(() => {
+    const first = cells[0]?.date;
+    const last = cells[cells.length - 1]?.date;
+    if (!first || !last) return;
+    const from = localDayKey(first);
+    const to = localDayKey(last);
+    const { startMs } = dayBounds(first);
+    const { endMs } = dayBounds(last);
+    api
+      .daySummaries(from, to, startMs, endMs)
+      .then((s) => {
+        daysWithNotes = new Set(s.days_with_notes);
+        daysWithThoughts = new Set(
+          s.thought_times.map((ms) => localDayKey(new Date(ms))),
+        );
+      })
+      .catch((e) => console.error("daySummaries failed", e));
+  });
+
   const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
   const monthNames = [
     "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
@@ -178,8 +220,13 @@
         class:out={!cell.inMonth}
         class:today={cell.isToday}
         class:past={cell.isPast && !cell.isToday}
+        class:selected={selectedDate !== null &&
+          localDayKey(selectedDate) === localDayKey(cell.date)}
         role="gridcell"
-        tabindex="-1"
+        tabindex="0"
+        aria-label={`Open ${cell.date.getDate()}`}
+        onclick={() => openDay(cell.date)}
+        onkeydown={(e) => onCellKeydown(cell.date, e)}
         oncontextmenu={(e) => handleCellContextMenu(cell.date, e)}
       >
         <div class="day-num">{cell.date.getDate()}</div>
@@ -188,7 +235,7 @@
             <button
               class="item"
               class:silent={r.silent}
-              onclick={() => onSelect(r)}
+              onclick={(e) => { e.stopPropagation(); onSelect(r); }}
               title="{r.title} · {formatTime(r.due_at)}"
             >
               <span class="item-glyph">
@@ -208,9 +255,29 @@
             </div>
           {/if}
         </div>
+        <div class="markers" aria-hidden="true">
+          {#each cell.reminders.slice(0, 3) as r (r.id)}
+            <span class="dot" class:done={r.state === "completed" || r.state === "dismissed" || r.state === "fired"}></span>
+          {/each}
+          {#if daysWithNotes.has(localDayKey(cell.date))}
+            <span class="glyph note-glyph">▪</span>
+          {/if}
+          {#if daysWithThoughts.has(localDayKey(cell.date))}
+            <span class="glyph thought-glyph">•</span>
+          {/if}
+        </div>
       </div>
     {/each}
   </div>
+
+  <DayPanel
+    open={panelOpen}
+    date={selectedDate}
+    reminders={reminders}
+    onClose={() => (panelOpen = false)}
+    onSelect={(r) => { panelOpen = false; onSelect(r); }}
+    onCreateForDate={(ms, silent) => { panelOpen = false; onCreateForDate?.(ms, silent); }}
+  />
 </section>
 
 {#if menuOpen && menuDate}
@@ -312,6 +379,11 @@
     overflow: auto;
   }
   .cell {
+    /* Was a plain div with no handlers; it now owns click/keyboard
+       activation, so it needs the interactive-affordance treatment. */
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
     border-right: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     padding: 4px 6px 6px;
@@ -322,6 +394,9 @@
     overflow: hidden;
     position: relative;
     background: var(--bg);
+  }
+  .cell.selected {
+    box-shadow: inset 0 0 0 1px var(--klaxon-dim);
   }
   .cell.out {
     background: rgba(0, 0, 0, 0.25);
@@ -469,5 +544,25 @@
     letter-spacing: 0.16em;
     color: var(--text-muted);
     padding: 1px 6px;
+  }
+
+  .markers { display: none; gap: 3px; align-items: center; padding: 0 4px 4px; }
+  .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--klaxon);
+  }
+  .dot.done { background: var(--text-faint); }
+  .glyph { font-size: 8px; line-height: 1; color: var(--text-muted); }
+  .note-glyph { color: var(--klaxon-dim); }
+
+  /* This component's first mobile rules. A 45px cell cannot render a title,
+     so stop trying: show the day number and density markers, and let the
+     panel carry the detail. */
+  @media (max-width: 1024px) {
+    .day-items { display: none; }
+    .markers { display: flex; }
+    .cell { min-height: 44px; }
   }
 </style>
