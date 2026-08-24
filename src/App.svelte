@@ -186,7 +186,17 @@
     // Goes through closePanel(), not a direct assignment, so DayPanel's
     // own close() runs and flushes any pending note before the panel
     // hides — see the comment on calendarPanelOpen above.
-    if (calendarPanelOpen) { calendarViewRef?.closePanel(); return; }
+    // The optional chains fail SILENTLY if either ref is ever nullish while
+    // the flag is true — and this branch returns, so every later Back press
+    // would be swallowed too and the app could never be backed out of. The
+    // reset effect above makes that unreachable today; clearing the flag
+    // here means a future regression costs one dead Back press, not all of
+    // them.
+    if (calendarPanelOpen) {
+      if (calendarViewRef) calendarViewRef.closePanel();
+      else calendarPanelOpen = false;
+      return;
+    }
     if (settingsOpen) { settingsOpen = false; return; }
     if (quickAddOpen) { quickAddOpen = false; return; }
     if (searchOpen) { searchOpen = false; searchQuery = ""; return; }
