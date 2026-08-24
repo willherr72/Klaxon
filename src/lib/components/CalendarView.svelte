@@ -137,8 +137,12 @@
       const isToday = date.getTime() === todayMs;
       const isPast = date.getTime() < todayMs;
 
-      const dayStart = date.getTime();
-      const dayEnd = dayStart + 86_400_000;
+      // Real local midnight-to-midnight, not `+ 86_400_000` — a DST
+      // transition day is 23 or 25 hours, and the naive form put a
+      // boundary-adjacent reminder in the wrong cell (or two cells, or
+      // none) on those days. Must match DayPanel's `dayBounds`, or the
+      // grid and the panel disagree about which day an item belongs to.
+      const { startMs: dayStart, endMs: dayEnd } = dayBounds(date);
       const dayReminders = reminders
         .filter((r) => {
           const t = effectiveDueAt(r);

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Reminder } from "../types";
@@ -217,5 +217,38 @@ describe("CalendarView day selection", () => {
 
     expect(setDayNote).toHaveBeenCalledWith(expect.any(String), "typed before back press");
     expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  // Finding 4: the grid used to compute its own day boundaries as
+  // `dayStart + 86_400_000` instead of dayBounds() — wrong on a DST
+  // transition day. 8 March 2026 is a 23-hour day in America/Chicago
+  // (day.test.ts pins this), so the naive dayEnd for the 8th overshot real
+  // local midnight by an hour, putting a reminder due 00:30 on the 9th in
+  // BOTH cells. This pins the fix and proves the grid and the panel now
+  // agree.
+  it("agrees with the day panel about which cell a DST-boundary reminder belongs to (spring-forward, America/Chicago 2026)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 8));
+    const eighth = new Date(2026, 2, 8);
+    const ninth = new Date(2026, 2, 9);
+    const dueAt = new Date(2026, 2, 9, 0, 30).getTime();
+    mount([reminder({ id: "x", title: "Boundary item", due_at: dueAt })]);
+
+    // Grid: exactly one occurrence, in the 9th's cell.
+    const items = screen.getAllByText("Boundary item");
+    expect(items.length).toBe(1);
+    expect(items[0].closest(".cell")?.getAttribute("aria-label")).toBe(openLabel(ninth));
+
+    // Panel must agree: nothing on the 8th, the item on the 9th.
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const panel = document.querySelector(".panel") as HTMLElement;
+
+    await user.click(screen.getByLabelText(openLabel(eighth)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(within(panel).queryByText("Boundary item")).toBeNull();
+
+    await user.click(screen.getByLabelText(openLabel(ninth)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(within(panel).queryByText("Boundary item")).toBeTruthy();
   });
 });
