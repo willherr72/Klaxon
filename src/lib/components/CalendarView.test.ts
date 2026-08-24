@@ -1,6 +1,6 @@
-import { render, screen, within } from "@testing-library/svelte";
+import { render, screen, waitFor, within } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Reminder } from "../types";
 
 const daySummaries = vi.fn();
@@ -20,6 +20,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+import { listen } from "@tauri-apps/api/event";
 import CalendarView from "./CalendarView.svelte";
 
 function reminder(overrides: Partial<Reminder> = {}): Reminder {
@@ -75,6 +76,13 @@ describe("CalendarView day selection", () => {
     getDayNote.mockResolvedValue(null);
     setDayNote.mockResolvedValue({ day: "", body: "", created_at: 1, updated_at: 1 });
     thoughtsBetween.mockResolvedValue([]);
+  });
+
+  // One test below overrides `listen`'s implementation to capture the
+  // event callback. `vi.clearAllMocks()` resets call history but not a
+  // swapped-in implementation, so restore the module default afterward.
+  afterEach(() => {
+    vi.mocked(listen).mockResolvedValue(() => {});
   });
 
   // `allReminders` defaults to the same array as `reminders` so existing
@@ -250,5 +258,26 @@ describe("CalendarView day selection", () => {
     await user.click(screen.getByLabelText(openLabel(ninth)));
     await vi.advanceTimersByTimeAsync(0);
     expect(within(panel).queryByText("Boundary item")).toBeTruthy();
+  });
+
+  // Finding 5: on mobile, the ▪/• markers are the ONLY signal a day has a
+  // note or thought — the grid must refetch daySummaries when a note
+  // changes (written locally and the panel closed, or arriving by sync),
+  // not just when `cells` re-derives.
+  it("refetches day summaries when a day-notes-changed event arrives", async () => {
+    const callbacks: Array<() => void> = [];
+    vi.mocked(listen).mockImplementation(
+      (async (_event: string, cb: () => void) => {
+        callbacks.push(cb);
+        return () => {};
+      }) as typeof listen,
+    );
+
+    mount();
+    await waitFor(() => expect(daySummaries).toHaveBeenCalledTimes(1));
+
+    callbacks.forEach((cb) => cb());
+
+    await waitFor(() => expect(daySummaries).toHaveBeenCalledTimes(2));
   });
 });

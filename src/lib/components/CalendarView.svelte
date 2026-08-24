@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { api } from "../api";
   import { localDayKey, dayBounds } from "../day";
   import { effectiveDueAt } from "../time";
@@ -185,8 +187,11 @@
 
   // Markers for the visible range. The backend hands back raw thought
   // timestamps rather than per-day counts — bucketing needs the local
-  // calendar, which only the frontend has.
-  $effect(() => {
+  // calendar, which only the frontend has. Factored out of the $effect so
+  // the klaxon://day-notes-changed listener below can also trigger it —
+  // reading `cells` here still tracks the effect's dependency as long as
+  // the read happens synchronously inside the effect callback.
+  function fetchDaySummaries() {
     const first = cells[0]?.date;
     const last = cells[cells.length - 1]?.date;
     if (!first || !last) return;
@@ -203,6 +208,33 @@
         );
       })
       .catch((e) => console.error("daySummaries failed", e));
+  }
+
+  $effect(() => {
+    fetchDaySummaries();
+  });
+
+  // A note written and the panel closed, or one arriving by sync while the
+  // calendar is on screen, must move the ▪ marker without the user
+  // navigating away and back. `reminders-changed` doesn't cover this (the
+  // App.svelte publish cache skips identical rows, and notes aren't
+  // reminders anyway) — this is the only signal for it.
+  let unlistenNotes: UnlistenFn | null = null;
+  let destroyed = false;
+  onMount(async () => {
+    const un = await listen("klaxon://day-notes-changed", () => {
+      fetchDaySummaries();
+    });
+    if (destroyed) {
+      un();
+    } else {
+      unlistenNotes = un;
+    }
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    if (unlistenNotes) unlistenNotes();
   });
 
   const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
