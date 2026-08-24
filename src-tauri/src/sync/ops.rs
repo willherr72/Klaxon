@@ -159,6 +159,9 @@ pub fn push(
         if accepted_thoughts > 0 || accepted_tombstones > 0 {
             crate::sync::task::emit_thoughts_changed(app);
         }
+        if accepted_day_notes > 0 {
+            crate::sync::task::emit_day_notes_changed(app);
+        }
     }
 
     Ok(PushResponse {

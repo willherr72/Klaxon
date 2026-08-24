@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onDestroy } from "svelte";
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { api } from "../api";
   import { dayBounds, localDayKey } from "../day";
   import { effectiveDueAt } from "../time";
@@ -117,6 +118,28 @@
   });
 
   onDestroy(flushNote);
+
+  let unlistenNotes: UnlistenFn | null = null;
+  onMount(async () => {
+    // A note edited on the other device should appear here without
+    // reopening the day. Skip while a save is pending — our own write
+    // triggers this event, and reloading mid-edit would overwrite what the
+    // user is typing with what we just sent.
+    unlistenNotes = await listen("klaxon://day-notes-changed", async () => {
+      if (pending !== null || !loadedDay) return;
+      const day = loadedDay;
+      try {
+        const n = await api.getDayNote(day);
+        if (loadedDay === day) note = n?.body ?? "";
+      } catch (e) {
+        console.error("getDayNote refresh failed", e);
+      }
+    });
+  });
+
+  onDestroy(() => {
+    if (unlistenNotes) unlistenNotes();
+  });
 
   const MONTHS = [
     "January", "February", "March", "April", "May", "June",
