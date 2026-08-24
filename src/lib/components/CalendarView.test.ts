@@ -54,9 +54,22 @@ function todayAt(hour: number): number {
   return d.getTime();
 }
 
+// Mirrors CalendarView's own `monthNames` + `cellLabel`. The cell's
+// accessible name is the full date (day, month name, year) rather than a
+// bare day number, because the 42-cell grid always includes leading/trailing
+// days from adjacent months and a bare number is not unique within it.
+const MONTHS = [
+  "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+  "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+];
+function openLabel(d: Date): string {
+  return `Open ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
 describe("CalendarView day selection", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     daySummaries.mockResolvedValue({ days_with_notes: [], thought_times: [] });
     getDayNote.mockResolvedValue(null);
     thoughtsBetween.mockResolvedValue([]);
@@ -71,19 +84,25 @@ describe("CalendarView day selection", () => {
     return { ...r, onSelect, onCreateForDate };
   }
 
+  // DayPanel (Task 6) renders its <aside> unconditionally and toggles only
+  // aria-hidden — never {#if open} — so the note textarea is in the DOM
+  // whether the panel is open or shut. Presence alone (e.g.
+  // findByPlaceholderText) cannot tell open from closed; assert on the
+  // panel's own aria-hidden state, which does.
   it("opens the day panel when a day is clicked", async () => {
     const user = userEvent.setup();
-    mount();
+    const { container } = mount();
     const today = new Date();
-    await user.click(screen.getByLabelText(`Open ${today.getDate()}`));
-    expect(await screen.findByPlaceholderText("What happened?")).toBeTruthy();
+    await user.click(screen.getByLabelText(openLabel(today)));
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
   });
 
   it("asks the backend for that day's note", async () => {
     const user = userEvent.setup();
     mount();
     const today = new Date();
-    await user.click(screen.getByLabelText(`Open ${today.getDate()}`));
+    await user.click(screen.getByLabelText(openLabel(today)));
     const { localDayKey } = await import("../day");
     expect(getDayNote).toHaveBeenCalledWith(localDayKey(today));
   });
@@ -92,7 +111,7 @@ describe("CalendarView day selection", () => {
     const user = userEvent.setup();
     const { container } = mount();
     const today = new Date();
-    const cell = screen.getByLabelText(`Open ${today.getDate()}`);
+    const cell = screen.getByLabelText(openLabel(today));
     cell.focus();
     await user.keyboard("{Enter}");
     await screen.findByPlaceholderText("What happened?");
@@ -124,5 +143,23 @@ describe("CalendarView day selection", () => {
     await user.click(screen.getByText("+1 more"));
     await screen.findByPlaceholderText("What happened?");
     expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  // February 2026 starts on a Sunday (day-of-week 0 for the 1st), so the
+  // 42-cell grid has zero leading overflow but 14 trailing cells pulled
+  // from March 1-14 — every day number 1-14 therefore appears twice in the
+  // same grid (once as February's own, once as March's overflow). This is
+  // exactly the month/start-weekday combination that would break a label
+  // built from a bare day number ("Open 1" through "Open 14" each
+  // rendered by two different cells); it pins the fix so that regression
+  // cannot come back silently.
+  it("gives every cell in the grid a unique accessible label, even when day-of-month numbers repeat", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 1, 15));
+    mount();
+    const cells = screen.getAllByLabelText(/^Open /);
+    const labels = cells.map((el) => el.getAttribute("aria-label"));
+    expect(labels.length).toBe(42);
+    expect(new Set(labels).size).toBe(labels.length);
   });
 });

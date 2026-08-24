@@ -181,6 +181,16 @@
 
   let label = $derived(`${monthNames[cursorDate.getMonth()]} ${cursorDate.getFullYear()}`);
 
+  // The grid always renders 42 cells, so leading/trailing overflow from
+  // adjacent months always repeats low day-of-month numbers within the same
+  // grid (e.g. day "3" as both this month's 3rd and next month's overflow
+  // 3rd) — a bare day number is not a unique accessible name. Match
+  // DayPanel's heading shape ("23 August 2026") so the full date, which is
+  // unique per cell by construction, is what gets announced.
+  function cellLabel(d: Date): string {
+    return `Open ${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+  }
+
   function prev() { cursorDate = addMonths(cursorDate, -1); }
   function next() { cursorDate = addMonths(cursorDate, 1); }
   function jumpToday() { cursorDate = startOfMonth(new Date()); }
@@ -224,7 +234,7 @@
           localDayKey(selectedDate) === localDayKey(cell.date)}
         role="gridcell"
         tabindex="0"
-        aria-label={`Open ${cell.date.getDate()}`}
+        aria-label={cellLabel(cell.date)}
         onclick={() => openDay(cell.date)}
         onkeydown={(e) => onCellKeydown(cell.date, e)}
         oncontextmenu={(e) => handleCellContextMenu(cell.date, e)}
