@@ -42,6 +42,14 @@ pub fn emit_thoughts_changed(app: &AppHandle) {
     let _ = app.emit("klaxon://thoughts-changed", ());
 }
 
+/// Separate again, same reasoning as `emit_thoughts_changed`: the day-detail
+/// panel is its own view keyed to a single day — it reloads on this event
+/// alone, so a sync that carried nothing but a day note still refreshes an
+/// open panel instead of leaving it showing stale content.
+pub fn emit_day_notes_changed(app: &AppHandle) {
+    let _ = app.emit("klaxon://day-notes-changed", ());
+}
+
 const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Hard per-peer wall-clock budget for a single sync attempt. iroh's
@@ -457,6 +465,7 @@ pub struct PassEffects {
     pub to_cancel: Vec<String>,
     pub reminders_changed: bool,
     pub thoughts_changed: bool,
+    pub day_notes_changed: bool,
 }
 
 /// App-process wrapper: gather mDNS-fresh seeds, run the core, apply the
@@ -489,7 +498,81 @@ async fn sync_one(
     if effects.thoughts_changed {
         emit_thoughts_changed(app);
     }
+    if effects.day_notes_changed {
+        emit_day_notes_changed(app);
+    }
     Ok(())
+}
+
+/// Apply every row in a pulled `ChangeSet` to the local DB and report what
+/// the caller needs back: the alert ids to cancel, and the highest
+/// `updated_at`/`deleted_at` watermark seen (starting from `since`, so an
+/// empty `ChangeSet` returns `since` unchanged).
+///
+/// Split out of `sync_one_core` so it's unit-testable with a plain
+/// in-memory `Connection` — `sync_one_core` itself needs a live iroh
+/// `Endpoint` and can't run under `#[cfg(test)]` on Windows (see
+/// `sync/iroh_handler.rs`).
+fn apply_pulled(conn: &Connection, pulled: &ChangeSet, since: i64) -> (Vec<String>, i64) {
+    let mut to_cancel: Vec<String> = Vec::new();
+    let mut max_pulled = since;
+    // Lanes before reminders so an arriving reminder with a freshly-
+    // created task_lane_id sees its lane row already present.
+    for lane in &pulled.lanes {
+        let _ = task_lanes::apply_remote(conn, lane);
+        if lane.updated_at > max_pulled {
+            max_pulled = lane.updated_at;
+        }
+    }
+    for r in &pulled.reminders {
+        if matches!(repo::apply_remote(conn, r), Ok(true)) && silences_alert(r.state) {
+            to_cancel.push(r.id.clone());
+        }
+        if r.updated_at > max_pulled {
+            max_pulled = r.updated_at;
+        }
+    }
+    for t in &pulled.thoughts {
+        let _ = thoughts::apply_remote(conn, t);
+        if t.updated_at > max_pulled {
+            max_pulled = t.updated_at;
+        }
+    }
+    for n in &pulled.day_notes {
+        let _ = day_notes::apply_remote(conn, n);
+        if n.updated_at > max_pulled {
+            max_pulled = n.updated_at;
+        }
+    }
+    for t in &pulled.tombstones {
+        let _ = tombstones::apply_remote(conn, &t.id, t.deleted_at);
+        // Tombstones unconditionally cancel — the reminder is gone, no
+        // reason to keep ringing about it. Same id might also belong
+        // to a deleted lane; deleting a non-existent row is a no-op.
+        let _ = task_lanes::delete(conn, &t.id);
+        to_cancel.push(t.id.clone());
+        if t.deleted_at > max_pulled {
+            max_pulled = t.deleted_at;
+        }
+    }
+    (to_cancel, max_pulled)
+}
+
+/// Compute app-facing side effects from a pulled `ChangeSet`. Pure — no DB,
+/// no endpoint — so it's testable in isolation. `day_notes_changed` is its
+/// own flag rather than folded into `reminders_changed`, same reasoning as
+/// `thoughts_changed`: the day-detail panel is a separate view keyed to one
+/// day, and a sync that carried nothing but a day note must still refresh
+/// an open panel.
+fn effects_from_pulled(pulled: &ChangeSet, to_cancel: Vec<String>) -> PassEffects {
+    PassEffects {
+        to_cancel,
+        reminders_changed: !pulled.reminders.is_empty()
+            || !pulled.tombstones.is_empty()
+            || !pulled.lanes.is_empty(),
+        thoughts_changed: !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty(),
+        day_notes_changed: !pulled.day_notes.is_empty(),
+    }
 }
 
 /// The sync pass proper — pull, apply, push — with no app-process
@@ -536,51 +619,9 @@ async fn sync_one_core(
     let (pulled, dial) =
         iroh_client::pull(endpoint, node_id, &seed, &peer.shared_secret, peer.last_pull_at)
             .await?;
-    let mut max_pulled = peer.last_pull_at;
-    let mut to_cancel: Vec<String> = Vec::new();
-    {
+    let to_cancel = {
         let conn = db.lock();
-        // Lanes before reminders so an arriving reminder with a freshly-
-        // created task_lane_id sees its lane row already present.
-        for lane in &pulled.lanes {
-            let _ = task_lanes::apply_remote(&conn, lane);
-            if lane.updated_at > max_pulled {
-                max_pulled = lane.updated_at;
-            }
-        }
-        for r in &pulled.reminders {
-            if matches!(repo::apply_remote(&conn, r), Ok(true))
-                && silences_alert(r.state)
-            {
-                to_cancel.push(r.id.clone());
-            }
-            if r.updated_at > max_pulled {
-                max_pulled = r.updated_at;
-            }
-        }
-        for t in &pulled.thoughts {
-            let _ = thoughts::apply_remote(&conn, t);
-            if t.updated_at > max_pulled {
-                max_pulled = t.updated_at;
-            }
-        }
-        for n in &pulled.day_notes {
-            let _ = day_notes::apply_remote(&conn, n);
-            if n.updated_at > max_pulled {
-                max_pulled = n.updated_at;
-            }
-        }
-        for t in &pulled.tombstones {
-            let _ = tombstones::apply_remote(&conn, &t.id, t.deleted_at);
-            // Tombstones unconditionally cancel — the reminder is gone, no
-            // reason to keep ringing about it. Same id might also belong
-            // to a deleted lane; deleting a non-existent row is a no-op.
-            let _ = task_lanes::delete(&conn, &t.id);
-            to_cancel.push(t.id.clone());
-            if t.deleted_at > max_pulled {
-                max_pulled = t.deleted_at;
-            }
-        }
+        let (to_cancel, max_pulled) = apply_pulled(&conn, &pulled, peer.last_pull_at);
         // Trust the peer's clock for the watermark.
         let watermark = pulled.server_time_ms.max(max_pulled);
         peers::mark_pulled(&conn, &peer.id, watermark)?;
@@ -592,16 +633,11 @@ async fn sync_one_core(
             dial.remote_addrs_json.as_deref(),
             crate::models::now_ms(),
         );
-    }
+        to_cancel
+    };
     // Side effects are the caller's job — the app cancels alerts and pokes
     // the webview; the headless worker drops these.
-    let effects = PassEffects {
-        to_cancel,
-        reminders_changed: !pulled.reminders.is_empty()
-            || !pulled.tombstones.is_empty()
-            || !pulled.lanes.is_empty(),
-        thoughts_changed: !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty(),
-    };
+    let effects = effects_from_pulled(&pulled, to_cancel);
 
     // Push
     let (rems, tombs, lanes, thts, dns) = {
@@ -739,11 +775,29 @@ fn silences_alert(state: ReminderState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_self_test, with_peer_timeout, PeerSyncResult,
+        apply_pulled, effects_from_pulled, should_self_test, with_peer_timeout, PeerSyncResult,
         FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, SELF_TEST_COOLDOWN, SYNC_PEER_TIMEOUT,
     };
     use crate::error::{AppError, AppResult};
+    use crate::sync::types::{ChangeSet, RemoteDayNote};
     use std::time::Duration;
+
+    fn test_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    fn empty_change_set() -> ChangeSet {
+        ChangeSet {
+            server_time_ms: 0,
+            reminders: vec![],
+            tombstones: vec![],
+            lanes: vec![],
+            thoughts: vec![],
+            day_notes: vec![],
+        }
+    }
 
     /// A short run of failures is just a peer that hasn't woken up yet, and
     /// must not cost even a self-test.
@@ -809,5 +863,59 @@ mod tests {
         )
         .await;
         assert!(matches!(outcome, PeerSyncResult::Failed(_)));
+    }
+
+    /// This is the production path v0.10.0 actually wires for day notes —
+    /// `apply_pulled` + `effects_from_pulled`, exercised here directly —
+    /// unlike the mesh test in `sync::ops`, which only exercises the
+    /// responder-side `apply_set` test helper. A `ChangeSet` carrying only
+    /// a day note must still land in the DB and must flip exactly one
+    /// flag: the day panel's own, not the reminders board's.
+    #[test]
+    fn a_pulled_day_note_applies_and_flips_only_its_own_flag() {
+        let conn = test_conn();
+        let mut set = empty_change_set();
+        set.day_notes.push(RemoteDayNote {
+            day: "2026-08-23".into(),
+            body: "pulled from a peer".into(),
+            created_at: 1,
+            updated_at: 2,
+        });
+
+        let (to_cancel, max_pulled) = apply_pulled(&conn, &set, 0);
+        assert!(to_cancel.is_empty(), "a day note never cancels an alert");
+        assert_eq!(max_pulled, 2, "watermark advances to the note's updated_at");
+        assert_eq!(
+            crate::db::day_notes::get(&conn, "2026-08-23")
+                .unwrap()
+                .unwrap()
+                .body,
+            "pulled from a peer"
+        );
+
+        let effects = effects_from_pulled(&set, to_cancel);
+        assert!(effects.day_notes_changed, "the day panel must refresh");
+        assert!(
+            !effects.reminders_changed,
+            "a day note alone must not trigger the reminders board's refresh"
+        );
+        assert!(!effects.thoughts_changed);
+    }
+
+    /// An empty pull is the common case — nothing changed since last time —
+    /// and must not fire any refresh event, nor move the watermark.
+    #[test]
+    fn an_empty_pull_sets_no_effects() {
+        let conn = test_conn();
+        let set = empty_change_set();
+
+        let (to_cancel, max_pulled) = apply_pulled(&conn, &set, 100);
+        assert!(to_cancel.is_empty());
+        assert_eq!(max_pulled, 100, "watermark is unchanged with nothing pulled");
+
+        let effects = effects_from_pulled(&set, to_cancel);
+        assert!(!effects.reminders_changed);
+        assert!(!effects.thoughts_changed);
+        assert!(!effects.day_notes_changed);
     }
 }
