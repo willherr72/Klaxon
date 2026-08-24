@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/svelte";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Reminder } from "../types";
 
 const getDayNote = vi.fn();
@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(() => {}),
 }));
 
+import { listen } from "@tauri-apps/api/event";
 import DayPanel from "./DayPanel.svelte";
 
 const DAY = new Date(2026, 7, 23, 12, 0);
@@ -73,6 +74,14 @@ describe("DayPanel", () => {
     getDayNote.mockResolvedValue(null);
     setDayNote.mockResolvedValue({ day: "2026-08-23", body: "", created_at: 1, updated_at: 1 });
     thoughtsBetween.mockResolvedValue([]);
+  });
+
+  // A couple of tests below override `listen`'s implementation to capture
+  // the event callback. `vi.clearAllMocks()` in beforeEach resets call
+  // history but not a swapped-in implementation, so restore the module's
+  // default (an immediately-resolved no-op unlisten) after every test.
+  afterEach(() => {
+    vi.mocked(listen).mockResolvedValue(() => {});
   });
 
   it("loads the note for the day it is opened on", async () => {
@@ -317,5 +326,74 @@ describe("DayPanel", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(noteBox().value).toBe("hello");
+  });
+
+  // The sync-listener path (klaxon://day-notes-changed) is a second entry
+  // point into the same clobber hazard as above, but with its own fetch
+  // and its own guard. `pending === null` alone is not enough: the user
+  // can keep typing AFTER the listener's own getDayNote is already in
+  // flight, and that keystroke must win over whatever the fetch returns.
+  it("does not let the sync-change listener overwrite text typed while its own fetch is in flight", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    let fireChange: () => void = () => {};
+    vi.mocked(listen).mockImplementation(
+      ((_event: string, cb: () => void) => {
+        fireChange = cb;
+        return Promise.resolve(() => {});
+      }) as typeof listen,
+    );
+
+    mount();
+    await vi.advanceTimersByTimeAsync(0); // let mount's own getDayNote settle
+
+    await user.type(noteBox(), "first");
+    // The debounce fires and dispatches the save — `pending` goes back to
+    // null well before any fetch below resolves.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setDayNote).toHaveBeenCalledWith("2026-08-23", "first");
+
+    // A change notification arrives (this device's own write, or the other
+    // device syncing in) and the listener's own getDayNote hangs.
+    let resolveListenerFetch!: (v: unknown) => void;
+    getDayNote.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveListenerFetch = resolve; }),
+    );
+    fireChange();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The user keeps typing while that fetch is still hanging.
+    await user.type(noteBox(), " more");
+
+    // The hung fetch finally resolves with a stale body — it must lose to
+    // what's already on screen.
+    resolveListenerFetch({ day: "2026-08-23", body: "stale from before", created_at: 1, updated_at: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(noteBox().value).toBe("first more");
+  });
+
+  // If the component is destroyed while `listen`'s promise is still
+  // pending, `unlistenNotes` was never assigned, so onDestroy's guard
+  // (`if (unlistenNotes) unlistenNotes()`) used to no-op and leak the
+  // listener forever.
+  it("unregisters the sync listener even if the component is destroyed before `listen` resolves", async () => {
+    const unlistenSpy = vi.fn();
+    let resolveListen!: () => void;
+    vi.mocked(listen).mockImplementation(
+      (() => new Promise((resolve) => {
+        resolveListen = () => resolve(unlistenSpy);
+      })) as typeof listen,
+    );
+
+    const { unmount } = mount();
+    unmount();
+
+    // `listen` only resolves after the component is already gone.
+    resolveListen();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(unlistenSpy).toHaveBeenCalledTimes(1);
   });
 });

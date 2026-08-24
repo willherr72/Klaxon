@@ -120,24 +120,46 @@
   onDestroy(flushNote);
 
   let unlistenNotes: UnlistenFn | null = null;
+  // Set the instant onDestroy runs. `listen` is awaited, so if the
+  // component is torn down before it resolves, `unlistenNotes` is still
+  // null when onDestroy fires and would no-op — leaking the listener onto
+  // a component that no longer exists. This flag lets the onMount
+  // continuation notice and unlisten immediately instead.
+  let destroyed = false;
   onMount(async () => {
     // A note edited on the other device should appear here without
-    // reopening the day. Skip while a save is pending — our own write
-    // triggers this event, and reloading mid-edit would overwrite what the
-    // user is typing with what we just sent.
-    unlistenNotes = await listen("klaxon://day-notes-changed", async () => {
+    // reopening the day. `pending` alone does not prove it's safe to
+    // overwrite `note`: it goes back to null the instant the debounce
+    // dispatches a save, well before this fetch (or the save's own round
+    // trip) resolves, so a stale read can still land after that point.
+    const un = await listen("klaxon://day-notes-changed", async () => {
       if (pending !== null || !loadedDay) return;
       const day = loadedDay;
+      // Snapshot what's on screen before the await. The only safe check
+      // on the other side is "nothing changed while we were waiting" —
+      // comparing to this snapshot catches any keystroke that landed
+      // during the fetch, including ones typed after the debounce above
+      // already cleared `pending`. We deliberately do NOT gate on
+      // `editedDay`: it stays set for the whole day once the user has
+      // typed anything, which would permanently disable this refresh for
+      // that day and defeat the point of syncing notes in live.
+      const before = note;
       try {
         const n = await api.getDayNote(day);
-        if (loadedDay === day) note = n?.body ?? "";
+        if (loadedDay === day && note === before) note = n?.body ?? "";
       } catch (e) {
         console.error("getDayNote refresh failed", e);
       }
     });
+    if (destroyed) {
+      un();
+    } else {
+      unlistenNotes = un;
+    }
   });
 
   onDestroy(() => {
+    destroyed = true;
     if (unlistenNotes) unlistenNotes();
   });
 
