@@ -72,7 +72,10 @@
     }
   }
 
-  function close() {
+  // Exported so CalendarView can close this panel imperatively (Android
+  // Back) through the exact same flush-then-close path the X button uses,
+  // rather than just toggling `open` from outside and skipping the flush.
+  export function close() {
     // Flush BEFORE handing control back: an unflushed debounce silently
     // discards the note it exists to protect.
     flushNote();

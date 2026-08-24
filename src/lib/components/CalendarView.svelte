@@ -11,6 +11,7 @@
     allReminders,
     onSelect,
     onCreateForDate,
+    panelOpen = $bindable(false),
   }: {
     // The grid's own filtered view — whatever the active view/search/tag
     // filter currently allows. Feeds `cells` below.
@@ -25,6 +26,11 @@
     allReminders: Reminder[];
     onSelect: (r: Reminder) => void;
     onCreateForDate?: (ms: number, silent: boolean) => void;
+    // Bindable so App.svelte can see whether the day panel is open and
+    // fold it into its Android-back-button registry (App.svelte:135-167).
+    // App.svelte only ever reads this and never writes it directly —
+    // closing must go through `closePanel()` below so the note flushes.
+    panelOpen?: boolean;
   } = $props();
 
   // Right-click context menu state. Position is in viewport coords; we
@@ -146,13 +152,24 @@
   });
 
   let selectedDate = $state<Date | null>(null);
-  let panelOpen = $state(false);
   let daysWithNotes = $state<Set<string>>(new Set());
   let daysWithThoughts = $state<Set<string>>(new Set());
+  // Instance ref to the DayPanel so closePanel() below can go through its
+  // real close() (flush-then-close), not just flip `panelOpen` and skip
+  // the flush.
+  let dayPanelRef: DayPanel | undefined = $state();
 
   function openDay(d: Date) {
     selectedDate = d;
     panelOpen = true;
+  }
+
+  // Called by App.svelte's Android-back-button handler. Must go through
+  // DayPanel's own close() — flush lives entirely in DayPanel's private
+  // state (pending/saveChain), so there is no way to flush from out here
+  // other than delegating to it.
+  export function closePanel() {
+    dayPanelRef?.close();
   }
 
   function onCellKeydown(d: Date, e: KeyboardEvent) {
@@ -292,6 +309,7 @@
   </div>
 
   <DayPanel
+    bind:this={dayPanelRef}
     open={panelOpen}
     date={selectedDate}
     reminders={allReminders}

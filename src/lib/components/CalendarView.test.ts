@@ -5,13 +5,14 @@ import type { Reminder } from "../types";
 
 const daySummaries = vi.fn();
 const getDayNote = vi.fn();
+const setDayNote = vi.fn();
 const thoughtsBetween = vi.fn();
 
 vi.mock("../api", () => ({
   api: {
     daySummaries: (...a: unknown[]) => daySummaries(...a),
     getDayNote: (...a: unknown[]) => getDayNote(...a),
-    setDayNote: vi.fn().mockResolvedValue(null),
+    setDayNote: (...a: unknown[]) => setDayNote(...a),
     thoughtsBetween: (...a: unknown[]) => thoughtsBetween(...a),
   },
 }));
@@ -72,6 +73,7 @@ describe("CalendarView day selection", () => {
     vi.useRealTimers();
     daySummaries.mockResolvedValue({ days_with_notes: [], thought_times: [] });
     getDayNote.mockResolvedValue(null);
+    setDayNote.mockResolvedValue({ day: "", body: "", created_at: 1, updated_at: 1 });
     thoughtsBetween.mockResolvedValue([]);
   });
 
@@ -190,5 +192,30 @@ describe("CalendarView day selection", () => {
 
     await user.click(screen.getByLabelText(openLabel(today)));
     expect(await screen.findByText("Finished thing")).toBeTruthy();
+  });
+
+  // Finding 3: Android Back must close the day panel through the same
+  // path as the panel's own X button — flushing a pending note first —
+  // not just hide it. App.svelte drives this via the exported
+  // closePanel(), which must delegate to DayPanel's real close().
+  it("exposes closePanel() that flushes a pending note before closing, for Android Back", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { component, container } = mount();
+    const today = new Date();
+
+    await user.click(screen.getByLabelText(openLabel(today)));
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+
+    const noteBox = screen.getByPlaceholderText("What happened?") as HTMLTextAreaElement;
+    await user.type(noteBox, "typed before back press");
+    expect(setDayNote).not.toHaveBeenCalled();
+
+    (component as unknown as { closePanel: () => void }).closePanel();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(setDayNote).toHaveBeenCalledWith(expect.any(String), "typed before back press");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("true");
   });
 });
