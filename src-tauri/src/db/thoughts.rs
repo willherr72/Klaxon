@@ -91,6 +91,22 @@ pub fn list(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<Thought
     Ok(out)
 }
 
+/// Thoughts captured in a half-open time range, oldest first. The calendar
+/// day panel needs them by date; `list` only filters by tag.
+pub fn between(conn: &Connection, from_ms: i64, to_ms: i64) -> AppResult<Vec<Thought>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM thoughts
+          WHERE created_at >= ?1 AND created_at < ?2
+          ORDER BY created_at ASC"
+    ))?;
+    let rows = stmt.query_map(params![from_ms, to_ms], row_to_thought)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Patch semantics: `None` leaves a field untouched. Always bumps
 /// `updated_at` (the sync watermark).
 pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Thought> {
