@@ -13,11 +13,13 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::alerts;
-use crate::db::{peers, reminders as repo, task_lanes, thoughts, tombstones};
+use crate::db::{day_notes, peers, reminders as repo, task_lanes, thoughts, tombstones};
 use crate::models::ReminderState;
 use crate::sync::iroh_client;
 use crate::sync::trigger::{next_retry_delay, Nudge, DEBOUNCE};
-use crate::sync::types::{ChangeSet, RemoteReminder, RemoteThought, RemoteTombstone};
+use crate::sync::types::{
+    ChangeSet, RemoteDayNote, RemoteReminder, RemoteThought, RemoteTombstone,
+};
 
 /// Emit a "something changed about the reminders table" event so the
 /// frontend re-fetches. Called from anywhere the backend mutates reminders
@@ -562,6 +564,12 @@ async fn sync_one_core(
                 max_pulled = t.updated_at;
             }
         }
+        for n in &pulled.day_notes {
+            let _ = day_notes::apply_remote(&conn, n);
+            if n.updated_at > max_pulled {
+                max_pulled = n.updated_at;
+            }
+        }
         for t in &pulled.tombstones {
             let _ = tombstones::apply_remote(&conn, &t.id, t.deleted_at);
             // Tombstones unconditionally cancel — the reminder is gone, no
@@ -596,21 +604,24 @@ async fn sync_one_core(
     };
 
     // Push
-    let (rems, tombs, lanes, thts) = {
+    let (rems, tombs, lanes, thts, dns) = {
         let conn = db.lock();
         let rs = repo::updated_since(&conn, peer.last_push_at)?;
         let ts = tombstones::deleted_since(&conn, peer.last_push_at)?;
         let ls = task_lanes::updated_since(&conn, peer.last_push_at)?;
         // Watermark selection only — see issues #1/#2.
         let th = thoughts::updated_since(&conn, peer.last_push_at)?;
+        let dn = day_notes::updated_since(&conn, peer.last_push_at)?;
         (
             rs.iter().map(RemoteReminder::from).collect::<Vec<_>>(),
             ts.iter().map(RemoteTombstone::from).collect::<Vec<_>>(),
             ls,
             th.iter().map(RemoteThought::from).collect::<Vec<_>>(),
+            dn.iter().map(RemoteDayNote::from).collect::<Vec<_>>(),
         )
     };
-    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() && thts.is_empty() {
+    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() && thts.is_empty() && dns.is_empty()
+    {
         return Ok(effects);
     }
     let max_pushed = rems
@@ -619,6 +630,7 @@ async fn sync_one_core(
         .chain(tombs.iter().map(|t| t.deleted_at))
         .chain(lanes.iter().map(|l| l.updated_at))
         .chain(thts.iter().map(|t| t.updated_at))
+        .chain(dns.iter().map(|n| n.updated_at))
         .max()
         .unwrap_or(peer.last_push_at);
     let set = ChangeSet {
@@ -627,6 +639,7 @@ async fn sync_one_core(
         tombstones: tombs,
         lanes,
         thoughts: thts,
+        day_notes: dns,
     };
     let (resp, _push_dial) =
         iroh_client::push(endpoint, node_id, &seed, &peer.shared_secret, set).await?;
@@ -636,16 +649,18 @@ async fn sync_one_core(
         peers::mark_pushed(&conn, &peer.id, watermark)?;
     }
     log::debug!(
-        "synced with {}: pulled {}r/{}t/{}l/{}th, pushed {}r/{}t/{}l/{}th",
+        "synced with {}: pulled {}r/{}t/{}l/{}th/{}dn, pushed {}r/{}t/{}l/{}th/{}dn",
         peer.name,
         pulled.reminders.len(),
         pulled.tombstones.len(),
         pulled.lanes.len(),
         pulled.thoughts.len(),
+        pulled.day_notes.len(),
         resp.accepted_reminders,
         resp.accepted_tombstones,
         resp.accepted_lanes,
         resp.accepted_thoughts,
+        resp.accepted_day_notes,
     );
     Ok(effects)
 }

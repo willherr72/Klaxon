@@ -88,6 +88,34 @@ pub fn updated_since(conn: &Connection, since: i64) -> AppResult<Vec<DayNote>> {
     Ok(out)
 }
 
+/// Apply a day note that arrived over sync. Last-write-wins by
+/// `updated_at`; equal-or-older incoming rows are ignored. An incoming
+/// empty body is a real edit (a cleared note), not a no-op.
+pub fn apply_remote(conn: &Connection, n: &crate::sync::types::RemoteDayNote) -> AppResult<bool> {
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT updated_at FROM day_notes WHERE day = ?1",
+            params![n.day],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(existing) = existing {
+        if n.updated_at <= existing {
+            return Ok(false);
+        }
+    }
+
+    conn.execute(
+        "INSERT INTO day_notes (day, body, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(day) DO UPDATE SET
+            body = excluded.body,
+            updated_at = excluded.updated_at",
+        params![n.day, truncate_body(&n.body), n.created_at, n.updated_at],
+    )?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{between, get, set};
@@ -156,5 +184,52 @@ mod tests {
             .map(|n| n.day)
             .collect();
         assert_eq!(got, vec!["2026-08-01", "2026-08-15", "2026-08-31"]);
+    }
+
+    use crate::sync::types::RemoteDayNote;
+
+    fn remote(day: &str, body: &str, updated_at: i64) -> RemoteDayNote {
+        RemoteDayNote {
+            day: day.to_string(),
+            body: body.to_string(),
+            created_at: 1,
+            updated_at,
+        }
+    }
+
+    #[test]
+    fn a_newer_incoming_note_wins() {
+        let conn = test_conn();
+        let local = set(&conn, "2026-08-23", "mine").unwrap();
+
+        assert!(super::apply_remote(&conn, &remote("2026-08-23", "theirs", local.updated_at + 1)).unwrap());
+        assert_eq!(get(&conn, "2026-08-23").unwrap().unwrap().body, "theirs");
+    }
+
+    #[test]
+    fn a_stale_incoming_note_is_ignored() {
+        let conn = test_conn();
+        let local = set(&conn, "2026-08-23", "mine").unwrap();
+
+        assert!(!super::apply_remote(&conn, &remote("2026-08-23", "theirs", local.updated_at - 1)).unwrap());
+        assert_eq!(get(&conn, "2026-08-23").unwrap().unwrap().body, "mine");
+    }
+
+    /// An incoming CLEARED note must land like any other edit — otherwise
+    /// clearing a note on the phone would never reach the desktop.
+    #[test]
+    fn an_incoming_cleared_note_applies() {
+        let conn = test_conn();
+        let local = set(&conn, "2026-08-23", "mine").unwrap();
+
+        assert!(super::apply_remote(&conn, &remote("2026-08-23", "", local.updated_at + 1)).unwrap());
+        assert_eq!(get(&conn, "2026-08-23").unwrap().unwrap().body, "");
+    }
+
+    #[test]
+    fn an_unseen_day_is_inserted() {
+        let conn = test_conn();
+        assert!(super::apply_remote(&conn, &remote("2026-08-23", "theirs", 42)).unwrap());
+        assert_eq!(get(&conn, "2026-08-23").unwrap().unwrap().body, "theirs");
     }
 }

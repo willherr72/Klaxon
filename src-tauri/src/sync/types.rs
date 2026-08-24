@@ -59,6 +59,15 @@ pub struct RemoteThought {
     pub updated_at: i64,
 }
 
+/// A day note on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDayNote {
+    pub day: String,
+    pub body: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeSet {
     pub server_time_ms: i64,
@@ -81,6 +90,13 @@ pub struct ChangeSet {
     /// `proto::read_frame`.
     #[serde(default)]
     pub thoughts: Vec<RemoteThought>,
+    /// v0.10: per-day notes. Appended last, for the same reason `thoughts`
+    /// was: an older peer decoding this ChangeSet reads the fields it knows
+    /// and ignores the trailing bytes. The reverse does NOT hold — a 0.10
+    /// peer decoding a 0.9 ChangeSet runs out of buffer and fails the whole
+    /// frame. Upgrade paired devices together.
+    #[serde(default)]
+    pub day_notes: Vec<RemoteDayNote>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +108,8 @@ pub struct PushResponse {
     pub accepted_lanes: usize,
     #[serde(default)]
     pub accepted_thoughts: usize,
+    #[serde(default)]
+    pub accepted_day_notes: usize,
 }
 
 // ── Tap-to-pair handshake ────────────────────────────────────────────
@@ -151,6 +169,17 @@ impl From<&crate::models::Thought> for RemoteThought {
             tags: t.tags.clone(),
             created_at: t.created_at,
             updated_at: t.updated_at,
+        }
+    }
+}
+
+impl From<&crate::models::DayNote> for RemoteDayNote {
+    fn from(n: &crate::models::DayNote) -> Self {
+        Self {
+            day: n.day.clone(),
+            body: n.body.clone(),
+            created_at: n.created_at,
+            updated_at: n.updated_at,
         }
     }
 }

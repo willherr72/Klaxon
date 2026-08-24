@@ -225,6 +225,7 @@ mod tests {
                     created_at: 1,
                     updated_at: 2,
                 }],
+                day_notes: vec![],
             }),
         };
         write_frame(&mut a, &sent).await.unwrap();
