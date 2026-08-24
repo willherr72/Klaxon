@@ -217,7 +217,10 @@ describe("DayPanel", () => {
     // still reads yesterday's text, the clear isn't synchronous.
     expect(noteBox().value).toBe("");
 
-    resolveNext({ day: "2026-08-24", body: "", created_at: 1, updated_at: 1 });
+    // Switching days must still load the new day's body once its fetch
+    // resolves — the synchronous clear must not turn into a permanent one.
+    resolveNext({ day: "2026-08-24", body: "24th's note", created_at: 1, updated_at: 1 });
+    await waitFor(() => expect(noteBox().value).toBe("24th's note"));
   });
 
   // A late-resolving fetch for the day the user is already typing on must
@@ -284,5 +287,35 @@ describe("DayPanel", () => {
 
     expect(setDayNote).toHaveBeenCalledTimes(2);
     expect(setDayNote).toHaveBeenNthCalledWith(2, "2026-08-23", "AB");
+  });
+
+  // `pending` is cleared the instant the debounce dispatches a save, well
+  // before a slow fetch (cold start, busy device) resolves. A guard keyed
+  // only on `pending` would reopen the clobber window right after the save
+  // fires. This reproduces that exact sequence: fetch hangs, user types,
+  // the debounce fires and dispatches the save (pending -> null), and only
+  // then does the stale fetch resolve.
+  it("does not let a fetch that resolves after the debounce already fired overwrite what was typed", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    let resolveNote!: (v: unknown) => void;
+    getDayNote.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveNote = resolve; }),
+    );
+
+    mount();
+    await user.type(noteBox(), "hello");
+
+    // The debounce fires and dispatches the save — `pending` is now null,
+    // even though the initial fetch from mount() is still hanging.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setDayNote).toHaveBeenCalledWith("2026-08-23", "hello");
+
+    // The slow fetch finally resolves with a different (stale) body.
+    resolveNote({ day: "2026-08-23", body: "stale from before", created_at: 1, updated_at: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(noteBox().value).toBe("hello");
   });
 });

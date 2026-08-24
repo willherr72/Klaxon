@@ -34,6 +34,10 @@
   // Set while a save is pending, so flushing knows what to write even
   // after `note` has been replaced by another day's body.
   let pending: { day: string; body: string } | null = null;
+  // Which day the user has typed into. A fetch that resolves after the user
+  // has edited is stale by definition — `pending` is not enough on its own,
+  // because the debounce clears it the moment the save is dispatched.
+  let editedDay: string | null = null;
   // Saves must land in the order they were issued. Two overlapping
   // setDayNote calls can otherwise resolve out of order and persist the
   // older body, which is precisely the loss the debounce exists to prevent.
@@ -61,7 +65,10 @@
   function onNoteInput(e: Event) {
     const body = (e.currentTarget as HTMLTextAreaElement).value;
     note = body;
-    if (loadedDay) scheduleSave(loadedDay, body);
+    if (loadedDay) {
+      editedDay = loadedDay;
+      scheduleSave(loadedDay, body);
+    }
   }
 
   function close() {
@@ -84,18 +91,21 @@
     // resolves.
     note = "";
     thoughts = [];
+    editedDay = null;
     const { startMs, endMs } = dayBounds(date);
     api
       .getDayNote(key)
       .then((n) => {
-        // Skip the assignment if the day has moved on again, or if the
-        // user has already typed something for this exact day since this
-        // fetch was issued (pending?.day === key). A pending save for this
-        // key means the user's typing is newer than whatever this fetch
-        // just returned, so applying the fetch's body here would silently
-        // clobber what they typed even though the newer text is still on
-        // its way to being saved.
-        if (loadedDay === key && pending?.day !== key) note = n?.body ?? "";
+        // Skip the assignment if the day has moved on again, or if the user
+        // has typed anything for this exact day since it loaded. `pending`
+        // alone can't tell us that: the debounce clears it to null the
+        // moment the save is dispatched, well before a slow fetch (cold
+        // start, busy device) resolves — so a fetch landing after the
+        // debounce fired would still overwrite the user's text with a
+        // stale body if we only checked `pending`. `editedDay` stays set
+        // for the whole day once the user has typed, which is the
+        // guarantee we actually need here.
+        if (loadedDay === key && editedDay !== key) note = n?.body ?? "";
       })
       .catch((e) => console.error("getDayNote failed", e));
     api
