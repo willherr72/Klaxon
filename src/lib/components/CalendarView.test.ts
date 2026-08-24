@@ -75,11 +75,15 @@ describe("CalendarView day selection", () => {
     thoughtsBetween.mockResolvedValue([]);
   });
 
-  function mount(reminders: Reminder[] = [reminder()]) {
+  // `allReminders` defaults to the same array as `reminders` so existing
+  // callers that only care about the grid don't have to think about the
+  // split. Tests that need the panel and the grid to disagree (Finding 2)
+  // pass `allReminders` explicitly.
+  function mount(reminders: Reminder[] = [reminder()], allReminders: Reminder[] = reminders) {
     const onSelect = vi.fn();
     const onCreateForDate = vi.fn();
     const r = render(CalendarView, {
-      props: { reminders, onSelect, onCreateForDate },
+      props: { reminders, allReminders, onSelect, onCreateForDate },
     });
     return { ...r, onSelect, onCreateForDate };
   }
@@ -161,5 +165,30 @@ describe("CalendarView day selection", () => {
     const labels = cells.map((el) => el.getAttribute("aria-label"));
     expect(labels.length).toBe(42);
     expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  // Finding 2: App.svelte's grid-facing `reminders` prop is filtered by
+  // isActive (excludes completed) plus any search/tag filter. The panel
+  // must still see completed items — this exercises the real CalendarView
+  // -> DayPanel wiring (a separate `allReminders` prop), not DayPanel in
+  // isolation with a hand-fed prop, which is what DayPanel.test.ts already
+  // covers and which stayed green even when production delivered nothing.
+  it("forwards the unfiltered reminder list to the day panel, so a completed item excluded from the grid still shows up there", async () => {
+    const user = userEvent.setup();
+    const today = new Date();
+    const completed = reminder({
+      id: "c1",
+      title: "Finished thing",
+      state: "completed",
+      due_at: todayAt(6),
+    });
+    // Simulates App.svelte's `filtered` (grid) excluding a completed item
+    // that `allReminders` (panel) still carries.
+    mount([], [completed]);
+
+    expect(screen.queryByText("Finished thing")).toBeNull();
+
+    await user.click(screen.getByLabelText(openLabel(today)));
+    expect(await screen.findByText("Finished thing")).toBeTruthy();
   });
 });

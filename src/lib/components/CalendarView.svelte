@@ -8,10 +8,21 @@
 
   let {
     reminders,
+    allReminders,
     onSelect,
     onCreateForDate,
   }: {
+    // The grid's own filtered view — whatever the active view/search/tag
+    // filter currently allows. Feeds `cells` below.
     reminders: Reminder[];
+    // The complete, unfiltered reminder list, independent of `reminders`.
+    // The day panel answers "what actually happened this day" (spec:
+    // fired/dismissed/completed included), which is a different question
+    // from "what does the current filter show" — so the grid and the panel
+    // can legitimately disagree on count while a search or tag filter is
+    // active. That is intended, not a bug: do not collapse this back to a
+    // single prop.
+    allReminders: Reminder[];
     onSelect: (r: Reminder) => void;
     onCreateForDate?: (ms: number, silent: boolean) => void;
   } = $props();
@@ -283,7 +294,7 @@
   <DayPanel
     open={panelOpen}
     date={selectedDate}
-    reminders={reminders}
+    reminders={allReminders}
     onClose={() => (panelOpen = false)}
     onSelect={(r) => { panelOpen = false; onSelect(r); }}
     onCreateForDate={(ms, silent) => { panelOpen = false; onCreateForDate?.(ms, silent); }}

@@ -731,8 +731,15 @@
     </div>
   {/if}
   {#if currentView === "calendar"}
+    <!-- allReminders is deliberately the unfiltered list, not `filtered`:
+         the day panel answers "what actually happened this day"
+         (fired/dismissed/completed included, spec: UI section 2), which
+         must not shrink just because a search or tag filter narrowed the
+         grid. Grid and panel disagreeing on count while a filter is
+         active is intended, not a bug — do not "fix" this back to one prop. -->
     <CalendarView
       reminders={filtered}
+      allReminders={allReminders}
       onSelect={openEdit}
       onCreateForDate={openNewForDate}
     />
