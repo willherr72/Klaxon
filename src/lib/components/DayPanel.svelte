@@ -34,6 +34,10 @@
   // Set while a save is pending, so flushing knows what to write even
   // after `note` has been replaced by another day's body.
   let pending: { day: string; body: string } | null = null;
+  // Saves must land in the order they were issued. Two overlapping
+  // setDayNote calls can otherwise resolve out of order and persist the
+  // older body, which is precisely the loss the debounce exists to prevent.
+  let saveChain: Promise<unknown> = Promise.resolve();
 
   function flushNote() {
     if (saveTimer !== null) {
@@ -43,7 +47,9 @@
     const p = pending;
     pending = null;
     if (!p) return;
-    api.setDayNote(p.day, p.body).catch((e) => console.error("setDayNote failed", e));
+    saveChain = saveChain.then(() =>
+      api.setDayNote(p.day, p.body).catch((e) => console.error("setDayNote failed", e)),
+    );
   }
 
   function scheduleSave(day: string, body: string) {
@@ -72,11 +78,24 @@
     // Switching days must not carry the previous day's unsaved text over.
     flushNote();
     loadedDay = key;
+    // Clear synchronously, before the fetches below even start: otherwise
+    // the previous day's note and thoughts stay on screen — visibly wrong
+    // for every switch, not just a narrow race — until the new day's fetch
+    // resolves.
+    note = "";
+    thoughts = [];
     const { startMs, endMs } = dayBounds(date);
     api
       .getDayNote(key)
       .then((n) => {
-        if (loadedDay === key) note = n?.body ?? "";
+        // Skip the assignment if the day has moved on again, or if the
+        // user has already typed something for this exact day since this
+        // fetch was issued (pending?.day === key). A pending save for this
+        // key means the user's typing is newer than whatever this fetch
+        // just returned, so applying the fetch's body here would silently
+        // clobber what they typed even though the newer text is still on
+        // its way to being saved.
+        if (loadedDay === key && pending?.day !== key) note = n?.body ?? "";
       })
       .catch((e) => console.error("getDayNote failed", e));
     api

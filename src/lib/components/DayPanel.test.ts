@@ -170,4 +170,119 @@ describe("DayPanel", () => {
 
     expect(setDayNote).toHaveBeenCalledWith("2026-08-23", "half typed");
   });
+
+  // The third mandatory flush path: the panel can also disappear because the
+  // parent stops rendering it (e.g. navigating away), not just via close()
+  // or a day switch. onDestroy must flush just as hard.
+  it("flushes a pending note when the component is destroyed", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { unmount } = mount();
+    await user.type(noteBox(), "half typed");
+    expect(setDayNote).not.toHaveBeenCalled();
+
+    unmount();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(setDayNote).toHaveBeenCalledWith("2026-08-23", "half typed");
+  });
+
+  // A day switch must clear the box immediately, not once the fetch for the
+  // new day resolves — otherwise every switch briefly shows the previous
+  // day's text.
+  it("clears the note box immediately when switching days, before the new day's note loads", async () => {
+    getDayNote.mockResolvedValueOnce({
+      day: "2026-08-23",
+      body: "yesterday's note",
+      created_at: 1,
+      updated_at: 1,
+    });
+    const { rerender } = mount();
+    await waitFor(() => expect(noteBox().value).toBe("yesterday's note"));
+
+    let resolveNext!: (v: unknown) => void;
+    getDayNote.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveNext = resolve; }),
+    );
+
+    await rerender({
+      open: true,
+      date: new Date(2026, 7, 24, 12, 0),
+      reminders: [],
+      onClose: vi.fn(),
+      onSelect: vi.fn(),
+      onCreateForDate: vi.fn(),
+    });
+
+    // The fetch for 2026-08-24 is still hanging at this point — if the box
+    // still reads yesterday's text, the clear isn't synchronous.
+    expect(noteBox().value).toBe("");
+
+    resolveNext({ day: "2026-08-24", body: "", created_at: 1, updated_at: 1 });
+  });
+
+  // A late-resolving fetch for the day the user is already typing on must
+  // not clobber what they typed — their keystrokes are newer than whatever
+  // that fetch returns.
+  it("does not let a late-resolving fetch overwrite text already typed for the new day", async () => {
+    const { rerender } = mount();
+    await waitFor(() => expect(getDayNote).toHaveBeenCalledWith("2026-08-23"));
+
+    let resolveNext!: (v: unknown) => void;
+    getDayNote.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveNext = resolve; }),
+    );
+
+    await rerender({
+      open: true,
+      date: new Date(2026, 7, 24, 12, 0),
+      reminders: [],
+      onClose: vi.fn(),
+      onSelect: vi.fn(),
+      onCreateForDate: vi.fn(),
+    });
+
+    const user = userEvent.setup();
+    await user.type(noteBox(), "new day text");
+
+    // The stale fetch for 2026-08-24 finally resolves with a different body
+    // — it must lose to what the user already typed for that same day.
+    resolveNext({ day: "2026-08-24", body: "stale from server", created_at: 1, updated_at: 1 });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(noteBox().value).toBe("new day text");
+  });
+
+  // Two overlapping saves must not be allowed to resolve out of order: if
+  // the earlier call is still in flight, the later one must wait for it
+  // rather than racing it to the backend.
+  it("keeps overlapping saves in issue order — a slow first save is not overtaken by a later one", async () => {
+    let resolveFirst!: (v: unknown) => void;
+    setDayNote.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveFirst = resolve; }),
+    );
+
+    mount();
+    const user = userEvent.setup();
+    await user.type(noteBox(), "A");
+    await screen.getByLabelText("Close day").click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(setDayNote).toHaveBeenCalledTimes(1);
+    expect(setDayNote).toHaveBeenNthCalledWith(1, "2026-08-23", "A");
+
+    // A second save is issued while the first is still unresolved.
+    await user.type(noteBox(), "B");
+    await screen.getByLabelText("Close day").click();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // The second setDayNote must not have been issued yet: the first is
+    // still in flight.
+    expect(setDayNote).toHaveBeenCalledTimes(1);
+
+    resolveFirst({ day: "2026-08-23", body: "A", created_at: 1, updated_at: 1 });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(setDayNote).toHaveBeenCalledTimes(2);
+    expect(setDayNote).toHaveBeenNthCalledWith(2, "2026-08-23", "AB");
+  });
 });
