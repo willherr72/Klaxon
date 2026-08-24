@@ -280,4 +280,23 @@ describe("CalendarView day selection", () => {
 
     await waitFor(() => expect(daySummaries).toHaveBeenCalledTimes(2));
   });
+
+  // Finding 6: the item buttons inside a cell are focusable descendants of
+  // the cell div, which also has its own keydown handler. Enter on a
+  // focused item button bubbles to the cell's handler; without a
+  // same-target guard, the cell's preventDefault() cancels the button's
+  // synthesized click and opens the day panel instead of the reminder.
+  it("opens the reminder, not the day panel, when Enter is pressed on a focused item button", async () => {
+    const user = userEvent.setup();
+    const { onSelect, container } = mount([
+      reminder({ id: "r1", title: "Inspect the thing", due_at: todayAt(6) }),
+    ]);
+
+    const itemButton = (await screen.findByText("Inspect the thing")).closest("button")!;
+    itemButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "r1" }));
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("true");
+  });
 });

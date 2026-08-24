@@ -179,6 +179,14 @@
   }
 
   function onCellKeydown(d: Date, e: KeyboardEvent) {
+    // Only a keydown that originated on the cell itself should open the
+    // day panel. The item `<button>`s inside a cell are focusable
+    // descendants, and a keydown they don't handle bubbles up here — for
+    // Enter/Space that would preventDefault() the event before the
+    // browser's own synthesized click for the button fires, cancelling
+    // the button's own onclick (which opens the reminder editor) in
+    // favour of opening the day panel instead.
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       openDay(d);
