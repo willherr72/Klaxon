@@ -506,10 +506,18 @@ mod tests {
 
     /// Migration 014: tasks get gapped sort keys per lane, assigned in
     /// the pre-migration visible order (updated_at DESC) — the board
-    /// must not visibly reshuffle on upgrade. Runs migrations up through
-    /// 013, seeds rows, then applies 014 to verify backfill.
+    /// must not visibly reshuffle on upgrade. Seeds migrations 001..=013,
+    /// inserts test rows, then applies exactly migration 014 to verify
+    /// the backfill computes sort keys correctly. The `.take(13)` and
+    /// `[..14]` are deliberate anchors — any future migration reorder
+    /// that shifts indices will fail this assertion loudly.
     #[test]
     fn migration_014_backfills_sort_keys_in_visible_order() {
+        assert!(
+            super::MIGRATIONS.len() >= 14,
+            "this test pins migration 014 at index 13"
+        );
+
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
@@ -549,7 +557,7 @@ mod tests {
         )
         .unwrap();
 
-        super::run(&conn).unwrap();
+        super::run_list(&conn, &super::MIGRATIONS[..14]).unwrap();
 
         let key = |id: &str| -> Option<f64> {
             conn.query_row(
