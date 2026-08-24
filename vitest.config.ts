@@ -19,6 +19,9 @@ export default defineConfig({
     environmentOptions: {
       jsdom: { pretendToBeVisual: true },
     },
+    env: {
+      TZ: "America/Chicago",
+    },
   },
   resolve: {
     // Vitest would otherwise resolve Svelte's server build, which has no
