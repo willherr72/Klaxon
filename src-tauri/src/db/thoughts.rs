@@ -318,6 +318,39 @@ mod tests {
         conn
     }
 
+    /// `between` is half-open — `>= from, < to` — because the calendar feeds
+    /// it `dayBounds`, where one day's `endMs` IS the next day's `startMs`.
+    /// If either end were inclusive, a thought captured exactly at midnight
+    /// would show up in the day panel on both days.
+    #[test]
+    fn between_is_half_open_so_midnight_belongs_to_one_day() {
+        let conn = test_conn();
+        let made = |body: &str| {
+            create(&conn, ThoughtCreate { body: body.into(), tags: vec![] }).unwrap()
+        };
+        // create() stamps created_at itself, so set the times explicitly.
+        for (body, at) in [("before", 999_i64), ("start", 1000), ("middle", 1500), ("end", 2000)] {
+            let t = made(body);
+            conn.execute(
+                "UPDATE thoughts SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![at, t.id],
+            )
+            .unwrap();
+        }
+
+        let got: Vec<String> = super::between(&conn, 1000, 2000)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.body)
+            .collect();
+
+        assert_eq!(
+            got,
+            vec!["start".to_string(), "middle".to_string()],
+            "`from` is inclusive and `to` is exclusive"
+        );
+    }
+
     #[test]
     fn create_then_read_roundtrips() {
         let conn = test_conn();
