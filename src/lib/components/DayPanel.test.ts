@@ -109,6 +109,33 @@ describe("DayPanel", () => {
     expect(screen.getByText("Already done")).toBeTruthy();
   });
 
+  // A fired alarm means it rang, not that you did the thing. Striking it
+  // through reads as done and is a lie — only `completed` earns the line.
+  // Everything finished still dims, so the two states stay distinguishable
+  // from pending without claiming more than they should.
+  it("strikes through completed items but not fired or dismissed ones", async () => {
+    const { container } = mount({
+      reminders: [
+        reminder({ id: "a", title: "Rang but not done", state: "fired" }),
+        reminder({ id: "b", title: "Swiped away", state: "dismissed" }),
+        reminder({ id: "c", title: "Actually done", state: "completed" }),
+      ],
+    });
+    await screen.findByText("Rang but not done");
+
+    const classesFor = (title: string) =>
+      Array.from(container.querySelectorAll("button.item")).find((b) =>
+        b.textContent?.includes(title),
+      )!.classList;
+
+    for (const t of ["Rang but not done", "Swiped away"]) {
+      expect(classesFor(t).contains("finished")).toBe(true);
+      expect(classesFor(t).contains("completed")).toBe(false);
+    }
+    expect(classesFor("Actually done").contains("finished")).toBe(true);
+    expect(classesFor("Actually done").contains("completed")).toBe(true);
+  });
+
   it("ignores items belonging to other days", async () => {
     mount({
       reminders: [

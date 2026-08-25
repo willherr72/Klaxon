@@ -128,6 +128,9 @@
       isToday: boolean;
       isPast: boolean;
       reminders: Reminder[];
+      /** Completed items on this day. They are filtered out of `reminders`,
+          so this is the only thing that says they exist. */
+      doneCount: number;
     }[] = [];
 
     for (let i = 0; i < 42; i++) {
@@ -152,7 +155,18 @@
         })
         .sort((a, b) => effectiveDueAt(a) - effectiveDueAt(b));
 
-      result.push({ date, inMonth, isToday, isPast, reminders: dayReminders });
+      // The grid stays forward-looking: `reminders` is already filtered to
+      // what is still open, so completed items never appear as rows. That
+      // made a busy past day read as empty while the panel listed ten
+      // things. Counting them from the unfiltered list gives the cell an
+      // honest "there is more here" hint without cluttering it.
+      const doneCount = allReminders.filter((r) => {
+        if (r.state !== "completed") return false;
+        const t = effectiveDueAt(r);
+        return t >= dayStart && t < dayEnd;
+      }).length;
+
+      result.push({ date, inMonth, isToday, isPast, reminders: dayReminders, doneCount });
     }
     return result;
   });
@@ -338,14 +352,29 @@
           {/if}
         </div>
         <div class="markers" aria-hidden="true">
-          {#each cell.reminders.slice(0, 3) as r (r.id)}
-            <span class="dot" class:done={r.state === "completed" || r.state === "dismissed" || r.state === "fired"}></span>
-          {/each}
+          <!-- Desktop: the rows above already say what is still open, so the
+               only thing missing is what was finished and hidden. -->
+          {#if cell.doneCount > 0}
+            <span class="done-marks">
+              {#each Array(Math.min(3, cell.doneCount)) as _, i (i)}
+                <span class="dot done"></span>
+              {/each}
+              <span class="done-count">{cell.doneCount} done</span>
+            </span>
+          {/if}
+          <!-- Mobile: titles are hidden entirely, so these dots are the only
+               density signal. Capped at 3 with no overflow count — a "+N" in
+               a 45px cell recreates the problem this feature exists to fix. -->
+          <span class="density-marks">
+            {#each cell.reminders.slice(0, 3) as r (r.id)}
+              <span class="dot" class:done={r.state === "completed" || r.state === "dismissed" || r.state === "fired"}></span>
+            {/each}
+          </span>
           {#if daysWithNotes.has(localDayKey(cell.date))}
-            <span class="glyph note-glyph">▪</span>
+            <span class="glyph note-glyph" title="Has a note">▪</span>
           {/if}
           {#if daysWithThoughts.has(localDayKey(cell.date))}
-            <span class="glyph thought-glyph">•</span>
+            <span class="glyph thought-glyph" title="Thoughts captured">•</span>
           {/if}
         </div>
       </div>
@@ -629,7 +658,24 @@
     padding: 1px 6px;
   }
 
-  .markers { display: none; gap: 3px; align-items: center; padding: 0 4px 4px; }
+  /* Visible on both sizes now, but each shows a different signal: desktop
+     gets the done-count (the rows carry the open items), mobile gets the
+     density dots (the rows are hidden). */
+  .markers {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    padding: 0 4px 4px;
+    margin-top: auto;
+  }
+  .done-marks { display: flex; gap: 3px; align-items: center; }
+  .done-count {
+    font-size: 8px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .density-marks { display: none; gap: 3px; align-items: center; }
   .dot {
     width: 5px;
     height: 5px;
@@ -645,7 +691,8 @@
      panel carry the detail. */
   @media (max-width: 1024px) {
     .day-items { display: none; }
-    .markers { display: flex; }
+    .done-marks { display: none; }
+    .density-marks { display: flex; }
     .cell { min-height: 44px; }
   }
 </style>

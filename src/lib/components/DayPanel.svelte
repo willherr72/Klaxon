@@ -234,6 +234,7 @@
               <button
                 class="item"
                 class:finished={isFinished(r)}
+                class:completed={r.state === "completed"}
                 onclick={() => onSelect(r)}
               >
                 {#if !r.silent}
@@ -337,7 +338,15 @@
     cursor: pointer;
   }
   .item:hover { border-color: var(--klaxon-dim); }
-  .item.finished .item-title { color: var(--text-muted); text-decoration: line-through; }
+  /* Dimmed for anything that is over with, but struck through ONLY when
+     actually completed. A fired alarm means it rang, not that you did the
+     thing — striking it reads as done and is a lie. Matches
+     ReminderItem.svelte, which already scopes line-through to .completed. */
+  .item.finished .item-title { color: var(--text-muted); }
+  .item.completed .item-title {
+    text-decoration: line-through;
+    text-decoration-color: var(--text-muted);
+  }
   .item-time { font-size: 9px; letter-spacing: 0.12em; }
   .item-title { flex: 1; }
   .item-state { font-size: 8px; letter-spacing: 0.16em; }

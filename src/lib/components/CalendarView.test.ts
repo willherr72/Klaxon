@@ -202,6 +202,43 @@ describe("CalendarView day selection", () => {
     expect(await screen.findByText("Finished thing")).toBeTruthy();
   });
 
+  // The grid stays forward-looking, so a day whose work is all finished
+  // rendered as empty while the panel listed ten things. The done count is
+  // the cell's only signal that anything happened there — if it silently
+  // returns 0, the day looks empty again and the regression is invisible.
+  it("shows a done count for completed items the grid filters out", async () => {
+    const done = [1, 2].map((n) =>
+      reminder({ id: `d${n}`, title: `Done ${n}`, state: "completed", due_at: todayAt(6 + n) }),
+    );
+    const open = reminder({ id: "o1", title: "Still open", due_at: todayAt(9) });
+    // Mirrors App.svelte: grid gets only the open item, panel gets everything.
+    const { container } = mount([open], [open, ...done]);
+
+    expect(screen.getByText("Still open")).toBeTruthy();
+    expect(screen.queryByText("Done 1")).toBeNull();
+
+    const labels = Array.from(container.querySelectorAll(".done-count")).map(
+      (e) => e.textContent?.trim(),
+    );
+    expect(labels).toContain("2 done");
+  });
+
+  // Counting must use the same day window as the rows and the panel. A
+  // count derived from a different boundary would drift on DST days.
+  it("does not count a completed item from an adjacent day", async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(9, 0, 0, 0);
+    const { container } = mount(
+      [],
+      [reminder({ id: "y1", title: "Yesterday", state: "completed", due_at: yesterday.getTime() })],
+    );
+
+    const counts = Array.from(container.querySelectorAll(".done-count"));
+    expect(counts.length).toBe(1);
+    expect(counts[0].textContent?.trim()).toBe("1 done");
+  });
+
   // Finding 3: Android Back must close the day panel through the same
   // path as the panel's own X button — flushing a pending note first —
   // not just hide it. App.svelte drives this via the exported
