@@ -5,7 +5,7 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] — 2026-08-24
+## [0.10.0] — 2026-08-25
 
 **Update both devices together** — the sync format changed, so a 0.9.x
 device and a 0.10 device cannot exchange changes until both are upgraded.
