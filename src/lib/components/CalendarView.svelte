@@ -694,5 +694,15 @@
     .done-marks { display: none; }
     .density-marks { display: flex; }
     .cell { min-height: 44px; }
+
+    /* The header was sized for desktop only: 24px side padding, 14px gaps
+       and a 240px min-width title come to roughly 500px before `Today` is
+       even measured, so on a ~412px viewport it was pushed off the right
+       edge and clipped. Shrink the title, drop the flex spacer that was
+       shoving the button outward, and tighten the chrome. */
+    .cal-head { padding: 10px 12px; gap: 8px; }
+    .cal-title { font-size: 18px; min-width: 0; flex: 1; }
+    .spacer { display: none; }
+    .today-btn { padding: 7px 10px; letter-spacing: 0.14em; }
   }
 </style>

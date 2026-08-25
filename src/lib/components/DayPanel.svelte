@@ -374,6 +374,16 @@
   .add-btn:hover { color: var(--klaxon); border-color: var(--klaxon); }
 
   @media (max-width: 1024px) {
-    .panel { width: 100%; border-left: none; }
+    .panel {
+      width: 100%;
+      border-left: none;
+      /* `position: fixed` takes this out of `.app`, so it does NOT inherit
+         the `env(safe-area-inset-*)` padding that rule applies (App.svelte,
+         the mobile block). Full-screen here means the header rendered under
+         the status bar — the title and the close button sat on top of the
+         clock. Mirror the insets; keep in step with `.app` if it changes. */
+      padding-top: env(safe-area-inset-top, 0);
+      padding-bottom: env(safe-area-inset-bottom, 0);
+    }
   }
 </style>

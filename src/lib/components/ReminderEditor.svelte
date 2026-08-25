@@ -443,6 +443,12 @@
       transform: translateY(100vh);
       box-shadow: 0 -16px 32px rgba(0, 0, 0, 0.5);
       z-index: 60;
+      /* Same trap as DayPanel's `.panel`: `position: fixed` escapes the
+         `env(safe-area-inset-*)` padding on `.app`, so going full-screen
+         puts this header under the status bar. Not reported yet, but it is
+         the identical defect in the identical shape. */
+      padding-top: env(safe-area-inset-top, 0);
+      padding-bottom: env(safe-area-inset-bottom, 0);
     }
     .editor.open { transform: translateY(0); }
   }
