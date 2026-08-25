@@ -5,6 +5,19 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] — 2026-08-25
+
+A phone-only fix. Sync is unchanged, so devices can update independently.
+
+### Fixed
+
+- The day panel no longer opens underneath the status bar. On a phone it
+  goes full-screen, and its title and close button were landing on top of
+  the clock. The reminder editor had the same problem and is fixed too.
+- The calendar's **Today** button no longer falls off the right edge of a
+  phone screen. The month header was sized for a desktop window and never
+  had phone rules of its own.
+
 ## [0.10.0] — 2026-08-25
 
 **Update both devices together** — the sync format changed, so a 0.9.x
