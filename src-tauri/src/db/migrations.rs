@@ -260,6 +260,25 @@ const MIGRATIONS: &[&str] = &[
     )
     WHERE task_lane_id IS NOT NULL;
     "#,
+    // 015 — v0.10: a free-text note per calendar day.
+    //
+    // `day` is the LOCAL date as 'YYYY-MM-DD' and is the primary key on
+    // purpose: two devices editing the same day converge by last-write-wins
+    // on updated_at, exactly as reminders do by id. A surrogate id would let
+    // each device create its own row for one day and never merge them.
+    //
+    // Clearing a note writes an empty body rather than deleting the row, so
+    // day notes never need tombstones.
+    r#"
+    CREATE TABLE day_notes (
+        day         TEXT PRIMARY KEY,
+        body        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX idx_day_notes_updated ON day_notes(updated_at);
+    "#,
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -487,19 +506,28 @@ mod tests {
 
     /// Migration 014: tasks get gapped sort keys per lane, assigned in
     /// the pre-migration visible order (updated_at DESC) — the board
-    /// must not visibly reshuffle on upgrade. Runs all migrations
-    /// EXCEPT the last, seeds rows, then applies the last one.
+    /// must not visibly reshuffle on upgrade. Seeds migrations 001..=013,
+    /// inserts test rows, then applies exactly migration 014 to verify
+    /// the backfill computes sort keys correctly. The `.take(13)` and
+    /// `[..14]` are deliberate anchors — any future migration reorder
+    /// that shifts indices will fail this assertion loudly.
     #[test]
     fn migration_014_backfills_sort_keys_in_visible_order() {
+        assert!(
+            super::MIGRATIONS.len() >= 14,
+            "this test pins migration 014 at index 13"
+        );
+
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);",
         )
         .unwrap();
+        // Apply migrations 1-13 only (indices 0-12); migration 014 (index 13) is applied later.
         for (idx, sql) in super::MIGRATIONS
             .iter()
             .enumerate()
-            .take(super::MIGRATIONS.len() - 1)
+            .take(13)
         {
             conn.execute_batch(sql).unwrap();
             conn.execute(
@@ -529,7 +557,7 @@ mod tests {
         )
         .unwrap();
 
-        super::run(&conn).unwrap();
+        super::run_list(&conn, &super::MIGRATIONS[..14]).unwrap();
 
         let key = |id: &str| -> Option<f64> {
             conn.query_row(
@@ -543,5 +571,53 @@ mod tests {
         assert_eq!(key("r2"), Some(2048.0));
         assert_eq!(key("r3"), Some(3072.0));
         assert_eq!(key("ring"), None, "non-tasks keep NULL");
+    }
+
+    /// Migration 015: one note per day, keyed by the local date string.
+    /// The primary key is what makes concurrent edits converge — a
+    /// surrogate id would let each device create its own row for the same
+    /// day and never merge them.
+    #[test]
+    fn migration_015_day_notes_is_keyed_by_day() {
+        let conn = test_conn();
+        conn.execute(
+            "INSERT INTO day_notes (day, body, created_at, updated_at)
+             VALUES ('2026-08-23', 'shipped v0.9.0', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        // Same day again must collide, not duplicate.
+        let duplicate = conn.execute(
+            "INSERT INTO day_notes (day, body, created_at, updated_at)
+             VALUES ('2026-08-23', 'second note', 2, 2)",
+            [],
+        );
+        assert!(duplicate.is_err(), "day must be unique");
+
+        // An upsert is how a second write is meant to land.
+        conn.execute(
+            "INSERT INTO day_notes (day, body, created_at, updated_at)
+             VALUES ('2026-08-23', 'edited', 1, 5)
+             ON CONFLICT(day) DO UPDATE SET body = excluded.body,
+                                           updated_at = excluded.updated_at",
+            [],
+        )
+        .unwrap();
+
+        let (body, updated): (String, i64) = conn
+            .query_row(
+                "SELECT body, updated_at FROM day_notes WHERE day = '2026-08-23'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(body, "edited");
+        assert_eq!(updated, 5);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM day_notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "still exactly one row for that day");
     }
 }

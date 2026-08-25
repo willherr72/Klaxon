@@ -91,6 +91,22 @@ pub fn list(conn: &Connection, limit: i64, offset: i64) -> AppResult<Vec<Thought
     Ok(out)
 }
 
+/// Thoughts captured in a half-open time range, oldest first. The calendar
+/// day panel needs them by date; `list` only filters by tag.
+pub fn between(conn: &Connection, from_ms: i64, to_ms: i64) -> AppResult<Vec<Thought>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM thoughts
+          WHERE created_at >= ?1 AND created_at < ?2
+          ORDER BY created_at ASC"
+    ))?;
+    let rows = stmt.query_map(params![from_ms, to_ms], row_to_thought)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
 /// Patch semantics: `None` leaves a field untouched. Always bumps
 /// `updated_at` (the sync watermark).
 pub fn update(conn: &Connection, id: &str, patch: ThoughtUpdate) -> AppResult<Thought> {
@@ -300,6 +316,39 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::migrations::run(&conn).unwrap();
         conn
+    }
+
+    /// `between` is half-open — `>= from, < to` — because the calendar feeds
+    /// it `dayBounds`, where one day's `endMs` IS the next day's `startMs`.
+    /// If either end were inclusive, a thought captured exactly at midnight
+    /// would show up in the day panel on both days.
+    #[test]
+    fn between_is_half_open_so_midnight_belongs_to_one_day() {
+        let conn = test_conn();
+        let made = |body: &str| {
+            create(&conn, ThoughtCreate { body: body.into(), tags: vec![] }).unwrap()
+        };
+        // create() stamps created_at itself, so set the times explicitly.
+        for (body, at) in [("before", 999_i64), ("start", 1000), ("middle", 1500), ("end", 2000)] {
+            let t = made(body);
+            conn.execute(
+                "UPDATE thoughts SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![at, t.id],
+            )
+            .unwrap();
+        }
+
+        let got: Vec<String> = super::between(&conn, 1000, 2000)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.body)
+            .collect();
+
+        assert_eq!(
+            got,
+            vec!["start".to_string(), "middle".to_string()],
+            "`from` is inclusive and `to` is exclusive"
+        );
     }
 
     #[test]

@@ -225,6 +225,7 @@ mod tests {
                     created_at: 1,
                     updated_at: 2,
                 }],
+                day_notes: vec![],
             }),
         };
         write_frame(&mut a, &sent).await.unwrap();
@@ -237,6 +238,116 @@ mod tests {
             }
             _ => panic!("expected a Push"),
         }
+    }
+
+    #[tokio::test]
+    async fn roundtrip_changeset_with_day_notes() {
+        use crate::sync::types::{ChangeSet, RemoteDayNote};
+
+        let (mut a, mut b) = duplex(64 * 1024);
+        let sent = RpcEnvelope {
+            secret: "deadbeef".into(),
+            request: RpcRequest::Push(ChangeSet {
+                server_time_ms: 42,
+                reminders: vec![],
+                tombstones: vec![],
+                lanes: vec![],
+                thoughts: vec![],
+                day_notes: vec![RemoteDayNote {
+                    day: "2026-08-23".into(),
+                    body: "shipped v0.9.0".into(),
+                    created_at: 1,
+                    updated_at: 2,
+                }],
+            }),
+        };
+        write_frame(&mut a, &sent).await.unwrap();
+        let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
+        match got.request {
+            RpcRequest::Push(set) => {
+                assert_eq!(set.day_notes.len(), 1);
+                assert_eq!(set.day_notes[0].day, "2026-08-23");
+                assert_eq!(set.day_notes[0].body, "shipped v0.9.0");
+                assert_eq!(set.day_notes[0].updated_at, 2);
+            }
+            _ => panic!("expected a Push"),
+        }
+    }
+
+    /// The v0.9 `ChangeSet`, field-for-field. postcard is positional, so
+    /// decoding with this shape is exactly what a 0.9 peer does.
+    ///
+    /// Most of these fields are never read. They are not dead — their
+    /// presence is the whole point, because each one consumes its bytes in
+    /// order and puts `thoughts` at the offset a 0.9 peer expects. Deleting
+    /// the "unused" ones would shift that offset and quietly make the test
+    /// pass for the wrong reason.
+    #[allow(dead_code)]
+    #[derive(serde::Deserialize)]
+    struct V09ChangeSet {
+        server_time_ms: i64,
+        reminders: Vec<crate::sync::types::RemoteReminder>,
+        tombstones: Vec<crate::sync::types::RemoteTombstone>,
+        lanes: Vec<crate::db::task_lanes::Lane>,
+        thoughts: Vec<crate::sync::types::RemoteThought>,
+    }
+
+    /// `day_notes` being the LAST field is the entire reason a 0.9 peer
+    /// survives a 0.10 changeset: it reads the five fields it knows and
+    /// stops, leaving our bytes unread. Move it anywhere else and 0.9
+    /// silently misparses `thoughts` as day notes. Nothing else in the
+    /// suite pins that ordering — the mesh test passes structs in-process
+    /// and never encodes.
+    #[test]
+    fn a_v09_peer_still_decodes_a_v010_changeset() {
+        use crate::sync::types::{ChangeSet, RemoteDayNote, RemoteThought};
+
+        let new = ChangeSet {
+            server_time_ms: 7,
+            reminders: vec![],
+            tombstones: vec![],
+            lanes: vec![],
+            thoughts: vec![RemoteThought {
+                id: "t1".into(),
+                body: "an idea".into(),
+                tags: vec!["x".into()],
+                created_at: 1,
+                updated_at: 2,
+            }],
+            day_notes: vec![RemoteDayNote {
+                day: "2026-08-23".into(),
+                body: "a note the old peer cannot see".into(),
+                created_at: 1,
+                updated_at: 2,
+            }],
+        };
+        let bytes = postcard::to_allocvec(&new).unwrap();
+
+        let old: V09ChangeSet = postcard::take_from_bytes(&bytes).unwrap().0;
+        assert_eq!(old.server_time_ms, 7);
+        assert_eq!(old.thoughts.len(), 1, "thoughts must survive intact");
+        assert_eq!(
+            old.thoughts[0].body, "an idea",
+            "a reordered day_notes field would corrupt this"
+        );
+    }
+
+    /// The other direction is the documented break: a 0.10 peer runs out of
+    /// buffer on a 0.9 changeset. It fails the frame rather than corrupting,
+    /// which is why sync stalls instead of losing data — `pull` runs before
+    /// `push`, so the error propagates before any watermark moves.
+    #[test]
+    fn a_v010_peer_cannot_decode_a_v09_changeset() {
+        use crate::sync::types::ChangeSet;
+
+        // Encode in the v0.9 shape: the five fields, no day_notes.
+        let old_bytes = postcard::to_allocvec(&(0i64, (), (), (), ())).unwrap();
+        // Truncate to be certain nothing trails that could parse as a Vec.
+        let starved = &old_bytes[..old_bytes.len().saturating_sub(1)];
+        assert!(
+            postcard::from_bytes::<ChangeSet>(starved).is_err(),
+            "a 0.10 peer must reject a short frame, not invent an empty day_notes"
+        );
     }
 
     #[tokio::test]

@@ -121,6 +121,14 @@
   let tagFilter = $state<string | null>(null);
   let quickAddOpen = $state(false);
   let quickAddHotkey = $state("Ctrl+KeyK");
+  // Bound from CalendarView's day panel (Finding 3, v0.10.0 review): the
+  // panel's open state used to live entirely inside CalendarView, so App
+  // couldn't see it and Back backgrounded the whole app with the panel
+  // still open instead of closing it. Read-only from here — closing goes
+  // through calendarViewRef.closePanel(), never a direct assignment, so
+  // the panel's own flush-on-close runs.
+  let calendarPanelOpen = $state(false);
+  let calendarViewRef: CalendarView | undefined = $state();
 
   // Android back-button handling. The Tauri webview routes the system
   // back press to `popstate`. Strategy: every time a modal transitions
@@ -132,6 +140,7 @@
   let prevSettingsOpenForBack = false;
   let prevQuickAddOpenForBack = false;
   let prevSearchOpenForBack = false;
+  let prevCalendarPanelOpenForBack = false;
   $effect(() => {
     if (isEditorOpen && !prevEditorOpenForBack) {
       history.pushState({ klaxonModal: "editor" }, "");
@@ -156,10 +165,38 @@
     }
     prevSearchOpenForBack = searchOpen;
   });
+  $effect(() => {
+    if (calendarPanelOpen && !prevCalendarPanelOpenForBack) {
+      history.pushState({ klaxonModal: "calendarPanel" }, "");
+    }
+    prevCalendarPanelOpenForBack = calendarPanelOpen;
+  });
+  // CalendarView (and its bound panelOpen) unmounts whenever the user
+  // navigates to another primary view — unlike the other four overlays,
+  // which stay mounted for the app's whole life. Without this, switching
+  // away from the calendar while the panel was open would leave
+  // calendarPanelOpen stuck true with no CalendarView left to close.
+  $effect(() => {
+    if (currentView !== "calendar") calendarPanelOpen = false;
+  });
 
   function onPopState() {
     // Close in z-index priority: editor sits on top of everything else.
     if (isEditorOpen) { closeEditor(); return; }
+    // Goes through closePanel(), not a direct assignment, so DayPanel's
+    // own close() runs and flushes any pending note before the panel
+    // hides — see the comment on calendarPanelOpen above.
+    // The optional chains fail SILENTLY if either ref is ever nullish while
+    // the flag is true — and this branch returns, so every later Back press
+    // would be swallowed too and the app could never be backed out of. The
+    // reset effect above makes that unreachable today; clearing the flag
+    // here means a future regression costs one dead Back press, not all of
+    // them.
+    if (calendarPanelOpen) {
+      if (calendarViewRef) calendarViewRef.closePanel();
+      else calendarPanelOpen = false;
+      return;
+    }
     if (settingsOpen) { settingsOpen = false; return; }
     if (quickAddOpen) { quickAddOpen = false; return; }
     if (searchOpen) { searchOpen = false; searchQuery = ""; return; }
@@ -731,8 +768,17 @@
     </div>
   {/if}
   {#if currentView === "calendar"}
+    <!-- allReminders is deliberately the unfiltered list, not `filtered`:
+         the day panel answers "what actually happened this day"
+         (fired/dismissed/completed included, spec: UI section 2), which
+         must not shrink just because a search or tag filter narrowed the
+         grid. Grid and panel disagreeing on count while a filter is
+         active is intended, not a bug — do not "fix" this back to one prop. -->
     <CalendarView
+      bind:this={calendarViewRef}
+      bind:panelOpen={calendarPanelOpen}
       reminders={filtered}
+      allReminders={allReminders}
       onSelect={openEdit}
       onCreateForDate={openNewForDate}
     />

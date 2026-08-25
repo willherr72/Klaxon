@@ -15,11 +15,12 @@ use rusqlite::Connection;
 use tauri::AppHandle;
 
 use crate::alerts;
-use crate::db::{reminders as repo, task_lanes, thoughts, tombstones};
+use crate::db::{day_notes, reminders as repo, task_lanes, thoughts, tombstones};
 use crate::error::AppResult;
 use crate::models::{now_ms, ReminderState};
 use crate::sync::types::{
-    ChangeSet, PingResponse, PushResponse, RemoteReminder, RemoteThought, RemoteTombstone,
+    ChangeSet, PingResponse, PushResponse, RemoteDayNote, RemoteReminder, RemoteThought,
+    RemoteTombstone,
 };
 use crate::sync::DeviceIdentity;
 
@@ -47,12 +48,17 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .iter()
         .map(RemoteThought::from)
         .collect();
+    let day_notes = day_notes::updated_since(&conn, since)?
+        .iter()
+        .map(RemoteDayNote::from)
+        .collect();
     Ok(ChangeSet {
         server_time_ms: now_ms(),
         reminders,
         tombstones: ts,
         lanes,
         thoughts,
+        day_notes,
     })
 }
 
@@ -70,6 +76,7 @@ pub fn push(
     let mut accepted_tombstones = 0usize;
     let mut accepted_lanes = 0usize;
     let mut accepted_thoughts = 0usize;
+    let mut accepted_day_notes = 0usize;
     let mut to_cancel: Vec<String> = Vec::new();
 
     {
@@ -113,6 +120,14 @@ pub fn push(
             }
         }
 
+        for n in &set.day_notes {
+            match day_notes::apply_remote(&conn, n) {
+                Ok(true) => accepted_day_notes += 1,
+                Ok(false) => {}
+                Err(e) => log::warn!("apply remote day note {}: {e}", n.day),
+            }
+        }
+
         for t in &set.tombstones {
             match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
                 Ok(()) => {
@@ -137,11 +152,15 @@ pub fn push(
             || accepted_tombstones > 0
             || accepted_lanes > 0
             || accepted_thoughts > 0
+            || accepted_day_notes > 0
         {
             crate::sync::task::emit_reminders_changed(app);
         }
         if accepted_thoughts > 0 || accepted_tombstones > 0 {
             crate::sync::task::emit_thoughts_changed(app);
+        }
+        if accepted_day_notes > 0 {
+            crate::sync::task::emit_day_notes_changed(app);
         }
     }
 
@@ -151,6 +170,7 @@ pub fn push(
         accepted_tombstones,
         accepted_lanes,
         accepted_thoughts,
+        accepted_day_notes,
     })
 }
 
@@ -185,6 +205,9 @@ mod tests {
         }
         for t in &set.thoughts {
             thoughts::apply_remote(&conn, t).unwrap();
+        }
+        for n in &set.day_notes {
+            day_notes::apply_remote(&conn, n).unwrap();
         }
         for t in &set.tombstones {
             tombstones::apply_remote(&conn, &t.id, t.deleted_at).unwrap();
@@ -251,6 +274,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(task.task_sort_key, Some(1024.0));
+            crate::db::day_notes::set(&conn, "2026-08-23", "a note that travels").unwrap();
             (r.id, doomed.id, lane.id.clone(), t.id, task.id)
         };
 
@@ -294,6 +318,13 @@ mod tests {
                 "sort key must forward through the mesh unchanged"
             );
             assert_eq!(got_task.priority, Priority::High);
+            assert_eq!(
+                crate::db::day_notes::get(&conn, "2026-08-23")
+                    .unwrap()
+                    .expect("day note forwarded to C")
+                    .body,
+                "a note that travels"
+            );
         }
         for p in [pa, pb, pc] {
             std::fs::remove_file(p).ok();

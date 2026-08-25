@@ -885,6 +885,74 @@ pub fn thought_tag_counts(state: State<'_, AppState>) -> AppResult<Vec<TagCount>
     thoughts::tag_counts(&conn)
 }
 
+// ── Calendar day detail (v0.10) ─────────────────────────────────────
+
+#[tauri::command]
+pub fn set_day_note(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    day: String,
+    body: String,
+) -> AppResult<crate::models::DayNote> {
+    let note = {
+        let conn = state.db.lock();
+        crate::db::day_notes::set(&conn, &day, &body)?
+    };
+    let _ = app.emit("klaxon://day-notes-changed", ());
+    nudge_write(&state);
+    Ok(note)
+}
+
+#[tauri::command]
+pub fn get_day_note(
+    state: State<'_, AppState>,
+    day: String,
+) -> AppResult<Option<crate::models::DayNote>> {
+    let conn = state.db.lock();
+    crate::db::day_notes::get(&conn, &day)
+}
+
+/// Raw material for the calendar's per-day markers.
+///
+/// Deliberately NOT bucketed by day here: bucketing needs the user's local
+/// calendar, and the backend must never form a second opinion about which
+/// day a moment falls in (see the spec's data-model section). The caller
+/// buckets `thought_times` with `localDayKey`. Reminder density is computed
+/// in the frontend from data it already holds, so it is absent entirely.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DaySummaryPayload {
+    pub days_with_notes: Vec<String>,
+    pub thought_times: Vec<i64>,
+}
+
+#[tauri::command]
+pub fn day_summaries(
+    state: State<'_, AppState>,
+    from_day: String,
+    to_day: String,
+    from_ms: i64,
+    to_ms: i64,
+) -> AppResult<DaySummaryPayload> {
+    let conn = state.db.lock();
+    Ok(DaySummaryPayload {
+        days_with_notes: crate::db::day_notes::days_with_notes(&conn, &from_day, &to_day)?,
+        thought_times: crate::db::thoughts::between(&conn, from_ms, to_ms)?
+            .into_iter()
+            .map(|t| t.created_at)
+            .collect(),
+    })
+}
+
+#[tauri::command]
+pub fn thoughts_between(
+    state: State<'_, AppState>,
+    from_ms: i64,
+    to_ms: i64,
+) -> AppResult<Vec<crate::models::Thought>> {
+    let conn = state.db.lock();
+    crate::db::thoughts::between(&conn, from_ms, to_ms)
+}
+
 /// Mobile: re-arm OS notifications from the current reminders table.
 /// Called by the webview on launch and after reminders-changed — the
 /// same trigger points the old JS reconcile used. The arming decision

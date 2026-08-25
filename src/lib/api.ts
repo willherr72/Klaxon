@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  DayNote,
   Reminder,
   ReminderCreate,
   ReminderUpdate,
@@ -96,6 +97,15 @@ export const api = {
     invoke<Thought>("update_thought", { id, patch }),
   deleteThought: (id: string) => invoke<void>("delete_thought", { id }),
   thoughtTagCounts: () => invoke<TagCount[]>("thought_tag_counts"),
+  // Day notes + calendar day detail (v0.10)
+  setDayNote: (day: string, body: string) =>
+    invoke<DayNote>("set_day_note", { day, body }),
+  getDayNote: (day: string) =>
+    invoke<DayNote | null>("get_day_note", { day }),
+  daySummaries: (fromDay: string, toDay: string, fromMs: number, toMs: number) =>
+    invoke<DaySummaryPayload>("day_summaries", { fromDay, toDay, fromMs, toMs }),
+  thoughtsBetween: (fromMs: number, toMs: number) =>
+    invoke<Thought[]>("thoughts_between", { fromMs, toMs }),
   // Backups (v0.5.2)
   exportBackup: (passphrase: string) =>
     invoke<string>("export_backup", { passphrase }),
@@ -110,6 +120,14 @@ export const api = {
   downloadAndInstallUpdate: () =>
     invoke<void>("download_and_install_update"),
 };
+
+export interface DaySummaryPayload {
+  /// Days in range whose note has actual content. A cleared note leaves an
+  /// empty row behind, which must not show a marker.
+  days_with_notes: string[];
+  /// Raw `created_at` values; the caller buckets them by local day.
+  thought_times: number[];
+}
 
 export interface UpdateCheck {
   current: string;

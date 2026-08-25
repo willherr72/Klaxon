@@ -81,6 +81,13 @@ export interface Thought {
 
 }
 
+export interface DayNote {
+  day: string;
+  body: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface ThoughtCreate {
   body: string;
   tags: string[];

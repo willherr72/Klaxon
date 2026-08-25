@@ -243,6 +243,19 @@ pub struct ThoughtUpdate {
     pub tags: Option<Vec<String>>,
 }
 
+/// A free-text note about one calendar day.
+///
+/// `day` is the LOCAL date as 'YYYY-MM-DD' and is the primary key — see
+/// migration 015. An empty `body` means "no note"; the row is kept so day
+/// notes never need tombstones.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DayNote {
+    pub day: String,
+    pub body: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{truncate_body, ReminderUpdate, MAX_THOUGHT_CHARS};

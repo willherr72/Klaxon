@@ -1,0 +1,339 @@
+import { render, screen, waitFor, within } from "@testing-library/svelte";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Reminder } from "../types";
+
+const daySummaries = vi.fn();
+const getDayNote = vi.fn();
+const setDayNote = vi.fn();
+const thoughtsBetween = vi.fn();
+
+vi.mock("../api", () => ({
+  api: {
+    daySummaries: (...a: unknown[]) => daySummaries(...a),
+    getDayNote: (...a: unknown[]) => getDayNote(...a),
+    setDayNote: (...a: unknown[]) => setDayNote(...a),
+    thoughtsBetween: (...a: unknown[]) => thoughtsBetween(...a),
+  },
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+import { listen } from "@tauri-apps/api/event";
+import CalendarView from "./CalendarView.svelte";
+
+function reminder(overrides: Partial<Reminder> = {}): Reminder {
+  return {
+    id: "r1",
+    title: "Inspect the thing",
+    description: null,
+    due_at: Date.now(),
+    priority: "normal",
+    sound_path: null,
+    repeat_rule: null,
+    state: "pending",
+    snooze_until: null,
+    created_at: 1,
+    updated_at: 1,
+    source: "local",
+    external_id: null,
+    last_synced_at: null,
+    silent: false,
+    tags: [],
+    task_lane_id: null,
+    task_sort_key: null,
+    ...overrides,
+  };
+}
+
+// A timestamp on today's calendar date at the given hour — keeps every
+// reminder on the same day-cell as "today" while giving each a distinct,
+// orderable due time.
+function todayAt(hour: number): number {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  return d.getTime();
+}
+
+// Mirrors CalendarView's own `monthNames` + `cellLabel`. The cell's
+// accessible name is the full date (day, month name, year) rather than a
+// bare day number, because the 42-cell grid always includes leading/trailing
+// days from adjacent months and a bare number is not unique within it.
+const MONTHS = [
+  "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+  "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
+];
+function openLabel(d: Date): string {
+  return `Open ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+describe("CalendarView day selection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+    daySummaries.mockResolvedValue({ days_with_notes: [], thought_times: [] });
+    getDayNote.mockResolvedValue(null);
+    setDayNote.mockResolvedValue({ day: "", body: "", created_at: 1, updated_at: 1 });
+    thoughtsBetween.mockResolvedValue([]);
+  });
+
+  // One test below overrides `listen`'s implementation to capture the
+  // event callback. `vi.clearAllMocks()` resets call history but not a
+  // swapped-in implementation, so restore the module default afterward.
+  afterEach(() => {
+    vi.mocked(listen).mockResolvedValue(() => {});
+  });
+
+  // `allReminders` defaults to the same array as `reminders` so existing
+  // callers that only care about the grid don't have to think about the
+  // split. Tests that need the panel and the grid to disagree (Finding 2)
+  // pass `allReminders` explicitly.
+  function mount(reminders: Reminder[] = [reminder()], allReminders: Reminder[] = reminders) {
+    const onSelect = vi.fn();
+    const onCreateForDate = vi.fn();
+    const r = render(CalendarView, {
+      props: { reminders, allReminders, onSelect, onCreateForDate },
+    });
+    return { ...r, onSelect, onCreateForDate };
+  }
+
+  // DayPanel (Task 6) renders its <aside> unconditionally and toggles only
+  // aria-hidden — never {#if open} — so the note textarea is in the DOM
+  // whether the panel is open or shut. Presence alone (e.g.
+  // findByPlaceholderText) cannot tell open from closed; assert on the
+  // panel's own aria-hidden state, which does.
+  it("opens the day panel when a day is clicked", async () => {
+    const user = userEvent.setup();
+    const { container } = mount();
+    const today = new Date();
+    await user.click(screen.getByLabelText(openLabel(today)));
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("asks the backend for that day's note", async () => {
+    const user = userEvent.setup();
+    mount();
+    const today = new Date();
+    await user.click(screen.getByLabelText(openLabel(today)));
+    const { localDayKey } = await import("../day");
+    expect(getDayNote).toHaveBeenCalledWith(localDayKey(today));
+  });
+
+  it("opens the day panel via the keyboard", async () => {
+    const user = userEvent.setup();
+    const { container } = mount();
+    const today = new Date();
+    const cell = screen.getByLabelText(openLabel(today));
+    cell.focus();
+    await user.keyboard("{Enter}");
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  // DayPanel (Task 6) is mounted unconditionally and toggles visibility via
+  // CSS + aria-hidden rather than {#if}, so its textarea is always in the
+  // DOM — presence alone can't distinguish open from closed. Check the
+  // panel's own open state instead.
+  it("opens a reminder item without also opening the day panel", async () => {
+    const user = userEvent.setup();
+    const { onSelect, container } = mount();
+    await user.click(await screen.findByText("Inspect the thing"));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "r1" }));
+    const panel = container.querySelector(".panel");
+    expect(panel?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("opens the day panel when '+N more' is clicked", async () => {
+    const user = userEvent.setup();
+    const { container } = mount([
+      reminder({ id: "a", title: "One", due_at: todayAt(1) }),
+      reminder({ id: "b", title: "Two", due_at: todayAt(2) }),
+      reminder({ id: "c", title: "Three", due_at: todayAt(3) }),
+      reminder({ id: "d", title: "Four", due_at: todayAt(4) }),
+      reminder({ id: "e", title: "Five", due_at: todayAt(5) }),
+    ]);
+    await user.click(screen.getByText("+1 more"));
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+  });
+
+  // February 2026 starts on a Sunday (day-of-week 0 for the 1st), so the
+  // 42-cell grid has zero leading overflow but 14 trailing cells pulled
+  // from March 1-14 — every day number 1-14 therefore appears twice in the
+  // same grid (once as February's own, once as March's overflow). This is
+  // exactly the month/start-weekday combination that would break a label
+  // built from a bare day number ("Open 1" through "Open 14" each
+  // rendered by two different cells); it pins the fix so that regression
+  // cannot come back silently.
+  it("gives every cell in the grid a unique accessible label, even when day-of-month numbers repeat", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 1, 15));
+    mount();
+    const cells = screen.getAllByLabelText(/^Open /);
+    const labels = cells.map((el) => el.getAttribute("aria-label"));
+    expect(labels.length).toBe(42);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  // Finding 2: App.svelte's grid-facing `reminders` prop is filtered by
+  // isActive (excludes completed) plus any search/tag filter. The panel
+  // must still see completed items — this exercises the real CalendarView
+  // -> DayPanel wiring (a separate `allReminders` prop), not DayPanel in
+  // isolation with a hand-fed prop, which is what DayPanel.test.ts already
+  // covers and which stayed green even when production delivered nothing.
+  it("forwards the unfiltered reminder list to the day panel, so a completed item excluded from the grid still shows up there", async () => {
+    const user = userEvent.setup();
+    const today = new Date();
+    const completed = reminder({
+      id: "c1",
+      title: "Finished thing",
+      state: "completed",
+      due_at: todayAt(6),
+    });
+    // Simulates App.svelte's `filtered` (grid) excluding a completed item
+    // that `allReminders` (panel) still carries.
+    mount([], [completed]);
+
+    expect(screen.queryByText("Finished thing")).toBeNull();
+
+    await user.click(screen.getByLabelText(openLabel(today)));
+    expect(await screen.findByText("Finished thing")).toBeTruthy();
+  });
+
+  // The grid stays forward-looking, so a day whose work is all finished
+  // rendered as empty while the panel listed ten things. The done count is
+  // the cell's only signal that anything happened there — if it silently
+  // returns 0, the day looks empty again and the regression is invisible.
+  it("shows a done count for completed items the grid filters out", async () => {
+    const done = [1, 2].map((n) =>
+      reminder({ id: `d${n}`, title: `Done ${n}`, state: "completed", due_at: todayAt(6 + n) }),
+    );
+    const open = reminder({ id: "o1", title: "Still open", due_at: todayAt(9) });
+    // Mirrors App.svelte: grid gets only the open item, panel gets everything.
+    const { container } = mount([open], [open, ...done]);
+
+    expect(screen.getByText("Still open")).toBeTruthy();
+    expect(screen.queryByText("Done 1")).toBeNull();
+
+    const labels = Array.from(container.querySelectorAll(".done-count")).map(
+      (e) => e.textContent?.trim(),
+    );
+    expect(labels).toContain("2 done");
+  });
+
+  // Counting must use the same day window as the rows and the panel. A
+  // count derived from a different boundary would drift on DST days.
+  it("does not count a completed item from an adjacent day", async () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(9, 0, 0, 0);
+    const { container } = mount(
+      [],
+      [reminder({ id: "y1", title: "Yesterday", state: "completed", due_at: yesterday.getTime() })],
+    );
+
+    const counts = Array.from(container.querySelectorAll(".done-count"));
+    expect(counts.length).toBe(1);
+    expect(counts[0].textContent?.trim()).toBe("1 done");
+  });
+
+  // Finding 3: Android Back must close the day panel through the same
+  // path as the panel's own X button — flushing a pending note first —
+  // not just hide it. App.svelte drives this via the exported
+  // closePanel(), which must delegate to DayPanel's real close().
+  it("exposes closePanel() that flushes a pending note before closing, for Android Back", async () => {
+    vi.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { component, container } = mount();
+    const today = new Date();
+
+    await user.click(screen.getByLabelText(openLabel(today)));
+    await screen.findByPlaceholderText("What happened?");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("false");
+
+    const noteBox = screen.getByPlaceholderText("What happened?") as HTMLTextAreaElement;
+    await user.type(noteBox, "typed before back press");
+    expect(setDayNote).not.toHaveBeenCalled();
+
+    (component as unknown as { closePanel: () => void }).closePanel();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(setDayNote).toHaveBeenCalledWith(expect.any(String), "typed before back press");
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  // Finding 4: the grid used to compute its own day boundaries as
+  // `dayStart + 86_400_000` instead of dayBounds() — wrong on a DST
+  // transition day. 8 March 2026 is a 23-hour day in America/Chicago
+  // (day.test.ts pins this), so the naive dayEnd for the 8th overshot real
+  // local midnight by an hour, putting a reminder due 00:30 on the 9th in
+  // BOTH cells. This pins the fix and proves the grid and the panel now
+  // agree.
+  it("agrees with the day panel about which cell a DST-boundary reminder belongs to (spring-forward, America/Chicago 2026)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 8));
+    const eighth = new Date(2026, 2, 8);
+    const ninth = new Date(2026, 2, 9);
+    const dueAt = new Date(2026, 2, 9, 0, 30).getTime();
+    mount([reminder({ id: "x", title: "Boundary item", due_at: dueAt })]);
+
+    // Grid: exactly one occurrence, in the 9th's cell.
+    const items = screen.getAllByText("Boundary item");
+    expect(items.length).toBe(1);
+    expect(items[0].closest(".cell")?.getAttribute("aria-label")).toBe(openLabel(ninth));
+
+    // Panel must agree: nothing on the 8th, the item on the 9th.
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const panel = document.querySelector(".panel") as HTMLElement;
+
+    await user.click(screen.getByLabelText(openLabel(eighth)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(within(panel).queryByText("Boundary item")).toBeNull();
+
+    await user.click(screen.getByLabelText(openLabel(ninth)));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(within(panel).queryByText("Boundary item")).toBeTruthy();
+  });
+
+  // Finding 5: on mobile, the ▪/• markers are the ONLY signal a day has a
+  // note or thought — the grid must refetch daySummaries when a note
+  // changes (written locally and the panel closed, or arriving by sync),
+  // not just when `cells` re-derives.
+  it("refetches day summaries when a day-notes-changed event arrives", async () => {
+    const callbacks: Array<() => void> = [];
+    vi.mocked(listen).mockImplementation(
+      (async (_event: string, cb: () => void) => {
+        callbacks.push(cb);
+        return () => {};
+      }) as typeof listen,
+    );
+
+    mount();
+    await waitFor(() => expect(daySummaries).toHaveBeenCalledTimes(1));
+
+    callbacks.forEach((cb) => cb());
+
+    await waitFor(() => expect(daySummaries).toHaveBeenCalledTimes(2));
+  });
+
+  // Finding 6: the item buttons inside a cell are focusable descendants of
+  // the cell div, which also has its own keydown handler. Enter on a
+  // focused item button bubbles to the cell's handler; without a
+  // same-target guard, the cell's preventDefault() cancels the button's
+  // synthesized click and opens the day panel instead of the reminder.
+  it("opens the reminder, not the day panel, when Enter is pressed on a focused item button", async () => {
+    const user = userEvent.setup();
+    const { onSelect, container } = mount([
+      reminder({ id: "r1", title: "Inspect the thing", due_at: todayAt(6) }),
+    ]);
+
+    const itemButton = (await screen.findByText("Inspect the thing")).closest("button")!;
+    itemButton.focus();
+    await user.keyboard("{Enter}");
+
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "r1" }));
+    expect(container.querySelector(".panel")?.getAttribute("aria-hidden")).toBe("true");
+  });
+});

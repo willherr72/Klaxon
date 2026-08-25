@@ -1,16 +1,38 @@
 <script lang="ts">
+  import { onDestroy, onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { api } from "../api";
+  import { localDayKey, dayBounds } from "../day";
   import { effectiveDueAt } from "../time";
   import type { Reminder } from "../types";
+  import DayPanel from "./DayPanel.svelte";
   import SignalLight from "./SignalLight.svelte";
 
   let {
     reminders,
+    allReminders,
     onSelect,
     onCreateForDate,
+    panelOpen = $bindable(false),
   }: {
+    // The grid's own filtered view — whatever the active view/search/tag
+    // filter currently allows. Feeds `cells` below.
     reminders: Reminder[];
+    // The complete, unfiltered reminder list, independent of `reminders`.
+    // The day panel answers "what actually happened this day" (spec:
+    // fired/dismissed/completed included), which is a different question
+    // from "what does the current filter show" — so the grid and the panel
+    // can legitimately disagree on count while a search or tag filter is
+    // active. That is intended, not a bug: do not collapse this back to a
+    // single prop.
+    allReminders: Reminder[];
     onSelect: (r: Reminder) => void;
     onCreateForDate?: (ms: number, silent: boolean) => void;
+    // Bindable so App.svelte can see whether the day panel is open and
+    // fold it into its Android-back-button registry (App.svelte:135-167).
+    // App.svelte only ever reads this and never writes it directly —
+    // closing must go through `closePanel()` below so the note flushes.
+    panelOpen?: boolean;
   } = $props();
 
   // Right-click context menu state. Position is in viewport coords; we
@@ -106,6 +128,9 @@
       isToday: boolean;
       isPast: boolean;
       reminders: Reminder[];
+      /** Completed items on this day. They are filtered out of `reminders`,
+          so this is the only thing that says they exist. */
+      doneCount: number;
     }[] = [];
 
     for (let i = 0; i < 42; i++) {
@@ -117,8 +142,12 @@
       const isToday = date.getTime() === todayMs;
       const isPast = date.getTime() < todayMs;
 
-      const dayStart = date.getTime();
-      const dayEnd = dayStart + 86_400_000;
+      // Real local midnight-to-midnight, not `+ 86_400_000` — a DST
+      // transition day is 23 or 25 hours, and the naive form put a
+      // boundary-adjacent reminder in the wrong cell (or two cells, or
+      // none) on those days. Must match DayPanel's `dayBounds`, or the
+      // grid and the panel disagree about which day an item belongs to.
+      const { startMs: dayStart, endMs: dayEnd } = dayBounds(date);
       const dayReminders = reminders
         .filter((r) => {
           const t = effectiveDueAt(r);
@@ -126,9 +155,108 @@
         })
         .sort((a, b) => effectiveDueAt(a) - effectiveDueAt(b));
 
-      result.push({ date, inMonth, isToday, isPast, reminders: dayReminders });
+      // The grid stays forward-looking: `reminders` is already filtered to
+      // what is still open, so completed items never appear as rows. That
+      // made a busy past day read as empty while the panel listed ten
+      // things. Counting them from the unfiltered list gives the cell an
+      // honest "there is more here" hint without cluttering it.
+      const doneCount = allReminders.filter((r) => {
+        if (r.state !== "completed") return false;
+        const t = effectiveDueAt(r);
+        return t >= dayStart && t < dayEnd;
+      }).length;
+
+      result.push({ date, inMonth, isToday, isPast, reminders: dayReminders, doneCount });
     }
     return result;
+  });
+
+  let selectedDate = $state<Date | null>(null);
+  let daysWithNotes = $state<Set<string>>(new Set());
+  let daysWithThoughts = $state<Set<string>>(new Set());
+  // Instance ref to the DayPanel so closePanel() below can go through its
+  // real close() (flush-then-close), not just flip `panelOpen` and skip
+  // the flush.
+  let dayPanelRef: DayPanel | undefined = $state();
+
+  function openDay(d: Date) {
+    selectedDate = d;
+    panelOpen = true;
+  }
+
+  // Called by App.svelte's Android-back-button handler. Must go through
+  // DayPanel's own close() — flush lives entirely in DayPanel's private
+  // state (pending/saveChain), so there is no way to flush from out here
+  // other than delegating to it.
+  export function closePanel() {
+    dayPanelRef?.close();
+  }
+
+  function onCellKeydown(d: Date, e: KeyboardEvent) {
+    // Only a keydown that originated on the cell itself should open the
+    // day panel. The item `<button>`s inside a cell are focusable
+    // descendants, and a keydown they don't handle bubbles up here — for
+    // Enter/Space that would preventDefault() the event before the
+    // browser's own synthesized click for the button fires, cancelling
+    // the button's own onclick (which opens the reminder editor) in
+    // favour of opening the day panel instead.
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openDay(d);
+    }
+  }
+
+  // Markers for the visible range. The backend hands back raw thought
+  // timestamps rather than per-day counts — bucketing needs the local
+  // calendar, which only the frontend has. Factored out of the $effect so
+  // the klaxon://day-notes-changed listener below can also trigger it —
+  // reading `cells` here still tracks the effect's dependency as long as
+  // the read happens synchronously inside the effect callback.
+  function fetchDaySummaries() {
+    const first = cells[0]?.date;
+    const last = cells[cells.length - 1]?.date;
+    if (!first || !last) return;
+    const from = localDayKey(first);
+    const to = localDayKey(last);
+    const { startMs } = dayBounds(first);
+    const { endMs } = dayBounds(last);
+    api
+      .daySummaries(from, to, startMs, endMs)
+      .then((s) => {
+        daysWithNotes = new Set(s.days_with_notes);
+        daysWithThoughts = new Set(
+          s.thought_times.map((ms) => localDayKey(new Date(ms))),
+        );
+      })
+      .catch((e) => console.error("daySummaries failed", e));
+  }
+
+  $effect(() => {
+    fetchDaySummaries();
+  });
+
+  // A note written and the panel closed, or one arriving by sync while the
+  // calendar is on screen, must move the ▪ marker without the user
+  // navigating away and back. `reminders-changed` doesn't cover this (the
+  // App.svelte publish cache skips identical rows, and notes aren't
+  // reminders anyway) — this is the only signal for it.
+  let unlistenNotes: UnlistenFn | null = null;
+  let destroyed = false;
+  onMount(async () => {
+    const un = await listen("klaxon://day-notes-changed", () => {
+      fetchDaySummaries();
+    });
+    if (destroyed) {
+      un();
+    } else {
+      unlistenNotes = un;
+    }
+  });
+
+  onDestroy(() => {
+    destroyed = true;
+    if (unlistenNotes) unlistenNotes();
   });
 
   const dayNames = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -138,6 +266,16 @@
   ];
 
   let label = $derived(`${monthNames[cursorDate.getMonth()]} ${cursorDate.getFullYear()}`);
+
+  // The grid always renders 42 cells, so leading/trailing overflow from
+  // adjacent months always repeats low day-of-month numbers within the same
+  // grid (e.g. day "3" as both this month's 3rd and next month's overflow
+  // 3rd) — a bare day number is not a unique accessible name. Match
+  // DayPanel's heading shape ("23 August 2026") so the full date, which is
+  // unique per cell by construction, is what gets announced.
+  function cellLabel(d: Date): string {
+    return `Open ${d.getDate()} ${monthNames[d.getMonth()]} ${d.getFullYear()}`;
+  }
 
   function prev() { cursorDate = addMonths(cursorDate, -1); }
   function next() { cursorDate = addMonths(cursorDate, 1); }
@@ -178,8 +316,13 @@
         class:out={!cell.inMonth}
         class:today={cell.isToday}
         class:past={cell.isPast && !cell.isToday}
+        class:selected={selectedDate !== null &&
+          localDayKey(selectedDate) === localDayKey(cell.date)}
         role="gridcell"
-        tabindex="-1"
+        tabindex="0"
+        aria-label={cellLabel(cell.date)}
+        onclick={() => openDay(cell.date)}
+        onkeydown={(e) => onCellKeydown(cell.date, e)}
         oncontextmenu={(e) => handleCellContextMenu(cell.date, e)}
       >
         <div class="day-num">{cell.date.getDate()}</div>
@@ -188,7 +331,7 @@
             <button
               class="item"
               class:silent={r.silent}
-              onclick={() => onSelect(r)}
+              onclick={(e) => { e.stopPropagation(); onSelect(r); }}
               title="{r.title} · {formatTime(r.due_at)}"
             >
               <span class="item-glyph">
@@ -208,9 +351,45 @@
             </div>
           {/if}
         </div>
+        <div class="markers" aria-hidden="true">
+          <!-- Desktop: the rows above already say what is still open, so the
+               only thing missing is what was finished and hidden. -->
+          {#if cell.doneCount > 0}
+            <span class="done-marks">
+              {#each Array(Math.min(3, cell.doneCount)) as _, i (i)}
+                <span class="dot done"></span>
+              {/each}
+              <span class="done-count">{cell.doneCount} done</span>
+            </span>
+          {/if}
+          <!-- Mobile: titles are hidden entirely, so these dots are the only
+               density signal. Capped at 3 with no overflow count — a "+N" in
+               a 45px cell recreates the problem this feature exists to fix. -->
+          <span class="density-marks">
+            {#each cell.reminders.slice(0, 3) as r (r.id)}
+              <span class="dot" class:done={r.state === "completed" || r.state === "dismissed" || r.state === "fired"}></span>
+            {/each}
+          </span>
+          {#if daysWithNotes.has(localDayKey(cell.date))}
+            <span class="glyph note-glyph" title="Has a note">▪</span>
+          {/if}
+          {#if daysWithThoughts.has(localDayKey(cell.date))}
+            <span class="glyph thought-glyph" title="Thoughts captured">•</span>
+          {/if}
+        </div>
       </div>
     {/each}
   </div>
+
+  <DayPanel
+    bind:this={dayPanelRef}
+    open={panelOpen}
+    date={selectedDate}
+    reminders={allReminders}
+    onClose={() => (panelOpen = false)}
+    onSelect={(r) => { panelOpen = false; onSelect(r); }}
+    onCreateForDate={(ms, silent) => { panelOpen = false; onCreateForDate?.(ms, silent); }}
+  />
 </section>
 
 {#if menuOpen && menuDate}
@@ -312,6 +491,11 @@
     overflow: auto;
   }
   .cell {
+    /* Was a plain div with no handlers; it now owns click/keyboard
+       activation, so it needs the interactive-affordance treatment. */
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
     border-right: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
     padding: 4px 6px 6px;
@@ -322,6 +506,9 @@
     overflow: hidden;
     position: relative;
     background: var(--bg);
+  }
+  .cell.selected {
+    box-shadow: inset 0 0 0 1px var(--klaxon-dim);
   }
   .cell.out {
     background: rgba(0, 0, 0, 0.25);
@@ -469,5 +656,43 @@
     letter-spacing: 0.16em;
     color: var(--text-muted);
     padding: 1px 6px;
+  }
+
+  /* Visible on both sizes now, but each shows a different signal: desktop
+     gets the done-count (the rows carry the open items), mobile gets the
+     density dots (the rows are hidden). */
+  .markers {
+    display: flex;
+    gap: 3px;
+    align-items: center;
+    padding: 0 4px 4px;
+    margin-top: auto;
+  }
+  .done-marks { display: flex; gap: 3px; align-items: center; }
+  .done-count {
+    font-size: 8px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+  .density-marks { display: none; gap: 3px; align-items: center; }
+  .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--klaxon);
+  }
+  .dot.done { background: var(--text-faint); }
+  .glyph { font-size: 8px; line-height: 1; color: var(--text-muted); }
+  .note-glyph { color: var(--klaxon-dim); }
+
+  /* This component's first mobile rules. A 45px cell cannot render a title,
+     so stop trying: show the day number and density markers, and let the
+     panel carry the detail. */
+  @media (max-width: 1024px) {
+    .day-items { display: none; }
+    .done-marks { display: none; }
+    .density-marks { display: flex; }
+    .cell { min-height: 44px; }
   }
 </style>

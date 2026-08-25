@@ -5,6 +5,26 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-08-25
+
+**Update both devices together** — the sync format changed, so a 0.9.x
+device and a 0.10 device cannot exchange changes until both are upgraded.
+Nothing is lost while they are mismatched; syncing simply pauses.
+
+### Added
+
+- **Click any day in the calendar to open it.** A busy day used to say
+  "+3 more" and give you no way to see what those were. The day panel
+  lists everything that touched that day — reminders and tasks, including
+  ones that already fired or were completed, plus any thoughts you
+  captured — and lets you add a new reminder or task on that date.
+- **A note on each day.** Free text for what actually happened, saved as
+  you type. It syncs between your devices like everything else.
+- **The calendar is readable on a phone.** A month grid cannot fit item
+  titles in a phone-width cell, so it no longer tries: each day shows its
+  number and small markers for how much is on it, whether it has a note,
+  and whether you captured thoughts. Tap for the detail.
+
 ## [0.9.0] — 2026-08-17
 
 Sync recovers from a failure that previously needed a restart, and the

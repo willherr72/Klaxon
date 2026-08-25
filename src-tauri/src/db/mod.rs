@@ -1,4 +1,5 @@
 pub mod armed_alarms;
+pub mod day_notes;
 pub mod migrations;
 pub mod peers;
 pub mod reminders;
