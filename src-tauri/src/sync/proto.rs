@@ -168,6 +168,86 @@ mod tests {
         assert!(matches!(got.request, RpcRequest::Ping));
     }
 
+    /// A recurring reminder must not make the receiver drop the whole
+    /// Push stream (which the sender sees as `read frame length: early eof`).
+    #[tokio::test]
+    async fn roundtrip_recurring_reminders() {
+        use crate::models::{Priority, ReminderState, RepeatRule};
+        use crate::sync::types::RemoteReminder;
+
+        for rule in [
+            None,
+            Some(RepeatRule::Daily),
+            Some(RepeatRule::Weekly {
+                weekdays: vec![1, 3, 5],
+            }),
+            Some(RepeatRule::Interval {
+                every_seconds: 604800,
+            }),
+            Some(RepeatRule::Monthly { day: 31 }),
+        ] {
+            let expected_rule = serde_json::to_value(&rule).unwrap();
+            let set = ChangeSet {
+                server_time_ms: 42,
+                reminders: vec![RemoteReminder {
+                    id: "recurring".into(),
+                    title: "Weekly reminder".into(),
+                    description: None,
+                    due_at: 123,
+                    priority: Priority::High,
+                    sound_path: None,
+                    repeat_rule: rule,
+                    state: ReminderState::Pending,
+                    snooze_until: Some(456),
+                    created_at: 1,
+                    updated_at: 2,
+                    silent: false,
+                    tags: vec!["keep".into()],
+                    task_lane_id: None,
+                    task_sort_key: Some(3.5),
+                }],
+                tombstones: vec![],
+                lanes: vec![],
+                thoughts: vec![],
+                day_notes: vec![],
+            };
+            let (mut a, mut b) = duplex(64 * 1024);
+            write_frame(
+                &mut a,
+                &RpcEnvelope {
+                    secret: "test-secret".into(),
+                    request: RpcRequest::Push(set),
+                },
+            )
+            .await
+            .unwrap();
+            let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
+            let RpcRequest::Push(got) = got.request else {
+                panic!("expected Push")
+            };
+            let reminder = &got.reminders[0];
+            assert_eq!(
+                serde_json::to_value(&reminder.repeat_rule).unwrap(),
+                expected_rule
+            );
+            // Reading the variable-shaped rule must not consume the next fields.
+            assert_eq!(reminder.state, ReminderState::Pending);
+            assert_eq!(reminder.snooze_until, Some(456));
+            assert_eq!(reminder.tags, vec!["keep"]);
+            assert_eq!(reminder.task_sort_key, Some(3.5));
+
+            write_frame(&mut a, &RpcResponse::Pull(got)).await.unwrap();
+            let reply: RpcResponse = read_frame(&mut b).await.unwrap();
+            let RpcResponse::Pull(got) = reply else {
+                panic!("expected Pull")
+            };
+            assert_eq!(
+                serde_json::to_value(&got.reminders[0].repeat_rule).unwrap(),
+                expected_rule
+            );
+        }
+    }
+
     #[tokio::test]
     async fn roundtrip_hello_both_directions() {
         let (mut a, mut b) = duplex(64 * 1024);

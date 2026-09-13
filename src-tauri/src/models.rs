@@ -59,13 +59,80 @@ impl ReminderState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum RepeatRule {
     Daily,
     Weekly { weekdays: Vec<u8> },
     Interval { every_seconds: i64 },
     Monthly { day: u8 },
+}
+
+impl<'de> Deserialize<'de> for RepeatRule {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Keep the tagged JSON used by the database and frontend, including
+        // accepting fields in any order.
+        if deserializer.is_human_readable() {
+            #[derive(Deserialize)]
+            #[serde(remote = "RepeatRule", tag = "kind", rename_all = "lowercase")]
+            enum JsonRule {
+                Daily,
+                Weekly { weekdays: Vec<u8> },
+                Interval { every_seconds: i64 },
+                Monthly { day: u8 },
+            }
+            return JsonRule::deserialize(deserializer);
+        }
+
+        // Postcard can encode an internally tagged enum, but Serde's
+        // derived decoder needs deserialize_any, which Postcard cannot
+        // implement. Read the existing positional encoding explicitly:
+        // the kind string, followed by that kind's payload (if any).
+        // Serialization stays unchanged so already-sent data remains valid.
+        struct RuleVisitor;
+        impl<'de> serde::de::Visitor<'de> for RuleVisitor {
+            type Value = RepeatRule;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a repeat rule kind followed by its payload")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<RepeatRule, A::Error> {
+                use serde::de::Error;
+                let kind: String = seq
+                    .next_element()?
+                    .ok_or_else(|| A::Error::missing_field("kind"))?;
+                match kind.as_str() {
+                    "daily" => Ok(RepeatRule::Daily),
+                    "weekly" => Ok(RepeatRule::Weekly {
+                        weekdays: seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::missing_field("weekdays"))?,
+                    }),
+                    "interval" => Ok(RepeatRule::Interval {
+                        every_seconds: seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::missing_field("every_seconds"))?,
+                    }),
+                    "monthly" => Ok(RepeatRule::Monthly {
+                        day: seq
+                            .next_element()?
+                            .ok_or_else(|| A::Error::missing_field("day"))?,
+                    }),
+                    _ => Err(A::Error::unknown_variant(
+                        &kind,
+                        &["daily", "weekly", "interval", "monthly"],
+                    )),
+                }
+            }
+        }
+        // Postcard tuples have no length prefix. Allow at most two fields;
+        // Daily consumes only the tag so the next reminder field stays intact.
+        deserializer.deserialize_tuple(2, RuleVisitor)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +325,49 @@ pub struct DayNote {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeat_rules_decode_existing_binary_and_json_formats() {
+        use super::RepeatRule;
+
+        let cases: &[(&[u8], &str)] = &[
+            (b"\x05daily", r#"{"kind":"daily"}"#),
+            (
+                b"\x06weekly\x03\x01\x03\x05",
+                r#"{"kind":"weekly","weekdays":[1,3,5]}"#,
+            ),
+            (
+                b"\x08interval\x78",
+                r#"{"kind":"interval","every_seconds":60}"#,
+            ),
+            (b"\x07monthly\x1f", r#"{"kind":"monthly","day":31}"#),
+        ];
+        for &(bytes, json) in cases {
+            let from_json: RepeatRule = serde_json::from_str(json).unwrap();
+            assert_eq!(postcard::to_allocvec(&from_json).unwrap(), bytes);
+            let from_wire: RepeatRule = postcard::from_bytes(bytes).unwrap();
+            assert_eq!(
+                serde_json::to_value(from_wire).unwrap(),
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
+        }
+        // JSON tag order is not significant to the database or frontend.
+        let reordered: RepeatRule = serde_json::from_str(r#"{"day":15,"kind":"monthly"}"#).unwrap();
+        assert!(matches!(reordered, RepeatRule::Monthly { day: 15 }));
+    }
+
+    #[test]
+    fn repeat_rules_reject_unknown_tags_and_missing_payloads() {
+        for bytes in [
+            b"\x06yearly".as_slice(),
+            b"\x06weekly",
+            b"\x08interval",
+            b"\x07monthly",
+        ] {
+            assert!(postcard::from_bytes::<super::RepeatRule>(bytes).is_err());
+        }
+        assert!(serde_json::from_str::<super::RepeatRule>(r#"{"kind":"monthly"}"#).is_err());
+    }
+
     use super::{truncate_body, ReminderUpdate, MAX_THOUGHT_CHARS};
 
     /// The Tasks board's star control sends a one-field patch

@@ -5,6 +5,19 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] — 2026-09-13
+
+Update both devices to receive recurring reminders reliably. Existing data
+and pairings are preserved; no re-pairing is needed.
+
+### Fixed
+
+- Recurring reminders no longer break sync after pairing approval. The
+  binary decoder could not read repeat rules, so a receiving device closed
+  the sync stream and the sender reported `read frame length: early eof`.
+  Daily, weekly, interval, and monthly rules now decode using their existing
+  wire format, while the saved JSON format remains unchanged.
+
 ## [0.10.1] — 2026-08-25
 
 A phone-only fix. Sync is unchanged, so devices can update independently.
