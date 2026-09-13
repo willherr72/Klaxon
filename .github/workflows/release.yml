@@ -1,0 +1,170 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish (requires running on a new version tag); false verifies signing only
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: klaxon-release-publication
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    outputs:
+      commit: ${{ steps.prepare.outputs.commit }}
+      version: ${{ steps.prepare.outputs.version }}
+      tag: ${{ steps.prepare.outputs.tag }}
+      build_run: ${{ steps.prepare.outputs.build_run }}
+      publish: ${{ steps.prepare.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - name: Validate source, version and exact-commit build
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish }}
+        run: node scripts/prepare-release.mjs
+  checks:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+    with:
+      extended: true
+  sign-and-publish:
+    needs: [prepare, checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Restrict this environment to main (dry runs) and version tags. PR and
+    # nightly test jobs never receive production signing credentials.
+    environment: release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager --install 'build-tools;36.0.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: klaxon-windows-x64
+          path: release-artifacts
+          run-id: ${{ needs.prepare.outputs.build_run }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: klaxon-android-arm64-unsigned
+          path: release-artifacts
+          run-id: ${{ needs.prepare.outputs.build_run }}
+          github-token: ${{ github.token }}
+      - name: Verify unsigned input belongs to the selected build
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const report = JSON.parse(readFileSync('release-artifacts/android-report.json'));
+          const name = `klaxon-${process.env.RELEASE_VERSION}-arm64.apk`;
+          const bytes = readFileSync(`release-artifacts/${name}`);
+          if (report.commit !== process.env.RELEASE_COMMIT || report.file !== name ||
+              report.size !== bytes.length || report.sha256 !== createHash('sha256').update(bytes).digest('hex')) {
+            throw Error('Downloaded APK does not match its source-bound build report');
+          }
+          JS
+      - name: Sign with the existing Android release identity
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_BASE64:?Configure release environment signing secrets}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing keystore password}"
+          : "${ANDROID_KEY_ALIAS:?Missing key alias}"
+          : "${ANDROID_KEY_PASSWORD:?Missing key password}"
+          umask 077
+          keystore="$RUNNER_TEMP/klaxon-release.jks"
+          trap 'rm -f -- "$keystore"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$keystore" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD "release-artifacts/klaxon-$RELEASE_VERSION-arm64.apk"
+      - name: Verify both artifacts before publication
+        run: |
+          set -euo pipefail
+          node scripts/release-check.mjs android \
+            --file "release-artifacts/klaxon-$RELEASE_VERSION-arm64.apk" \
+            --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" \
+            --apksigner "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            --commit "$RELEASE_COMMIT" --tag "$RELEASE_TAG" \
+            --output release-artifacts/android-report.json
+          node scripts/release-check.mjs manifest \
+            --windows-file "release-artifacts/Klaxon_${RELEASE_VERSION}_x64-setup.exe" \
+            --windows-report release-artifacts/windows-report.json \
+            --android-file "release-artifacts/klaxon-$RELEASE_VERSION-arm64.apk" \
+            --android-report release-artifacts/android-report.json \
+            --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" \
+            --output release-artifacts/release-manifest.json
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { releaseNotes } from './scripts/prepare-release.mjs';
+          writeFileSync('release-notes.md', releaseNotes(readFileSync('CHANGELOG.md', 'utf8'), process.env.RELEASE_VERSION));
+          JS
+      - name: Save validation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-validation
+          path: release-artifacts/release-manifest.json
+          retention-days: 3
+      - name: Publish verified release
+        if: needs.prepare.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PUBLISH_RELEASE=true node scripts/prepare-release.mjs --final-check
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "$RELEASE_TAG" --notes-file release-notes.md \
+            "release-artifacts/Klaxon_${RELEASE_VERSION}_x64-setup.exe" \
+            "release-artifacts/klaxon-$RELEASE_VERSION-arm64.apk" \
+            release-artifacts/release-manifest.json
+          draft_url=$(gh release view "$RELEASE_TAG" --json apiUrl --jq .apiUrl)
+          gh api "$draft_url" > uploaded-release.json
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const expected = JSON.parse(readFileSync('release-artifacts/release-manifest.json'));
+          const uploaded = JSON.parse(readFileSync('uploaded-release.json'));
+          for (const file of expected.assets) {
+            const actual = uploaded.assets.find(asset => asset.name === file.file);
+            if (!actual || actual.size !== file.size || actual.digest !== `sha256:${file.sha256}`) {
+              throw Error(`Uploaded release digest mismatch: ${file.file}`);
+            }
+          }
+          JS
+          PUBLISH_RELEASE=true node scripts/prepare-release.mjs --final-check
+          gh release edit "$RELEASE_TAG" --draft=false --latest

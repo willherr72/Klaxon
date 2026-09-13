@@ -42,6 +42,12 @@ Each phase checks literal incoming content and the preserved pairing/secret and
 sentinel reminder. The independent host also checks the actual outgoing content.
 Separate instrumentation invocations provide real process restarts.
 
+An identity phase after each seed launches the app with sync enabled, waits for
+its 32-byte Iroh key, and saves only its SHA-256 hash and device ID in a test-only
+sentinel. Each sync phase verifies those identities before launch and after sync.
+The older APK creates its own identity baseline before upgrade; it need not sync
+successfully with the newer host. Raw key bytes are never written to test output.
+
 For the nightly suite, append `--extended --previous-apk /path/to/older.apk`.
 Build the older source tag (currently v0.10.2) for x86_64 with the same debug
 keystore. The extended suite requires that baseline: it disables Wi-Fi and mobile

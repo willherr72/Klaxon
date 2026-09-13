@@ -6,6 +6,10 @@ on:
     branches: [main]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      extended:
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -40,4 +44,4 @@ jobs:
     name: Android smoke
     uses: ./.github/workflows/android-tests.yml
     with:
-      extended: false
+      extended: ${{ inputs.extended || false }}

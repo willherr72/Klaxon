@@ -32,6 +32,18 @@ export function releaseNotes(changelog, version) {
   return notes;
 }
 
+export function verifyRemoteTag(remote, tag, commit) {
+  if (!/^v\d+\.\d+\.\d+$/.test(tag) || !/^[a-f0-9]{40}$/.test(commit)) throw Error('Invalid tag or source commit');
+  const ref = `refs/tags/${tag}`;
+  const lines = execFileSync('git', ['ls-remote', '--tags', remote, ref, `${ref}^{}`], { encoding: 'utf8' });
+  const refs = new Map(lines.trim().split('\n').filter(Boolean).map(line => {
+    const [sha, name] = line.trim().split(/\s+/);
+    return [name, sha];
+  }));
+  const actual = refs.get(`${ref}^{}`) ?? refs.get(ref);
+  if (actual !== commit) throw Error(`Remote tag is missing or moved; ${tag} must match ${commit}`);
+}
+
 async function main() {
   const { GITHUB_REPOSITORY: repository, GH_TOKEN: token, GITHUB_OUTPUT: output } = process.env;
   if (!repository || !token || !output) throw Error('This preflight runs inside GitHub Actions');
@@ -41,6 +53,7 @@ async function main() {
   const version = await checkVersions();
   const tag = `v${version}`;
   const publish = process.env.PUBLISH_RELEASE === 'true';
+  const finalCheck = process.argv.includes('--final-check');
   if (publish && (process.env.GITHUB_REF_TYPE !== 'tag' || process.env.GITHUB_REF_NAME !== tag)) {
     throw Error('Publication requires the matching version tag on main');
   }
@@ -54,9 +67,14 @@ async function main() {
     return response.json();
   };
   if (publish) {
-    if (await api(`releases/tags/${tag}`)) throw Error(`${tag} already exists; releases are never overwritten`);
+    verifyRemoteTag('origin', tag, commit);
+    if (!finalCheck && await api(`releases/tags/${tag}`)) throw Error(`${tag} already exists; releases are never overwritten`);
     const latest = await api('releases/latest');
     if (latest) requireNewer(version, latest.tag_name);
+  }
+  if (finalCheck) {
+    if (!publish) throw Error('Final publication check requires PUBLISH_RELEASE=true');
+    return;
   }
   await writeFile('release-notes.md', releaseNotes(await readFile('CHANGELOG.md', 'utf8'), version));
   let runId;

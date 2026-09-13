@@ -74,7 +74,8 @@ class Harness:
         pending.replace(self.output / "peer" / "stage.txt")
         self.wait(f"host prepares {phase}", lambda: self.read_json("report.json").get("stage") == phase)
         self.instrument(phase)
-        expected = {"id": f"android-{phase}", "title": f"Android fixture {phase}"}
+        expected = {"id": f"android-{phase}", "title": f"Android fixture {phase}",
+                    "repeat_rule": '{"kind":"weekly","weekdays":[1,3,5]}'}
         self.wait(
             f"production host committed outgoing {phase}",
             lambda: expected in self.read_json("report.json").get("received", []),
@@ -97,7 +98,10 @@ class Harness:
             raise RuntimeError("Only an explicit emulator-NNNN serial is allowed; physical devices are forbidden")
         if self.adb("shell", "getprop", "ro.kernel.qemu").strip() != "1":
             raise RuntimeError("Selected device did not identify itself as an emulator")
-        if "package:" in self.adb("shell", "pm", "path", PACKAGE):
+        # `pm path` exits 1 when absent, which is the expected fresh state.
+        # Listing packages exits successfully for an empty result and still
+        # preserves ADB/PackageManager failures as errors.
+        if f"package:{PACKAGE}" in self.adb("shell", "pm", "list", "packages", PACKAGE).splitlines():
             raise RuntimeError("Use a fresh emulator: refusing to overwrite an existing Klaxon installation")
         self.output.mkdir(parents=True, exist_ok=False)
         with (self.output / "peer.log").open("w") as peer_log:
@@ -113,6 +117,7 @@ class Harness:
                 self.install(self.args.test_apk)
                 self.adb("logcat", "-c")
                 self.instrument("seed")
+                self.instrument("identity")
                 for phase in ("initial", "resume", "restart"):
                     self.stage(phase)
                 if self.args.extended:
@@ -125,6 +130,7 @@ class Harness:
                         raise RuntimeError("Upgrade baseline must have a strictly older versionCode")
                     self.install(self.args.test_apk)
                     self.instrument("seed", label="seed-upgrade")
+                    self.instrument("identity", label="identity-upgrade")
                     self.adb("shell", "am", "force-stop", PACKAGE)
                     self.install(self.args.apk)  # PackageManager upgrade, preserving app data.
                     if self.installed_version() != current_version:

@@ -11,6 +11,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.security.MessageDigest
 
 /** Real MainActivity, lifecycle callbacks and Rust sync. Only disposable emulator fixtures. */
 @RunWith(AndroidJUnit4::class)
@@ -22,6 +23,28 @@ class SyncLifecycleTest {
         JSONObject(String(Base64.decode(arguments.getString("fixture"), Base64.DEFAULT)))
     }
     private val dbFile get() = File(context.applicationInfo.dataDir, "klaxon.db")
+    private val identitySentinel get() = File(context.filesDir, "ci-identity.json")
+
+    private fun currentIdentity(): JSONObject {
+        val secretFile = File(context.applicationInfo.dataDir, "klaxon-iroh-secret.bin")
+        val secret = secretFile.readBytes()
+        assertEquals("Persisted Iroh key must contain 32 bytes", 32, secret.size)
+        val digest = MessageDigest.getInstance("SHA-256").digest(secret)
+        val deviceId = requireNotNull(scalar("SELECT value FROM settings WHERE key='device_id'"))
+        assertTrue("Device ID must be initialized", deviceId.isNotBlank())
+        return JSONObject().apply {
+            put("device_id", deviceId)
+            put("iroh_secret_sha256", Base64.encodeToString(digest, Base64.NO_WRAP))
+        }
+    }
+
+    private fun assertIdentity() {
+        assertTrue("Identity baseline must survive process restart and upgrade", identitySentinel.isFile)
+        val expected = JSONObject(identitySentinel.readText())
+        val actual = currentIdentity()
+        assertEquals("App device ID changed", expected.getString("device_id"), actual.getString("device_id"))
+        assertEquals("App Iroh identity changed", expected.getString("iroh_secret_sha256"), actual.getString("iroh_secret_sha256"))
+    }
 
     private fun database(): SQLiteDatabase = SQLiteDatabase.openDatabase(
         dbFile.absolutePath, null,
@@ -70,7 +93,7 @@ class SyncLifecycleTest {
     private fun insertOutgoing(phase: String) {
         database().use { db ->
             db.execSQL(
-                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags) VALUES (?,?,2000000000000,2,'pending',?,?,1,'[\"ci\"]')",
+                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,repeat_rule) VALUES (?,?,2000000000000,2,'pending',?,?,1,'[\"ci\"]','{\"kind\":\"weekly\",\"weekdays\":[1,3,5]}')",
                 arrayOf("android-$phase", "Android fixture $phase", System.currentTimeMillis(), System.currentTimeMillis())
             )
         }
@@ -88,7 +111,11 @@ class SyncLifecycleTest {
             lastSuccess() > previous && scalar("SELECT title FROM reminders WHERE id='host-$phase'") == "Host fixture $phase"
         }
         assertPairing()
+        assertIdentity()
         assertEquals("Android fixture $phase", scalar("SELECT title FROM reminders WHERE id='android-$phase'"))
+        val repeat = JSONObject(requireNotNull(scalar("SELECT repeat_rule FROM reminders WHERE id='host-$phase'")))
+        assertEquals("weekly", repeat.getString("kind"))
+        assertEquals("[1,3,5]", repeat.getJSONArray("weekdays").toString())
         assertNull(scalar("SELECT last_sync_error FROM peers WHERE id='ci-host'"))
     }
 
@@ -97,11 +124,11 @@ class SyncLifecycleTest {
         assertEquals("Emulator guard must be set by the host harness", "true", arguments.getString("disposable_emulator"))
         assertTrue("Physical devices are forbidden", android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk_gphone"))
         val phase = requireNotNull(arguments.getString("phase"))
-        require(phase in listOf("seed", "initial", "resume", "restart", "outage", "upgrade"))
+        require(phase in listOf("seed", "identity", "initial", "resume", "restart", "outage", "upgrade"))
         if (phase == "seed") {
             launch()
             await("application creates and migrates its database") {
-                dbFile.isFile && scalar("SELECT COUNT(*) FROM settings") != null
+                dbFile.isFile && !scalar("SELECT value FROM settings WHERE key='device_id'").isNullOrBlank()
             }
             database().use { db ->
                 db.beginTransaction()
@@ -115,8 +142,23 @@ class SyncLifecycleTest {
             assertPairing()
             return
         }
+        if (phase == "identity") {
+            assertPairing()
+            assertFalse("Never overwrite an existing identity baseline", identitySentinel.exists())
+            launch()
+            // The older baseline may report a protocol mismatch with the current
+            // host. Creating its persisted identity must not depend on sync success.
+            await("app persists its Iroh identity") {
+                val secretFile = File(context.applicationInfo.dataDir, "klaxon-iroh-secret.bin")
+                secretFile.isFile && secretFile.length() == 32L
+            }
+            identitySentinel.writeText(currentIdentity().toString())
+            assertIdentity()
+            return
+        }
         // Read before launch: restart/upgrade must preserve the on-disk pairing.
         assertPairing()
+        assertIdentity()
         val previous = lastSuccess()
         if (phase == "resume" || phase == "outage") {
             launch()

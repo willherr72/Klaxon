@@ -71,8 +71,8 @@ There is no telemetry, no account, no analytics, and no server of ours anywhere.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) 1.77+
-- [Node.js](https://nodejs.org/) 20+
+- [Rust](https://rustup.rs/) — the tested toolchain is pinned in `rust-toolchain.toml`
+- [Node.js](https://nodejs.org/) — the tested version is pinned in `.node-version`
 - Tauri 2 platform prerequisites — see [Tauri docs](https://tauri.app/start/prerequisites/)
 
 **Windows:** WebView2 runtime (already on Windows 11).
@@ -94,8 +94,8 @@ sudo apt install -y \
 
 **Android** (only needed for mobile builds):
 
-- Android SDK + NDK, with `ANDROID_HOME` and `NDK_HOME` set
-- **JDK 17–21.** Not newer: the Android Gradle Plugin pinned in
+- Android SDK 36, build tools 36.0.0, and NDK **27.1.12297006**, with `ANDROID_HOME` and `NDK_HOME` set
+- **JDK 21**, matching GitHub Actions. The Android Gradle Plugin pinned in
   `src-tauri/gen/android/buildSrc` fails to configure under JDK 25 with a bare
   `A problem occurred configuring project ':buildSrc'. > 25.0.2`, which doesn't
   name Java as the cause. If Android Studio is installed, its bundled runtime is
@@ -106,7 +106,7 @@ sudo apt install -y \
 # system-wide JAVA_HOME alone.
 export JAVA_HOME="/c/Program Files/Android/Android Studio/jbr"
 export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
-export NDK_HOME="$ANDROID_HOME/ndk/<version>"
+export NDK_HOME="$ANDROID_HOME/ndk/27.1.12297006"
 npm run tauri android build -- --debug
 ```
 
@@ -138,10 +138,62 @@ First run takes several minutes for the full release compile; subsequent builds 
 ### Tests
 
 ```bash
-npm run build       # cargo test needs ../dist to exist
-cd src-tauri
-cargo test
+npm ci
+npm run verify
 ```
+
+The shared verifier checks version consistency, release-tooling tests, Svelte,
+frontend tests/build, locked Rust tests, and real Iroh loopback transport. It
+stops on the first failure. `node scripts/verify.mjs --frontend` runs only the
+frontend/tooling portion. `npm run test:recovery` adds three-device forwarding,
+in-flight edits, persistent restart, and backup-restore transport regressions;
+build the frontend first when running that command on a fresh checkout.
+
+### GitHub Actions
+
+The workflows use standard hosted runners. For this public repository, scheduled
+nightly runs have the same free compute treatment as push and pull-request runs.
+Temporary artifacts expire after **three days**; emulator images and complete
+build directories are never uploaded. See [GitHub's billing rules](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+| Workflow | Trigger | Checks |
+| --- | --- | --- |
+| CI | PR, main push, manual | Shared Windows verification and a real Android emulator sync/lifecycle test |
+| Build | Main push, manual | Windows NSIS and unsigned Android arm64 APK, with source-bound metadata and SHA-256 reports |
+| Nightly recovery | Daily at 08:23 UTC, manual, relevant test-infrastructure PRs | Real transport recovery plus emulator network outage and v0.10.2-to-current upgrade/data preservation |
+| Release | Version tag, manual dry run | Passing verification/extended emulator tests, exact-commit build reuse, production signing and verified release publication |
+
+The smoke suite uses Android API 35; the extended suite uses API 36. The emulator
+runs the actual Android app against a production Iroh handler with
+disposable databases and identities. It checks actual data in both directions,
+eventual background/resume recovery, process restart, and retained pairing. The
+extended suite verifies an observed outage and installs a newer APK over an older
+one. These checks do not model Samsung-specific battery policies or real cellular
+handoffs. Test setup seeds a pairing; the confirmation-code UI is not covered.
+See the [emulator harness instructions](src-tauri/gen/android/app/src/androidTest/README.md).
+
+### Release automation
+
+Push a version bump with matching package/Cargo/Tauri versions and a dated
+changelog to `main`. Once its Build workflow succeeds, tag that commit `vX.Y.Z`.
+The Release workflow reuses that commit's artifacts instead of rebuilding both
+installers on the tag. If the three-day artifacts have expired, run Build on
+that main commit again before retrying Release. Existing releases and versions
+that are not strictly newer are rejected.
+
+Cloud signing requires a `release` GitHub environment with deployment policies
+allowing only the `main` branch (dry runs) and `v*` tags. Configure these environment
+secrets from the existing release identity: `ANDROID_KEYSTORE_BASE64`,
+`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`.
+Never put these in the repository or expose them to test/PR jobs. The production
+certificate fingerprint is checked before publishing, and both uploaded asset
+digests must match the validated manifest before the draft becomes public.
+
+To verify the full signing pipeline without publishing, manually run Release on
+`main` with `publish` left false. A failed upload validation leaves a draft for
+inspection; publication never silently overwrites or repairs an existing release.
+The unsigned Build APK is only a build-check artifact and cannot update a normal
+installation. The old manual build/sign/release process remains available.
 
 ## Configuration
 

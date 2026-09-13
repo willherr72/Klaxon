@@ -7,7 +7,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use iroh::{endpoint::presets, protocol::Router, Endpoint, RelayMode, TransportAddr};
 use klaxon_lib::{
     db::{migrations, reminders},
-    models::{Priority, ReminderState},
+    models::{Priority, ReminderState, RepeatRule},
     sync::{iroh_handler::SyncHandler, proto::ALPN_SYNC, types::RemoteReminder, DeviceIdentity},
 };
 use parking_lot::Mutex;
@@ -89,7 +89,9 @@ async fn run() -> Result {
                         due_at: 2_000_000_000_000,
                         priority: Priority::High,
                         sound_path: None,
-                        repeat_rule: None,
+                        repeat_rule: Some(RepeatRule::Weekly {
+                            weekdays: vec![1, 3, 5],
+                        }),
                         state: ReminderState::Pending,
                         snooze_until: None,
                         created_at: 1,
@@ -105,10 +107,11 @@ async fn run() -> Result {
         }
         let received = {
             let conn = db.lock();
-            let mut query = conn
-                .prepare("SELECT id,title FROM reminders WHERE id LIKE 'android-%' ORDER BY id")?;
+            let mut query = conn.prepare(
+                "SELECT id,title,repeat_rule FROM reminders WHERE id LIKE 'android-%' ORDER BY id",
+            )?;
             let rows = query.query_map([], |row| {
-                Ok(json!({"id": row.get::<_, String>(0)?, "title": row.get::<_, String>(1)?}))
+                Ok(json!({"id": row.get::<_, String>(0)?, "title": row.get::<_, String>(1)?, "repeat_rule": row.get::<_, Option<String>>(2)?}))
             })?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
