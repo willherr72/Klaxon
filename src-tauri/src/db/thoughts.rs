@@ -7,7 +7,7 @@
 //! shared `tombstones` table. Unlike lanes, the push path does *not* filter
 //! on any origin flag — watermarks only (issues #1/#2).
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
@@ -16,7 +16,7 @@ use crate::models::{
 };
 use crate::sync::types::RemoteThought;
 
-fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
+pub(super) fn row_to_thought(row: &Row<'_>) -> rusqlite::Result<Thought> {
     let tags_json: String = row.get("tags").unwrap_or_else(|_| "[]".to_string());
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
     Ok(Thought {
@@ -157,13 +157,24 @@ pub fn delete(conn: &Connection, id: &str) -> AppResult<()> {
 /// `updated_at`; older incoming rows are ignored. Returns whether anything
 /// changed.
 pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
+    let deleted: Option<i64> = conn
+        .query_row(
+            "SELECT deleted_at FROM tombstones WHERE id=?1",
+            [&t.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if deleted.is_some_and(|clock| clock >= t.updated_at) {
+        return Ok(false);
+    }
+
     let existing: Option<i64> = conn
         .query_row(
             "SELECT updated_at FROM thoughts WHERE id = ?1",
             params![t.id],
             |r| r.get(0),
         )
-        .ok();
+        .optional()?;
     if let Some(existing) = existing {
         if t.updated_at <= existing {
             return Ok(false);
@@ -180,7 +191,13 @@ pub fn apply_remote(conn: &Connection, t: &RemoteThought) -> AppResult<bool> {
             body = excluded.body,
             tags = excluded.tags,
             updated_at = excluded.updated_at",
-        params![t.id, truncate_body(&t.body), tags_json, t.created_at, t.updated_at],
+        params![
+            t.id,
+            truncate_body(&t.body),
+            tags_json,
+            t.created_at,
+            t.updated_at
+        ],
     )?;
     Ok(true)
 }

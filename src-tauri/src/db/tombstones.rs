@@ -12,7 +12,8 @@ pub struct Tombstone {
 pub fn create(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
     conn.execute(
         "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET deleted_at = excluded.deleted_at",
+         ON CONFLICT(id) DO UPDATE SET deleted_at = MAX(tombstones.deleted_at, excluded.deleted_at)
+         WHERE excluded.deleted_at > tombstones.deleted_at",
         params![id, deleted_at],
     )?;
     Ok(())
@@ -44,26 +45,26 @@ pub fn deleted_since(conn: &Connection, since_ms: i64) -> AppResult<Vec<Tombston
     Ok(out)
 }
 
-pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<()> {
-    // Remote tombstones come in clean (we received them, no need to push back).
-    conn.execute(
+/// Idempotently retain the newest deletion and remove only rows it wins over.
+pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<bool> {
+    let written = conn.execute(
         "INSERT INTO tombstones (id, deleted_at) VALUES (?1, ?2)
-         ON CONFLICT(id) DO UPDATE SET
-           deleted_at = MAX(tombstones.deleted_at, excluded.deleted_at)",
+         ON CONFLICT(id) DO UPDATE SET deleted_at=excluded.deleted_at
+         WHERE excluded.deleted_at > tombstones.deleted_at",
         params![id, deleted_at],
     )?;
-    // And remove the live row if it exists and is older.
-    conn.execute(
-        "DELETE FROM reminders WHERE id = ?1 AND updated_at <= ?2",
-        params![id, deleted_at],
-    )?;
-    // The tombstones table is shared across entity types — a tombstone id
-    // may name a reminder, a lane, or a thought.
-    conn.execute(
-        "DELETE FROM thoughts WHERE id = ?1 AND updated_at <= ?2",
-        params![id, deleted_at],
-    )?;
-    Ok(())
+    let effective: i64 =
+        conn.query_row("SELECT deleted_at FROM tombstones WHERE id=?1", [id], |r| {
+            r.get(0)
+        })?;
+    let mut removed = 0;
+    for table in ["reminders", "thoughts", "task_lanes"] {
+        removed += conn.execute(
+            &format!("DELETE FROM {table} WHERE id=?1 AND updated_at<=?2"),
+            params![id, effective],
+        )?;
+    }
+    Ok(written + removed > 0)
 }
 
 #[cfg(test)]

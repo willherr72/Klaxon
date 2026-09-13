@@ -377,12 +377,10 @@
     setTimeout(() => void runUpdateCheck(), 5_000);
     setInterval(() => void runUpdateCheck(), 24 * 60 * 60 * 1000);
     void initWhatsNew();
-    // Sync-on-foreground. When the mobile OS brings Klaxon back from
-    // the background, kick an immediate sync pass so the user sees
-    // fresh data from peers instead of waiting up to 20s for the next
-    // periodic tick. Desktop also benefits when the window regains
-    // focus after a long idle. Errors are non-fatal — the periodic
-    // tick will retry anyway.
+    // Foreground fallback: queue a scheduler nudge for fresh peer data.
+    // Android also forwards native onResume/onPause, which remain the
+    // authority for whether foreground endpoint recovery is allowed.
+    // Duplicate resume nudges coalesce with writes and manual requests.
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("popstate", onPopState);
 

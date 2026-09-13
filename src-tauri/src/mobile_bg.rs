@@ -1,9 +1,7 @@
 //! Mobile (Android) background-sync glue.
 //!
 //! A WorkManager periodic worker calls into Rust here roughly every 25 min to
-//! run one sync pass while the app process is resident. Warm-only: if the
-//! process is cold (Tauri `setup()` never ran, so no live `AppHandle`), the
-//! attempt no-ops. See
+//! run one sync pass using the live app or a cold headless endpoint. See
 //! docs/superpowers/specs/2026-06-17-mobile-background-sync-design.md.
 
 /// Result of a background-sync attempt, surfaced to the Kotlin worker as an
@@ -93,6 +91,14 @@ mod live {
     /// Called once from `setup()`. Idempotent — a second call is ignored.
     pub fn register(app: AppHandle) {
         let _ = BG_APP.set(app);
+        // onResume may precede setup. Replay the retained foreground state
+        // now that the scheduler and AppState are available.
+        if crate::sync::coordinator::is_foreground() {
+            if let Some(app) = BG_APP.get() {
+                let _ = app.state::<crate::AppState>().sync_nudge
+                    .send(crate::sync::trigger::Nudge::Resume);
+            }
+        }
     }
 
     /// Whether the app process is warm (Tauri setup ran). The headless
@@ -160,6 +166,12 @@ mod headless {
             }
         };
         rt.block_on(async {
+            // Covers endpoint creation and teardown as well as data exchange.
+            // Recheck after waiting: Tauri setup may have completed meanwhile.
+            let _pass = crate::sync::coordinator::acquire_pass().await;
+            if super::live::app_is_live() {
+                return BgSyncOutcome::NotReady;
+            }
             let db_path = data_dir.join("klaxon.db");
             let conn = match crate::db::open(&db_path) {
                 Ok(c) => c,
@@ -172,10 +184,17 @@ mod headless {
             if !crate::sync::read_enabled(&db) {
                 return BgSyncOutcome::Disabled;
             }
-            let node = match crate::sync::iroh_node::start(data_dir).await {
-                Ok(n) => n,
-                Err(e) => {
+            let node = match tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                crate::sync::iroh_node::start(data_dir),
+            ).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => {
                     log::warn!("headless sync: endpoint start failed: {e}");
+                    return BgSyncOutcome::NotReady;
+                }
+                Err(_) => {
+                    log::warn!("headless sync: endpoint start exceeded 30s");
                     return BgSyncOutcome::NotReady;
                 }
             };
@@ -186,7 +205,9 @@ mod headless {
                 outcome.attempted,
                 outcome.failed,
             );
-            node.endpoint.close().await;
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5), node.endpoint.close(),
+            ).await;
             // The reason cold sync exists at all: freshly-arrived
             // reminders must ring. Failure is logged, never fatal —
             // the next reconcile (foreground at latest) retries.
@@ -269,6 +290,29 @@ pub extern "system" fn Java_com_klaxon_app_MainActivity_nativeNetworkChanged<'lo
         let state = app.state::<crate::AppState>();
         log::info!("connectivity change from Kotlin — nudging sync");
         let _ = state.sync_nudge.send(crate::sync::trigger::Nudge::NetworkChange);
+    });
+}
+
+/// Native lifecycle is authoritative: WebView visibility can lag Android's
+/// activity state, particularly after the cached-app freezer resumes us.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_klaxon_app_MainActivity_nativeForegroundChanged<'local>(
+    _env: jni::JNIEnv<'local>,
+    _this: jni::objects::JObject<'local>,
+    foreground: jni::sys::jboolean,
+) {
+    ensure_android_logging();
+    let _ = std::panic::catch_unwind(|| {
+        let foreground = foreground != jni::sys::JNI_FALSE;
+        crate::sync::coordinator::set_foreground(foreground);
+        if foreground {
+            if let Some(app) = live::app_handle() {
+                use tauri::Manager;
+                let _ = app.state::<crate::AppState>().sync_nudge
+                    .send(crate::sync::trigger::Nudge::Resume);
+            }
+        }
     });
 }
 

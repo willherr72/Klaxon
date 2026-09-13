@@ -12,6 +12,14 @@ fn main() {
     // `rustflags` array entirely. Build-script-emitted link args dodge
     // that override.
     let target = std::env::var("TARGET").unwrap_or_default();
+    if target.ends_with("windows-msvc") {
+        // Examples link the production Tauri handlers, which import
+        // comctl32!TaskDialogIndirect. Unlike the app binary, examples do
+        // not receive Tauri's Common Controls v6 activation manifest.
+        // Without it Windows selects legacy comctl32 and fails before main.
+        println!("cargo:rustc-link-arg-examples=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-examples=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'");
+    }
     if target.contains("android") {
         println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
         println!("cargo:rustc-link-arg=-lc++_shared");

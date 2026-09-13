@@ -29,6 +29,18 @@ class MainActivity : TauriActivity() {
 
   private external fun nativeInitAndroidContext(context: Context)
   private external fun nativeNetworkChanged()
+  private external fun nativeForegroundChanged(foreground: Boolean)
+
+  override fun onResume() {
+    super.onResume()
+    // Rust retains this even when Tauri setup has not finished yet.
+    nativeForegroundChanged(true)
+  }
+
+  override fun onPause() {
+    nativeForegroundChanged(false)
+    super.onPause()
+  }
 
   /**
    * Register the ~25-minute background sync job. KEEP policy means relaunches

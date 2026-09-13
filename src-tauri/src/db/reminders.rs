@@ -130,7 +130,7 @@ pub fn place(
     get_by_id(conn, id)
 }
 
-fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
+pub(super) fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
     let repeat_rule = repeat_rule_json
         .as_deref()

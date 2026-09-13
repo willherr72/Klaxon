@@ -4,6 +4,7 @@ pub mod migrations;
 pub mod peers;
 pub mod reminders;
 pub mod settings;
+pub mod sync_log;
 pub mod task_lanes;
 pub mod thoughts;
 pub mod tombstones;
@@ -18,7 +19,7 @@ pub fn open(path: &Path) -> AppResult<Connection> {
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "synchronous", "FULL")?;
     // Two processes write this file on Android: the app, and the share
     // activity that receives an Android share while the app may be cold.
     // Without a busy timeout the loser of a race fails immediately with

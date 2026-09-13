@@ -279,6 +279,8 @@ const MIGRATIONS: &[&str] = &[
 
     CREATE INDEX idx_day_notes_updated ON day_notes(updated_at);
     "#,
+    // 016 -- local delivery revisions and durable per-peer cursors.
+    include_str!("migration_016.sql"),
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {
@@ -428,6 +430,55 @@ mod tests {
             tables, 0,
             "DDL must roll back when recording its version fails"
         );
+    }
+
+    #[test]
+    fn migration_016_preserves_existing_rows_pairing_and_persistent_epoch() {
+        let path = std::env::temp_dir().join(format!(
+            "klaxon-revision-migration-{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            super::run_list(&conn, &super::MIGRATIONS[..15]).unwrap();
+            conn.execute_batch("INSERT INTO peers(id,name,shared_secret,created_at,last_pull_at,last_push_at) VALUES ('p','phone','preserved-test-secret',1,500,600);
+                INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at) VALUES ('existing-reminder','reminder',0,1,'pending',0,0);
+                INSERT INTO thoughts(id,body,tags,created_at,updated_at) VALUES ('existing','preserved','[]',0,0);
+                INSERT INTO day_notes(day,body,created_at,updated_at) VALUES ('2026-09-13','note',-1,-1);
+                INSERT INTO tombstones(id,deleted_at) VALUES ('deleted',-5);").unwrap();
+        }
+        let first_epoch;
+        {
+            let conn = crate::db::open(&path).unwrap();
+            let batch = crate::db::sync_log::snapshot(&conn, None).unwrap();
+            assert_eq!(batch.changes.thoughts[0].body, "preserved");
+            assert_eq!(batch.changes.reminders[0].title, "reminder");
+            assert_eq!(batch.changes.day_notes[0].body, "note");
+            assert_eq!(batch.changes.tombstones[0].id, "deleted");
+            assert!(!batch.changes.lanes.is_empty());
+            first_epoch = batch.cursor.epoch;
+            let secret: String = conn
+                .query_row("SELECT shared_secret FROM peers WHERE id='p'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(secret, "preserved-test-secret");
+            assert_eq!(
+                crate::db::sync_log::cursors(&conn, "p").unwrap(),
+                (None, None)
+            );
+        }
+        {
+            let conn = crate::db::open(&path).unwrap();
+            assert_eq!(
+                crate::db::sync_log::snapshot(&conn, None)
+                    .unwrap()
+                    .cursor
+                    .epoch,
+                first_epoch
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     fn fts_hits(conn: &rusqlite::Connection, term: &str) -> i64 {

@@ -283,6 +283,9 @@ pub fn run() {
                 let pairs = pending_pairs.clone();
                 let launch_tx = nudge_tx.clone();
                 tauri::async_runtime::spawn(async move {
+                    // A cold worker may already own this identity. Wait for
+                    // its endpoint to close before starting the resident one.
+                    let _pass = sync::coordinator::acquire_pass().await;
                     // Same path the endpoint watchdog uses to rebuild after
                     // the transport dies — see sync::iroh_node::BringUp.
                     let cfg = sync::iroh_node::BringUp {
@@ -295,11 +298,19 @@ pub fn run() {
                         router_state,
                         discovery_state,
                     };
-                    if let Err(e) = sync::iroh_node::bring_up(&cfg).await {
-                        // Sync subsystem stays down; the rest of the
-                        // app runs. Same failure posture as before.
-                        log::error!("iroh endpoint failed to start: {e}");
-                        return;
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        sync::iroh_node::bring_up(&cfg),
+                    ).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => {
+                            log::error!("iroh endpoint failed to start: {e}");
+                            return;
+                        }
+                        Err(_) => {
+                            log::error!("iroh startup exceeded 30s; watchdog will retry");
+                            return;
+                        }
                     }
 
                     // Eager launch pass — boot → synced in seconds.

@@ -13,7 +13,7 @@ use crate::models::{now_ms, truncate_body, DayNote};
 
 const COLUMNS: &str = "day, body, created_at, updated_at";
 
-fn row_to_note(row: &Row<'_>) -> rusqlite::Result<DayNote> {
+pub(super) fn row_to_note(row: &Row<'_>) -> rusqlite::Result<DayNote> {
     Ok(DayNote {
         day: row.get("day")?,
         body: row.get("body")?,

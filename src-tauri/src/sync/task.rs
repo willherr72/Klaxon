@@ -12,14 +12,12 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::alerts;
-use crate::db::{day_notes, peers, reminders as repo, task_lanes, thoughts, tombstones};
-use crate::models::ReminderState;
+use crate::db::peers;
+use crate::sync::coordinator;
+#[cfg(test)]
+use crate::sync::coordinator::{FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, SELF_TEST_COOLDOWN};
 use crate::sync::iroh_client;
 use crate::sync::trigger::{next_retry_delay, Nudge, DEBOUNCE};
-use crate::sync::types::{
-    ChangeSet, RemoteDayNote, RemoteReminder, RemoteThought, RemoteTombstone,
-};
 
 /// Emit a "something changed about the reminders table" event so the
 /// frontend re-fetches. Called from anywhere the backend mutates reminders
@@ -61,24 +59,7 @@ const SYNC_INTERVAL: Duration = Duration::from_secs(20);
 /// tighter of the two, it always won the race and flattened every failure
 /// into "peer unreachable" — 42 hours of an incident with the specific iroh
 /// error never once reaching a log line.
-const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Consecutive passes where every peer failed before we stop assuming the
-/// peers are merely away and start suspecting our own transport.
-const FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT: u32 = 5;
-
-/// Never self-test (and therefore never rebuild) more often than this. The
-/// test binds a throwaway endpoint and a rebuild drops every in-flight
-/// connection, so a tight loop of either would be worse than the outage.
-///
-/// 30 minutes rather than 5, because "every pass is failing" is the NORMAL
-/// overnight state, not an exceptional one: the phone sits frozen in
-/// Android's freezer, so the streak is permanently past its threshold and
-/// the cooldown alone decides how often we probe. At 5 minutes that is ~96
-/// throwaway endpoints a night, each publishing a one-shot keypair to a
-/// public DNS service, forever. Against a fault that went unnoticed for 42
-/// hours, detecting it within half an hour is ample.
-const SELF_TEST_COOLDOWN: Duration = Duration::from_secs(1800);
+const SYNC_PEER_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Outcome of syncing one peer under [`SYNC_PEER_TIMEOUT`].
 enum PeerSyncResult {
@@ -90,9 +71,8 @@ enum PeerSyncResult {
 /// Run one peer's sync under a hard time budget. Dropping the future on
 /// timeout cancels the in-flight work (including a hung iroh `connect`), so
 /// an unreachable peer costs at most `budget` instead of blocking the pass.
-/// Kept generic over the future so the timeout handling is unit-testable
-/// without binding a real iroh endpoint (which can't be done under
-/// `#[cfg(test)]` on Windows — see `sync/iroh_handler.rs`).
+/// Kept generic so deadline behavior can be tested without a network.
+/// Real transport coverage lives in examples/sync_smoke.rs.
 async fn with_peer_timeout<F>(fut: F, budget: Duration) -> PeerSyncResult
 where
     F: std::future::Future<Output = crate::error::AppResult<()>>,
@@ -118,18 +98,10 @@ pub struct PassOutcome {
 
 /// Is it time to spend a self-test on this run of failures?
 ///
-/// Pure, so the threshold and cooldown are testable: binding a real iroh
-/// endpoint under `#[cfg(test)]` trips the Windows loader (see
-/// `sync/iroh_handler.rs`), which rules out testing the caller directly.
-#[cfg_attr(not(desktop), allow(dead_code))]
+/// The recovery decision can be tested independently of network availability.
+#[cfg(test)]
 fn should_self_test(failed_passes: u32, since_last_test: Option<Duration>) -> bool {
-    if failed_passes < FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT {
-        return false;
-    }
-    match since_last_test {
-        Some(elapsed) => elapsed >= SELF_TEST_COOLDOWN,
-        None => true,
-    }
+    coordinator::recovery_due(true, false, failed_passes, since_last_test)
 }
 
 /// Ask whether our own transport is still reachable, and rebuild it if not.
@@ -141,7 +113,6 @@ fn should_self_test(failed_passes: u32, since_last_test: Option<Duration>) -> bo
 /// night, so any rule based on failure count alone would rebuild on a loop
 /// until morning. The self-test answers "can anything reach us" directly,
 /// so an asleep peer costs one 6-second dial per cooldown and nothing else.
-#[cfg_attr(not(desktop), allow(dead_code))]
 async fn maybe_rebuild_endpoint(
     app: &AppHandle,
     failed_passes: u32,
@@ -150,12 +121,23 @@ async fn maybe_rebuild_endpoint(
     let Some(state) = app.try_state::<crate::AppState>() else {
         return false;
     };
-    if !should_self_test(failed_passes, last_self_test.map(|at| at.elapsed())) {
+    if !crate::sync::read_enabled(&state.db)
+        || !coordinator::recovery_due(
+            cfg!(desktop),
+            coordinator::is_foreground(),
+            failed_passes,
+            last_self_test.map(|at| at.elapsed()),
+        )
+    {
         return false;
     }
 
     // Clone what we need out; never hold the lock across an await.
-    let node = state.iroh_node.lock().as_ref().map(|n| (n.node_id.clone(), n.endpoint.clone()));
+    let node = state
+        .iroh_node
+        .lock()
+        .as_ref()
+        .map(|n| (n.node_id.clone(), n.endpoint.clone()));
     *last_self_test = Some(Instant::now());
 
     let our_id = match &node {
@@ -169,7 +151,14 @@ async fn maybe_rebuild_endpoint(
         }
     };
 
-    match crate::sync::iroh_node::self_reachable(&our_id).await {
+    let verdict = tokio::select! {
+        verdict = crate::sync::iroh_node::self_reachable(&our_id) => verdict,
+        _ = coordinator::wait_until_background(), if !cfg!(desktop) => {
+            log::info!("activity paused — canceling endpoint health probe");
+            return false;
+        }
+    };
+    match verdict {
         Some(true) => {
             log::info!(
                 "{failed_passes} failed passes, but our endpoint answered its own dial — \
@@ -178,6 +167,11 @@ async fn maybe_rebuild_endpoint(
             false
         }
         Some(false) => {
+            // A pause can race the probe's result. Never initiate a mobile
+            // rebuild after the activity has left the foreground.
+            if !cfg!(desktop) && !coordinator::is_foreground() {
+                return false;
+            }
             let relay = node
                 .as_ref()
                 .map(|(_, ep)| crate::sync::iroh_node::relay_connected(ep))
@@ -197,7 +191,6 @@ async fn maybe_rebuild_endpoint(
 }
 
 /// Stand a fresh transport up, reusing the launch path.
-#[cfg_attr(not(desktop), allow(dead_code))]
 async fn rebuild_now(
     app: &AppHandle,
     state: &tauri::State<'_, crate::AppState>,
@@ -244,9 +237,7 @@ pub async fn run(
     log::info!("sync task online (event-driven)");
     let mut tick = tokio::time::interval(SYNC_INTERVAL);
     tick.tick().await; // first tick fires immediately; skip
-    #[cfg(desktop)]
     let mut consecutive_failed_passes: u32 = 0;
-    #[cfg(desktop)]
     let mut last_self_test: Option<Instant> = None;
     loop {
         let triggered: Option<Nudge> = tokio::select! {
@@ -270,8 +261,7 @@ pub async fn run(
             network_changed = matches!(nudge, Nudge::Resume | Nudge::NetworkChange);
             let mut latest = nudge;
             while let Ok(n) = nudges.try_recv() {
-                network_changed |=
-                    matches!(n, Nudge::Resume | Nudge::NetworkChange);
+                network_changed |= matches!(n, Nudge::Resume | Nudge::NetworkChange);
                 latest = n;
             }
             match latest {
@@ -300,11 +290,8 @@ pub async fn run(
             if let Some(ep) = ep {
                 log::info!("network-change/resume — notifying iroh endpoint");
                 tokio::spawn(async move {
-                    let notified = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        ep.network_change(),
-                    )
-                    .await;
+                    let notified =
+                        tokio::time::timeout(Duration::from_secs(10), ep.network_change()).await;
                     if notified.is_err() {
                         log::warn!(
                             "iroh network_change did not return within 10s — \
@@ -315,9 +302,12 @@ pub async fn run(
             }
         }
 
-        let outcome = run_one_pass(&db, &app).await;
+        // Warm workers acquire this same gate. Keep it through recovery so
+        // no pass uses the endpoint while the watchdog replaces it.
+        let pass_guard = coordinator::acquire_pass().await;
+        let outcome = run_one_pass_locked(&db, &app).await;
 
-        // ── Endpoint watchdog (desktop only) ─────────────────────────
+        // Endpoint watchdog: desktop always, mobile while foreground only.
         // A pass where every peer failed is normal — the other device is
         // usually just asleep. A long RUN of them can also mean the
         // transport underneath us has died: nothing can reach us and our
@@ -327,14 +317,8 @@ pub async fn run(
         // incident 2026-08-12..14). `maybe_rebuild_endpoint` tells the two
         // apart by dialing our own endpoint id.
         //
-        // Desktop only, deliberately. This failure needs a process that
-        // lives for days; on mobile the OS freezes and restarts the app
-        // constantly, so a dead endpoint cannot persist. Running it there
-        // would instead spend scarce WorkManager wake time on a self-test
-        // that is likely to fail simply because the relay has not
-        // reconnected yet since the last unfreeze.
-        #[cfg(desktop)]
-        {
+        // Background mobile passes never spend worker time on health probes.
+        if cfg!(desktop) || coordinator::is_foreground() {
             // A peer with no iroh node id is reported Ok but never dialed;
             // counting it as a success would pin the streak at zero and
             // disable the watchdog for exactly the user who needs it.
@@ -346,20 +330,10 @@ pub async fn run(
                     consecutive_failed_passes = 0;
                 }
             } else {
-                // Nothing was dialed. A pass reports that for several
-                // reasons, and only one of them should keep the watchdog
-                // armed: a missing transport, which is how a failed
-                // rebuild gets retried. Sync switched off, no peers
-                // paired, only pre-v0.3 peers, or a peer-list error must
-                // all clear the streak — otherwise removing your last peer
-                // would leave a probe firing every five minutes forever.
-                let transport_missing = app
-                    .try_state::<crate::AppState>()
-                    .map(|st| st.iroh_node.lock().is_none())
-                    .unwrap_or(false);
-                if !transport_missing {
-                    consecutive_failed_passes = 0;
-                }
+                // Disabled sync, no peers, old peers without node ids, or
+                // a peer-list error must disarm recovery. Missing endpoints
+                // with eligible peers are counted as failures by the pass.
+                consecutive_failed_passes = 0;
             }
             if maybe_rebuild_endpoint(&app, consecutive_failed_passes, &mut last_self_test).await {
                 consecutive_failed_passes = 0;
@@ -369,7 +343,10 @@ pub async fn run(
                 // is fine here — nothing is racing it.)
                 let _ = nudge_tx.send(Nudge::Launch);
             }
+        } else {
+            consecutive_failed_passes = 0;
         }
+        drop(pass_guard);
 
         // Only nudge-triggered passes retry; the 20s tick is its own retry.
         if triggered.is_some() && outcome.failed > 0 {
@@ -387,12 +364,19 @@ pub async fn run(
     }
 }
 
-/// Run a single sync pass against every paired peer. Extracted from the
-/// loop above so the `sync_now` command can trigger an immediate pass
-/// (used on mobile when the app comes back to the foreground — without
-/// this the user waits up to SYNC_INTERVAL to see fresh data).
+/// Warm workers wait for their pass to finish using the scheduler's gate.
+#[cfg_attr(not(mobile), allow(dead_code))]
 pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassOutcome {
-    const NONE: PassOutcome = PassOutcome { attempted: 0, failed: 0, skipped: 0 };
+    let _pass = coordinator::acquire_pass().await;
+    run_one_pass_locked(db, app).await
+}
+
+async fn run_one_pass_locked(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassOutcome {
+    const NONE: PassOutcome = PassOutcome {
+        attempted: 0,
+        failed: 0,
+        skipped: 0,
+    };
     if !crate::sync::read_enabled(db) {
         return NONE;
     }
@@ -411,7 +395,15 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
         .and_then(|st| st.iroh_node.lock().as_ref().map(|n| n.endpoint.clone()));
     let Some(endpoint) = iroh_endpoint else {
         log::warn!("sync pass: iroh endpoint not ready, skipping");
-        return NONE;
+        let skipped = peer_list
+            .iter()
+            .filter(|peer| peer.iroh_node_id.is_none())
+            .count();
+        return PassOutcome {
+            attempted: peer_list.len(),
+            failed: peer_list.len() - skipped,
+            skipped,
+        };
     };
     let mut attempted = 0usize;
     let mut failed = 0usize;
@@ -438,7 +430,7 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
             PeerSyncResult::TimedOut => {
                 failed += 1;
                 log::warn!(
-                    "sync with {} ({}) timed out after {}s — peer unreachable; skipping",
+                    "sync with {} ({}) exceeded {}s; retrying",
                     peer.name,
                     peer.id,
                     SYNC_PEER_TIMEOUT.as_secs(),
@@ -447,27 +439,23 @@ pub async fn run_one_pass(db: &Arc<Mutex<Connection>>, app: &AppHandle) -> PassO
                 let _ = peers::record_sync_err(
                     &conn,
                     &peer.id,
-                    "timed out after 10s — peer unreachable",
+                    "sync pass exceeded 30s; retrying",
                     crate::models::now_ms(),
                 );
             }
         }
     }
-    PassOutcome { attempted, failed, skipped }
+    PassOutcome {
+        attempted,
+        failed,
+        skipped,
+    }
 }
 
 /// App-process side effects a completed pass wants performed. In the app
 /// they cancel alerts and refresh the UI; the headless worker (cold
 /// Android process) drops them — nothing is ringing and there is no
 /// webview to refresh.
-#[derive(Default)]
-pub struct PassEffects {
-    pub to_cancel: Vec<String>,
-    pub reminders_changed: bool,
-    pub thoughts_changed: bool,
-    pub day_notes_changed: bool,
-}
-
 /// App-process wrapper: gather mDNS-fresh seeds, run the core, apply the
 /// effects (cancel alerts, poke the webview).
 async fn sync_one(
@@ -488,112 +476,25 @@ async fn sync_one(
             }
         }
     }
-    let effects = sync_one_core(db, endpoint, &extra, peer).await?;
-    for id in &effects.to_cancel {
-        alerts::cancel_alert(app, id);
-    }
-    if effects.reminders_changed {
-        emit_reminders_changed(app);
-    }
-    if effects.thoughts_changed {
-        emit_thoughts_changed(app);
-    }
-    if effects.day_notes_changed {
-        emit_day_notes_changed(app);
-    }
-    Ok(())
+    sync_one_core(db, endpoint, &extra, peer, |applied| {
+        crate::sync::iroh_handler::publish_applied(app, applied);
+    })
+    .await
 }
 
-/// Apply every row in a pulled `ChangeSet` to the local DB and report what
-/// the caller needs back: the alert ids to cancel, and the highest
-/// `updated_at`/`deleted_at` watermark seen (starting from `since`, so an
-/// empty `ChangeSet` returns `since` unchanged).
-///
-/// Split out of `sync_one_core` so it's unit-testable with a plain
-/// in-memory `Connection` — `sync_one_core` itself needs a live iroh
-/// `Endpoint` and can't run under `#[cfg(test)]` on Windows (see
-/// `sync/iroh_handler.rs`).
-fn apply_pulled(conn: &Connection, pulled: &ChangeSet, since: i64) -> (Vec<String>, i64) {
-    let mut to_cancel: Vec<String> = Vec::new();
-    let mut max_pulled = since;
-    // Lanes before reminders so an arriving reminder with a freshly-
-    // created task_lane_id sees its lane row already present.
-    for lane in &pulled.lanes {
-        let _ = task_lanes::apply_remote(conn, lane);
-        if lane.updated_at > max_pulled {
-            max_pulled = lane.updated_at;
-        }
-    }
-    for r in &pulled.reminders {
-        if matches!(repo::apply_remote(conn, r), Ok(true)) && silences_alert(r.state) {
-            to_cancel.push(r.id.clone());
-        }
-        if r.updated_at > max_pulled {
-            max_pulled = r.updated_at;
-        }
-    }
-    for t in &pulled.thoughts {
-        let _ = thoughts::apply_remote(conn, t);
-        if t.updated_at > max_pulled {
-            max_pulled = t.updated_at;
-        }
-    }
-    for n in &pulled.day_notes {
-        let _ = day_notes::apply_remote(conn, n);
-        if n.updated_at > max_pulled {
-            max_pulled = n.updated_at;
-        }
-    }
-    for t in &pulled.tombstones {
-        let _ = tombstones::apply_remote(conn, &t.id, t.deleted_at);
-        // Tombstones unconditionally cancel — the reminder is gone, no
-        // reason to keep ringing about it. Same id might also belong
-        // to a deleted lane; deleting a non-existent row is a no-op.
-        let _ = task_lanes::delete(conn, &t.id);
-        to_cancel.push(t.id.clone());
-        if t.deleted_at > max_pulled {
-            max_pulled = t.deleted_at;
-        }
-    }
-    (to_cancel, max_pulled)
-}
-
-/// Compute app-facing side effects from a pulled `ChangeSet`. Pure — no DB,
-/// no endpoint — so it's testable in isolation. `day_notes_changed` is its
-/// own flag rather than folded into `reminders_changed`, same reasoning as
-/// `thoughts_changed`: the day-detail panel is a separate view keyed to one
-/// day, and a sync that carried nothing but a day note must still refresh
-/// an open panel.
-fn effects_from_pulled(pulled: &ChangeSet, to_cancel: Vec<String>) -> PassEffects {
-    PassEffects {
-        to_cancel,
-        reminders_changed: !pulled.reminders.is_empty()
-            || !pulled.tombstones.is_empty()
-            || !pulled.lanes.is_empty(),
-        thoughts_changed: !pulled.thoughts.is_empty() || !pulled.tombstones.is_empty(),
-        day_notes_changed: !pulled.day_notes.is_empty(),
-    }
-}
-
-/// The sync pass proper — pull, apply, push — with no app-process
-/// dependencies, so the cold Android worker can run it headless.
+/// Both directions share a connection; delivery cursors only advance after
+/// their corresponding storage transaction or remote acknowledgment commits.
 async fn sync_one_core(
     db: &Arc<Mutex<Connection>>,
     endpoint: &Endpoint,
     extra_seeds: &[iroh::TransportAddr],
     peer: &crate::db::peers::Peer,
-) -> crate::error::AppResult<PassEffects> {
+    on_pulled: impl FnOnce(&crate::sync::storage::Applied),
+) -> crate::error::AppResult<()> {
+    use crate::db::sync_log;
     let Some(node_id) = peer.iroh_node_id.as_deref() else {
-        log::debug!(
-            "skipping sync with {} — no iroh_node_id (re-pair required)",
-            peer.name
-        );
-        return Ok(PassEffects::default());
+        return Ok(());
     };
-
-    // Seed = persisted last-known-good ∪ caller-supplied extras (the app
-    // passes mDNS-fresh LAN addresses; the headless worker has none).
-    // Either source alone is enough to skip iroh's address lookup.
     let mut seed: Vec<iroh::TransportAddr> = peer
         .endpoint_addrs_json
         .as_deref()
@@ -604,101 +505,45 @@ async fn sync_one_core(
             seed.push(addr.clone());
         }
     }
-
-    // Version exchange (v0.7.1). Best-effort and recorded either way:
-    // None must overwrite a stale value — a peer reinstalled with an
-    // older build shouldn't keep claiming a modern version.
-    let peer_version =
-        iroh_client::hello(endpoint, node_id, &seed, &peer.shared_secret).await;
+    let session =
+        iroh_client::Session::connect(endpoint, node_id, &seed, &peer.shared_secret).await?;
+    let (pull_cursor, _) = {
+        let conn = db.lock();
+        peers::set_app_version(&conn, &peer.id, Some(&session.peer_version))?;
+        sync_log::cursors(&conn, &peer.id)?
+    };
+    let pulled = session.pull(pull_cursor).await?;
+    let applied = crate::sync::storage::apply_pulled(&db.lock(), &peer.id, &pulled)?;
+    // A committed receive still updates the UI/alerts if the later send fails.
+    on_pulled(&applied);
+    // Applying a restored peer's new history invalidates its old outbound
+    // acknowledgment in the same transaction. Read that decision after commit.
+    let (_, push_cursor) = sync_log::cursors(&db.lock(), &peer.id)?;
+    let outgoing = sync_log::snapshot(&db.lock(), push_cursor.as_ref())?;
+    // Also acknowledge empty snapshots: this initializes migration cursors and
+    // proves both directions work before reporting complete sync success.
+    let ack = session.push(outgoing).await?;
     {
         let conn = db.lock();
-        let _ = crate::db::peers::set_app_version(&conn, &peer.id, peer_version.as_deref());
-    }
-
-    // Pull
-    let (pulled, dial) =
-        iroh_client::pull(endpoint, node_id, &seed, &peer.shared_secret, peer.last_pull_at)
-            .await?;
-    let to_cancel = {
-        let conn = db.lock();
-        let (to_cancel, max_pulled) = apply_pulled(&conn, &pulled, peer.last_pull_at);
-        // Trust the peer's clock for the watermark.
-        let watermark = pulled.server_time_ms.max(max_pulled);
-        peers::mark_pulled(&conn, &peer.id, watermark)?;
-        // The dial succeeded — record it, and persist the connection's
-        // live remote addresses as the next dial's seed.
-        let _ = peers::record_sync_ok(
+        sync_log::mark_pushed(&conn, &peer.id, &ack)?;
+        peers::record_sync_ok(
             &conn,
             &peer.id,
-            dial.remote_addrs_json.as_deref(),
+            session.dial.remote_addrs_json.as_deref(),
             crate::models::now_ms(),
-        );
-        to_cancel
-    };
-    // Side effects are the caller's job — the app cancels alerts and pokes
-    // the webview; the headless worker drops these.
-    let effects = effects_from_pulled(&pulled, to_cancel);
-
-    // Push
-    let (rems, tombs, lanes, thts, dns) = {
-        let conn = db.lock();
-        let rs = repo::updated_since(&conn, peer.last_push_at)?;
-        let ts = tombstones::deleted_since(&conn, peer.last_push_at)?;
-        let ls = task_lanes::updated_since(&conn, peer.last_push_at)?;
-        // Watermark selection only — see issues #1/#2.
-        let th = thoughts::updated_since(&conn, peer.last_push_at)?;
-        let dn = day_notes::updated_since(&conn, peer.last_push_at)?;
-        (
-            rs.iter().map(RemoteReminder::from).collect::<Vec<_>>(),
-            ts.iter().map(RemoteTombstone::from).collect::<Vec<_>>(),
-            ls,
-            th.iter().map(RemoteThought::from).collect::<Vec<_>>(),
-            dn.iter().map(RemoteDayNote::from).collect::<Vec<_>>(),
-        )
-    };
-    if rems.is_empty() && tombs.is_empty() && lanes.is_empty() && thts.is_empty() && dns.is_empty()
-    {
-        return Ok(effects);
-    }
-    let max_pushed = rems
-        .iter()
-        .map(|r| r.updated_at)
-        .chain(tombs.iter().map(|t| t.deleted_at))
-        .chain(lanes.iter().map(|l| l.updated_at))
-        .chain(thts.iter().map(|t| t.updated_at))
-        .chain(dns.iter().map(|n| n.updated_at))
-        .max()
-        .unwrap_or(peer.last_push_at);
-    let set = ChangeSet {
-        server_time_ms: crate::models::now_ms(),
-        reminders: rems,
-        tombstones: tombs,
-        lanes,
-        thoughts: thts,
-        day_notes: dns,
-    };
-    let (resp, _push_dial) =
-        iroh_client::push(endpoint, node_id, &seed, &peer.shared_secret, set).await?;
-    {
-        let conn = db.lock();
-        let watermark = resp.server_time_ms.max(max_pushed);
-        peers::mark_pushed(&conn, &peer.id, watermark)?;
+        )?;
     }
     log::debug!(
-        "synced with {}: pulled {}r/{}t/{}l/{}th/{}dn, pushed {}r/{}t/{}l/{}th/{}dn",
+        "synced with {}: one connection, {}ms dial, path={}",
         peer.name,
-        pulled.reminders.len(),
-        pulled.tombstones.len(),
-        pulled.lanes.len(),
-        pulled.thoughts.len(),
-        pulled.day_notes.len(),
-        resp.accepted_reminders,
-        resp.accepted_tombstones,
-        resp.accepted_lanes,
-        resp.accepted_thoughts,
-        resp.accepted_day_notes,
+        session.dial.duration_ms,
+        if session.dial.used_relay {
+            "relay"
+        } else {
+            "direct"
+        }
     );
-    Ok(effects)
+    Ok(())
 }
 
 /// One pass with no app process: same peer walk, same per-peer budget,
@@ -711,7 +556,11 @@ pub async fn run_one_pass_headless(
     db: &Arc<Mutex<Connection>>,
     endpoint: &Endpoint,
 ) -> PassOutcome {
-    const NONE: PassOutcome = PassOutcome { attempted: 0, failed: 0, skipped: 0 };
+    const NONE: PassOutcome = PassOutcome {
+        attempted: 0,
+        failed: 0,
+        skipped: 0,
+    };
     if !crate::sync::read_enabled(db) {
         return NONE;
     }
@@ -734,7 +583,7 @@ pub async fn run_one_pass_headless(
         if peer.iroh_node_id.is_none() {
             skipped += 1;
         }
-        let fut = async { sync_one_core(db, endpoint, &[], &peer).await.map(|_| ()) };
+        let fut = async { sync_one_core(db, endpoint, &[], &peer, |_| {}).await };
         match with_peer_timeout(fut, SYNC_PEER_TIMEOUT).await {
             PeerSyncResult::Ok => {}
             PeerSyncResult::Failed(e) => {
@@ -755,28 +604,24 @@ pub async fn run_one_pass_headless(
                 let _ = peers::record_sync_err(
                     &conn,
                     &peer.id,
-                    "timed out after 10s — peer unreachable",
+                    "sync pass exceeded 30s; retrying",
                     crate::models::now_ms(),
                 );
             }
         }
     }
-    PassOutcome { attempted, failed, skipped }
-}
-
-/// Reminders in these states should silence any local alert that's still ringing.
-fn silences_alert(state: ReminderState) -> bool {
-    matches!(
-        state,
-        ReminderState::Dismissed | ReminderState::Snoozed | ReminderState::Completed
-    )
+    PassOutcome {
+        attempted,
+        failed,
+        skipped,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_pulled, effects_from_pulled, should_self_test, with_peer_timeout, PeerSyncResult,
-        FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, SELF_TEST_COOLDOWN, SYNC_PEER_TIMEOUT,
+        should_self_test, with_peer_timeout, PeerSyncResult, FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT,
+        SELF_TEST_COOLDOWN, SYNC_PEER_TIMEOUT,
     };
     use crate::error::{AppError, AppResult};
     use crate::sync::types::{ChangeSet, RemoteDayNote};
@@ -804,7 +649,10 @@ mod tests {
     #[test]
     fn a_brief_run_of_failures_is_not_enough_to_suspect_ourselves() {
         assert!(!should_self_test(0, None));
-        assert!(!should_self_test(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT - 1, None));
+        assert!(!should_self_test(
+            FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT - 1,
+            None
+        ));
     }
 
     /// Once failures persist, spend one self-test to find out whose fault
@@ -812,8 +660,14 @@ mod tests {
     /// decides whether to ask.
     #[test]
     fn a_sustained_run_of_failures_earns_a_self_test() {
-        assert!(should_self_test(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT, None));
-        assert!(should_self_test(FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT + 100, None));
+        assert!(should_self_test(
+            FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT,
+            None
+        ));
+        assert!(should_self_test(
+            FAILED_PASSES_BEFORE_ENDPOINT_SUSPECT + 100,
+            None
+        ));
     }
 
     /// The cooldown is what keeps an asleep peer cheap. Every pass fails
@@ -865,12 +719,7 @@ mod tests {
         assert!(matches!(outcome, PeerSyncResult::Failed(_)));
     }
 
-    /// This is the production path v0.10.0 actually wires for day notes —
-    /// `apply_pulled` + `effects_from_pulled`, exercised here directly —
-    /// unlike the mesh test in `sync::ops`, which only exercises the
-    /// responder-side `apply_set` test helper. A `ChangeSet` carrying only
-    /// a day note must still land in the DB and must flip exactly one
-    /// flag: the day panel's own, not the reminders board's.
+    /// A committed day-note batch refreshes only its own view.
     #[test]
     fn a_pulled_day_note_applies_and_flips_only_its_own_flag() {
         let conn = test_conn();
@@ -882,9 +731,11 @@ mod tests {
             updated_at: 2,
         });
 
-        let (to_cancel, max_pulled) = apply_pulled(&conn, &set, 0);
-        assert!(to_cancel.is_empty(), "a day note never cancels an alert");
-        assert_eq!(max_pulled, 2, "watermark advances to the note's updated_at");
+        let effects = crate::sync::storage::apply(&conn, &set).unwrap();
+        assert!(
+            effects.to_cancel.is_empty(),
+            "a day note never cancels an alert"
+        );
         assert_eq!(
             crate::db::day_notes::get(&conn, "2026-08-23")
                 .unwrap()
@@ -893,7 +744,6 @@ mod tests {
             "pulled from a peer"
         );
 
-        let effects = effects_from_pulled(&set, to_cancel);
         assert!(effects.day_notes_changed, "the day panel must refresh");
         assert!(
             !effects.reminders_changed,
@@ -903,17 +753,15 @@ mod tests {
     }
 
     /// An empty pull is the common case — nothing changed since last time —
-    /// and must not fire any refresh event, nor move the watermark.
+    /// and must not fire any refresh event.
     #[test]
     fn an_empty_pull_sets_no_effects() {
         let conn = test_conn();
         let set = empty_change_set();
 
-        let (to_cancel, max_pulled) = apply_pulled(&conn, &set, 100);
-        assert!(to_cancel.is_empty());
-        assert_eq!(max_pulled, 100, "watermark is unchanged with nothing pulled");
+        let effects = crate::sync::storage::apply(&conn, &set).unwrap();
+        assert!(effects.to_cancel.is_empty());
 
-        let effects = effects_from_pulled(&set, to_cancel);
         assert!(!effects.reminders_changed);
         assert!(!effects.thoughts_changed);
         assert!(!effects.day_notes_changed);

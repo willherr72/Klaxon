@@ -17,7 +17,7 @@ use tauri::AppHandle;
 use crate::alerts;
 use crate::db::{day_notes, reminders as repo, task_lanes, thoughts, tombstones};
 use crate::error::AppResult;
-use crate::models::{now_ms, ReminderState};
+use crate::models::now_ms;
 use crate::sync::types::{
     ChangeSet, PingResponse, PushResponse, RemoteDayNote, RemoteReminder, RemoteThought,
     RemoteTombstone,
@@ -72,106 +72,25 @@ pub fn push(
     app: Option<&AppHandle>,
     set: ChangeSet,
 ) -> AppResult<PushResponse> {
-    let mut accepted_reminders = 0usize;
-    let mut accepted_tombstones = 0usize;
-    let mut accepted_lanes = 0usize;
-    let mut accepted_thoughts = 0usize;
-    let mut accepted_day_notes = 0usize;
-    let mut to_cancel: Vec<String> = Vec::new();
-
-    {
+    let applied = {
         let conn = db.lock();
-        // Lanes first — a reminder arriving with a new task_lane_id has
-        // to have that lane already present in the table for the FK
-        // story to be intuitive. With nullable FK and no actual SQL
-        // constraint this isn't strictly required, but ordering reads
-        // better in logs.
-        for lane in &set.lanes {
-            match task_lanes::apply_remote(&conn, lane) {
-                Ok(true) => accepted_lanes += 1,
-                Ok(false) => {}
-                Err(e) => log::warn!("apply remote lane {}: {e}", lane.id),
-            }
-        }
-
-        for r in &set.reminders {
-            match repo::apply_remote(&conn, r) {
-                Ok(true) => {
-                    accepted_reminders += 1;
-                    if matches!(
-                        r.state,
-                        ReminderState::Dismissed
-                            | ReminderState::Snoozed
-                            | ReminderState::Completed
-                    ) {
-                        to_cancel.push(r.id.clone());
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => log::warn!("apply remote reminder {}: {e}", r.id),
-            }
-        }
-
-        for t in &set.thoughts {
-            match thoughts::apply_remote(&conn, t) {
-                Ok(true) => accepted_thoughts += 1,
-                Ok(false) => {}
-                Err(e) => log::warn!("apply remote thought {}: {e}", t.id),
-            }
-        }
-
-        for n in &set.day_notes {
-            match day_notes::apply_remote(&conn, n) {
-                Ok(true) => accepted_day_notes += 1,
-                Ok(false) => {}
-                Err(e) => log::warn!("apply remote day note {}: {e}", n.day),
-            }
-        }
-
-        for t in &set.tombstones {
-            match tombstones::apply_remote(&conn, &t.id, t.deleted_at) {
-                Ok(()) => {
-                    accepted_tombstones += 1;
-                    to_cancel.push(t.id.clone());
-                    // A tombstone may refer to a reminder, a lane, or a
-                    // thought (all three share the tombstones table).
-                    // `tombstones::apply_remote` handles reminders and
-                    // thoughts; lanes we drop here.
-                    let _ = task_lanes::delete(&conn, &t.id);
-                }
-                Err(e) => log::warn!("apply remote tombstone {}: {e}", t.id),
-            }
-        }
-    }
-
+        super::storage::apply(&conn, &set)?
+    };
     if let Some(app) = app {
-        for id in to_cancel {
-            alerts::cancel_alert(app, &id);
+        for id in &applied.to_cancel {
+            alerts::cancel_alert(app, id);
         }
-        if accepted_reminders > 0
-            || accepted_tombstones > 0
-            || accepted_lanes > 0
-            || accepted_thoughts > 0
-            || accepted_day_notes > 0
-        {
+        if applied.reminders_changed {
             crate::sync::task::emit_reminders_changed(app);
         }
-        if accepted_thoughts > 0 || accepted_tombstones > 0 {
+        if applied.thoughts_changed {
             crate::sync::task::emit_thoughts_changed(app);
         }
-        if accepted_day_notes > 0 {
+        if applied.day_notes_changed {
             crate::sync::task::emit_day_notes_changed(app);
         }
     }
-
-    Ok(PushResponse {
-        server_time_ms: now_ms(),
-        accepted_reminders,
-        accepted_tombstones,
-        accepted_lanes,
-        accepted_thoughts,
-        accepted_day_notes,
-    })
+    Ok(applied.response)
 }
 
 #[cfg(test)]
@@ -189,29 +108,9 @@ mod tests {
         Arc::new(Mutex::new(crate::db::open(p).unwrap()))
     }
 
-    /// `ops::push` minus the tauri plumbing. Referencing `push` from
-    /// test code links the AppHandle emit chain into the test binary,
-    /// which trips the Windows loader (STATUS_ENTRYPOINT_NOT_FOUND —
-    /// same landmine documented in iroh_handler.rs). Same apply_remote
-    /// family, same lanes-first order, so the sync semantics under test
-    /// are identical.
+    // Exercise the production transactional operation without linking UI effects.
     fn apply_set(db: &Arc<Mutex<Connection>>, set: &ChangeSet) {
-        let conn = db.lock();
-        for lane in &set.lanes {
-            task_lanes::apply_remote(&conn, lane).unwrap();
-        }
-        for r in &set.reminders {
-            repo::apply_remote(&conn, r).unwrap();
-        }
-        for t in &set.thoughts {
-            thoughts::apply_remote(&conn, t).unwrap();
-        }
-        for n in &set.day_notes {
-            day_notes::apply_remote(&conn, n).unwrap();
-        }
-        for t in &set.tombstones {
-            tombstones::apply_remote(&conn, &t.id, t.deleted_at).unwrap();
-        }
+        super::super::storage::apply(&db.lock(), set).unwrap();
     }
 
     /// Issue #2's design guarantee: forwarding is carried entirely by
@@ -255,7 +154,10 @@ mod tests {
             crate::db::task_lanes::insert(&conn, &lane).unwrap();
             let t = crate::db::thoughts::create(
                 &conn,
-                ThoughtCreate { body: "an idea".into(), tags: vec![] },
+                ThoughtCreate {
+                    body: "an idea".into(),
+                    tags: vec![],
+                },
             )
             .unwrap();
             let task = crate::db::reminders::create(
@@ -304,11 +206,16 @@ mod tests {
                 "tombstone applied on C"
             );
             assert!(
-                crate::db::task_lanes::list_all(&conn).unwrap().iter().any(|l| l.id == lane_id),
+                crate::db::task_lanes::list_all(&conn)
+                    .unwrap()
+                    .iter()
+                    .any(|l| l.id == lane_id),
                 "lane present on C"
             );
             assert_eq!(
-                crate::db::thoughts::get_by_id(&conn, &thought_id).unwrap().body,
+                crate::db::thoughts::get_by_id(&conn, &thought_id)
+                    .unwrap()
+                    .body,
                 "an idea"
             );
             let got_task = crate::db::reminders::get_by_id(&conn, &task_id).unwrap();

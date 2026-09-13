@@ -1,15 +1,17 @@
 //! Peer-to-peer sync over iroh.
 //!
-//! Each Klaxon instance runs an iroh `Endpoint` bound on startup. Two
-//! ALPNs are accepted on it:
+//! Each Klaxon instance runs an iroh `Endpoint` bound on startup. Both
+//! sync versions and the pairing protocol are accepted on it:
 //!
-//!   - `klaxon/sync/0` — authenticated RPC (Ping / Pull / Push)
+//!   - `klaxon/sync/1` — versioned revision delivery
+//!   - `klaxon/sync/0` — legacy version diagnostics and update errors
 //!   - `klaxon/pair/0` — pre-auth pair handshake
 //!
 //! Discovery happens via mDNS on the LAN; iroh's relay network handles
 //! the cross-network reachability case. Auth is a per-pair shared
 //! secret established during pairing.
 
+pub mod coordinator;
 pub mod discovery;
 pub mod iroh_client;
 pub mod iroh_handler;
@@ -17,6 +19,8 @@ pub mod iroh_node;
 pub mod ops;
 pub mod pair_handler;
 pub mod proto;
+pub mod service;
+pub mod storage;
 pub mod task;
 pub mod trigger;
 pub mod types;
@@ -53,7 +57,10 @@ pub fn read_identity(db: &Arc<Mutex<Connection>>) -> DeviceIdentity {
         .flatten()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Klaxon".to_string());
-    DeviceIdentity { device_id, device_name }
+    DeviceIdentity {
+        device_id,
+        device_name,
+    }
 }
 
 pub fn read_enabled(db: &Arc<Mutex<Connection>>) -> bool {
@@ -98,4 +105,3 @@ pub fn confirmation_code(
     let n = u32::from_be_bytes(bytes) % 1_000_000;
     format!("{:03}-{:03}", n / 1000, n % 1000)
 }
-

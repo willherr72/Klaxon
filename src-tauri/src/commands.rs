@@ -639,18 +639,12 @@ pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<
     Ok(())
 }
 
-/// Run one sync pass immediately. Frontend calls this when the mobile
-/// app comes back to the foreground so the user doesn't have to wait
-/// up to SYNC_INTERVAL (20s) before seeing fresh data from peers.
+/// Queue an immediate sync through the scheduler. Foreground and manual
+/// requests coalesce with writes and cannot race a worker's outgoing pass.
 #[tauri::command]
-pub async fn sync_now(app: AppHandle) -> AppResult<()> {
-    use tauri::Manager;
-    let db = {
-        let st: State<'_, AppState> = app.state();
-        st.db.clone()
-    };
-    crate::sync::task::run_one_pass(&db, &app).await;
-    Ok(())
+pub fn sync_now(state: State<'_, AppState>) -> AppResult<()> {
+    state.sync_nudge.send(crate::sync::trigger::Nudge::Resume)
+        .map_err(|_| AppError::Invalid("sync scheduler is unavailable".into()))
 }
 
 #[tauri::command]

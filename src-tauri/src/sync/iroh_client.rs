@@ -1,199 +1,215 @@
-//! Client side of the v0.3 RPC over iroh streams.
-//!
-//! Given a local `Endpoint` and a paired peer's `iroh_node_id` +
-//! `shared_secret`, this module dials the peer on the `klaxon/sync/0`
-//! ALPN, opens a bidi stream, writes one `RpcEnvelope`, and reads one
-//! `RpcResponse`. Connections are one-shot for now — every call dials
-//! fresh. Phase 3b can cache `Connection` handles on the sync task once
-//! we measure the overhead matters.
-
+//! One version-negotiated Iroh connection per sync pass, with one stream per RPC.
+use crate::db::sync_log::{Batch, Cursor};
+use crate::error::{AppError, AppResult};
+use crate::sync::proto::{
+    self, PairAck, PairOffer, RpcEnvelope, RpcRequest, RpcResponse, ALPN_LEGACY, ALPN_PAIR,
+    ALPN_SYNC,
+};
+use crate::sync::types::PingResponse;
+use iroh::endpoint::Connection;
+use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
 use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use iroh::{Endpoint, EndpointAddr, EndpointId, TransportAddr};
-
-use crate::error::{AppError, AppResult};
-use crate::sync::proto::{
-    self, PairAck, PairOffer, RpcEnvelope, RpcRequest, RpcResponse, ALPN_PAIR, ALPN_SYNC,
-};
-use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
-
-// A sync attempt is hello → pull → push, each dialing fresh, all inside
-// `sync::task::SYNC_PEER_TIMEOUT` (10s). `hello` spends up to HELLO_TIMEOUT
-// first, so the budget left for the next dial is 10 - 3 = 7s; at 5s the
-// specific iroh error lands in the log before the outer cap can flatten it
-// into the generic "peer unreachable". That flattening is why the
-// 2026-08-12..14 incident ran 42 hours without one line saying what iroh
-// actually objected to. A dial that hasn't landed in 5s was already doomed
-// under the old 10s cap, so this costs no real patience.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
-const RPC_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Pairing is NOT under the per-peer sync budget: it is a once-per-device,
-/// user-initiated action, typically with both devices cold and on different
-/// networks — the case where a short dial timeout produces a spurious
-/// failure the user reads as "pairing is broken".
+const RPC_TIMEOUT: Duration = Duration::from_secs(8);
 const PAIR_DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// What actually happened on the wire for one RPC dial. Logged for
-/// diagnostics and, on success, persisted so the next dial can skip
-/// address lookup entirely.
 pub struct DialInfo {
     pub duration_ms: u64,
     pub used_relay: bool,
-    /// JSON `Vec<TransportAddr>` of the connection's live remote paths —
-    /// the freshest possible last-known-good addresses.
     pub remote_addrs_json: Option<String>,
 }
 
-/// Make a single RPC call to the peer at `node_id`, authenticating with
-/// `shared_secret`. Returns the decoded `RpcResponse` plus the dial
-/// diagnostics. Caller decides whether `Error(_)` is fatal or expected
-/// (e.g. "unauthorized").
-async fn call(
-    endpoint: &Endpoint,
-    node_id: &str,
-    seed_addrs: &[TransportAddr],
-    shared_secret: &str,
-    request: RpcRequest,
-) -> AppResult<(RpcResponse, DialInfo)> {
-    let id = EndpointId::from_str(node_id)
-        .map_err(|e| AppError::Invalid(format!("invalid iroh node_id {node_id:?}: {e}")))?;
-
-    // Seed the dial with everything we know: persisted last-known-good
-    // addresses plus mDNS-fresh LAN addresses. With any usable seed, the
-    // dial skips iroh's address lookup — the stage we've watched fail
-    // ("Address Lookup failed: All address lookup services failed").
-    // With no seed it falls back to lookup, exactly as before.
-    let addr = EndpointAddr {
-        id,
-        addrs: seed_addrs.iter().cloned().collect::<BTreeSet<_>>(),
-    };
-
-    let started = Instant::now();
-    let conn = tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr, ALPN_SYNC))
-        .await
-        .map_err(|_| AppError::Invalid(format!("iroh connect timed out after {DIAL_TIMEOUT:?}")))?
-        .map_err(|e| AppError::Invalid(format!("iroh connect failed: {e}")))?;
-    let duration_ms = started.elapsed().as_millis() as u64;
-
-    // Harvest the live paths before doing any RPC — cheap, and it tells us
-    // direct-vs-relay for the log line plus fresh addresses to persist.
-    let path_info = conn.paths();
-    let paths: Vec<TransportAddr> = path_info
-        .iter()
-        .map(|p| p.remote_addr().clone())
-        .collect();
-    let used_relay = !path_info.is_empty() && path_info.iter().all(|p| p.is_relay());
-    let dial = DialInfo {
-        duration_ms,
-        used_relay,
-        remote_addrs_json: serde_json::to_string(&paths)
-            .ok()
-            .filter(|_| !paths.is_empty()),
-    };
-    log::debug!(
-        "dial {}: {}ms, path={}, seeds={}",
-        crate::sync::iroh_node::short(node_id),
-        duration_ms,
-        if used_relay { "relay" } else { "direct" },
-        seed_addrs.len(),
-    );
-
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .map_err(|e| AppError::Invalid(format!("open bi: {e}")))?;
-
-    let env = RpcEnvelope {
-        secret: shared_secret.to_string(),
-        request,
-    };
-    proto::write_frame(&mut send, &env).await?;
-    let _ = send.finish();
-
-    let resp: RpcResponse = tokio::time::timeout(RPC_TIMEOUT, proto::read_frame(&mut recv))
-        .await
-        .map_err(|_| AppError::Invalid(format!("rpc read timed out after {RPC_TIMEOUT:?}")))??;
-
-    // Drop the connection cleanly. We don't reuse it for phase 3a.
-    conn.close(0u32.into(), b"done");
-
-    Ok((resp, dial))
+pub struct Session {
+    conn: Connection,
+    secret: String,
+    pub peer_version: String,
+    pub dial: DialInfo,
 }
 
-/// Convenience: Ping the peer and return its PingResponse, mapping the
-/// auth/unimplemented error variants to AppError so callers don't have
-/// to unwrap themselves.
-/// v0.7.1 version exchange. `None` = the peer predates Hello (its
-/// handler drops the stream on the unknown variant, which surfaces here
-/// as a read error or timeout) — never an error, and the sync pass
-/// continues on the normal verbs regardless.
-pub async fn hello(
-    endpoint: &Endpoint,
-    node_id: &str,
-    seed_addrs: &[TransportAddr],
-    shared_secret: &str,
-) -> Option<String> {
-    let req = RpcRequest::Hello {
-        app_version: env!("CARGO_PKG_VERSION").into(),
-    };
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        call(endpoint, node_id, seed_addrs, shared_secret, req),
-    )
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.conn.close(0u32.into(), b"sync pass ended");
+    }
+}
+
+async fn request(
+    conn: &Connection,
+    secret: &str,
+    req: RpcRequest,
+    phase: &str,
+) -> AppResult<RpcResponse> {
+    tokio::time::timeout(RPC_TIMEOUT, async {
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| AppError::Invalid(format!("{phase}: open stream failed: {e}")))?;
+        proto::write_frame(
+            &mut send,
+            &RpcEnvelope {
+                secret: secret.into(),
+                request: req,
+            },
+        )
+        .await?;
+        send.finish()
+            .map_err(|e| AppError::Invalid(format!("{phase}: finish request: {e}")))?;
+        let response: RpcResponse = proto::read_frame(&mut recv).await?;
+        match response {
+            RpcResponse::Error(message) => Err(AppError::Invalid(format!("{phase}: {message}"))),
+            response => Ok(response),
+        }
+    })
     .await
-    {
-        Ok(Ok((RpcResponse::Hello { app_version }, _))) => Some(app_version),
-        _ => None,
+    .map_err(|_| AppError::Invalid(format!("{phase} timed out after 8s; retrying")))?
+}
+
+impl Session {
+    pub async fn connect(
+        endpoint: &Endpoint,
+        node_id: &str,
+        seeds: &[TransportAddr],
+        secret: &str,
+    ) -> AppResult<Self> {
+        let id = EndpointId::from_str(node_id)
+            .map_err(|e| AppError::Invalid(format!("invalid endpoint id: {e}")))?;
+        let addr = EndpointAddr {
+            id,
+            addrs: seeds.iter().cloned().collect::<BTreeSet<_>>(),
+        };
+        let started = Instant::now();
+        let connected =
+            tokio::time::timeout(DIAL_TIMEOUT, endpoint.connect(addr.clone(), ALPN_SYNC)).await;
+        let conn = match connected {
+            Ok(Ok(conn)) => conn,
+            failed => {
+                // Only a successful legacy exchange identifies an old app. An offline
+                // phone remains a transport error, never a guessed version mismatch.
+                let legacy = tokio::time::timeout(Duration::from_secs(3), async {
+                    let conn = endpoint.connect(addr, ALPN_LEGACY).await.ok()?;
+                    let response = request(
+                        &conn,
+                        secret,
+                        RpcRequest::Hello {
+                            app_version: env!("CARGO_PKG_VERSION").into(),
+                        },
+                        "version check",
+                    )
+                    .await;
+                    conn.close(0u32.into(), b"version check finished");
+                    match response.ok()? {
+                        RpcResponse::Hello { app_version } => Some(app_version),
+                        _ => None,
+                    }
+                })
+                .await;
+                if let Ok(Some(version)) = legacy {
+                    return Err(AppError::Invalid(format!(
+                        "Peer runs Klaxon {version}. {}",
+                        proto::UPDATE_REQUIRED
+                    )));
+                }
+                let detail = match failed {
+                    Ok(Err(e)) => e.to_string(),
+                    _ => "connect timed out after 5s".into(),
+                };
+                return Err(AppError::Invalid(format!("Iroh connection unavailable: {detail}. The other device may be asleep or offline; retrying.")));
+            }
+        };
+        let path_info = conn.paths();
+        let paths: Vec<TransportAddr> = path_info.iter().map(|p| p.remote_addr().clone()).collect();
+        let dial = DialInfo {
+            duration_ms: started.elapsed().as_millis() as u64,
+            used_relay: !path_info.is_empty() && path_info.iter().all(|p| p.is_relay()),
+            remote_addrs_json: serde_json::to_string(&paths)
+                .ok()
+                .filter(|_| !paths.is_empty()),
+        };
+        let mut session = Self {
+            conn,
+            secret: secret.into(),
+            peer_version: String::new(),
+            dial,
+        };
+        let hello = request(
+            &session.conn,
+            &session.secret,
+            RpcRequest::HelloV1 {
+                protocol: proto::PROTOCOL_VERSION,
+                app_version: env!("CARGO_PKG_VERSION").into(),
+            },
+            "protocol negotiation",
+        )
+        .await?;
+        match hello {
+            RpcResponse::HelloV1 {
+                protocol,
+                app_version,
+            } => {
+                proto::validate_protocol(protocol)?;
+                session.peer_version = app_version;
+            }
+            _ => {
+                return Err(AppError::Invalid(format!(
+                    "Unexpected protocol negotiation response. {}",
+                    proto::UPDATE_REQUIRED
+                )))
+            }
+        }
+        Ok(session)
+    }
+
+    pub async fn pull(&self, since: Option<Cursor>) -> AppResult<Batch> {
+        match request(
+            &self.conn,
+            &self.secret,
+            RpcRequest::PullV1 { since },
+            "receive changes",
+        )
+        .await?
+        {
+            RpcResponse::PullV1(batch) => Ok(batch),
+            _ => Err(AppError::Invalid(
+                "Unexpected receive-changes response".into(),
+            )),
+        }
+    }
+
+    pub async fn push(&self, batch: Batch) -> AppResult<Cursor> {
+        let expected = batch.cursor.clone();
+        match request(
+            &self.conn,
+            &self.secret,
+            RpcRequest::PushV1(batch),
+            "send changes",
+        )
+        .await?
+        {
+            RpcResponse::PushV1 { cursor }
+                if cursor.epoch == expected.epoch && cursor.revision == expected.revision =>
+            {
+                Ok(cursor)
+            }
+            _ => Err(AppError::Invalid(
+                "Peer did not acknowledge the transmitted delivery cursor; changes will be retried"
+                    .into(),
+            )),
+        }
     }
 }
 
 pub async fn ping(
     endpoint: &Endpoint,
     node_id: &str,
-    seed_addrs: &[TransportAddr],
-    shared_secret: &str,
+    seeds: &[TransportAddr],
+    secret: &str,
 ) -> AppResult<PingResponse> {
-    match call(endpoint, node_id, seed_addrs, shared_secret, RpcRequest::Ping).await? {
-        (RpcResponse::Pong(p), _) => Ok(p),
-        (RpcResponse::Error(msg), _) => {
-            Err(AppError::Invalid(format!("peer rejected ping: {msg}")))
-        }
-        (other, _) => Err(AppError::Invalid(format!("expected Pong, got {other:?}"))),
-    }
-}
-
-pub async fn pull(
-    endpoint: &Endpoint,
-    node_id: &str,
-    seed_addrs: &[TransportAddr],
-    shared_secret: &str,
-    since: i64,
-) -> AppResult<(ChangeSet, DialInfo)> {
-    match call(endpoint, node_id, seed_addrs, shared_secret, RpcRequest::Pull { since }).await? {
-        (RpcResponse::Pull(cs), dial) => Ok((cs, dial)),
-        (RpcResponse::Error(msg), _) => {
-            Err(AppError::Invalid(format!("peer rejected pull: {msg}")))
-        }
-        (other, _) => Err(AppError::Invalid(format!("expected Pull, got {other:?}"))),
-    }
-}
-
-pub async fn push(
-    endpoint: &Endpoint,
-    node_id: &str,
-    seed_addrs: &[TransportAddr],
-    shared_secret: &str,
-    set: ChangeSet,
-) -> AppResult<(PushResponse, DialInfo)> {
-    match call(endpoint, node_id, seed_addrs, shared_secret, RpcRequest::Push(set)).await? {
-        (RpcResponse::Push(ack), dial) => Ok((ack, dial)),
-        (RpcResponse::Error(msg), _) => {
-            Err(AppError::Invalid(format!("peer rejected push: {msg}")))
-        }
-        (other, _) => Err(AppError::Invalid(format!("expected Push, got {other:?}"))),
+    let session = Session::connect(endpoint, node_id, seeds, secret).await?;
+    match request(&session.conn, &session.secret, RpcRequest::Ping, "ping").await? {
+        RpcResponse::Pong(pong) => Ok(pong),
+        _ => Err(AppError::Invalid("Unexpected ping response".into())),
     }
 }
 
@@ -221,7 +237,9 @@ pub async fn pair_initiate(
     let conn = tokio::time::timeout(PAIR_DIAL_TIMEOUT, endpoint.connect(id, ALPN_PAIR))
         .await
         .map_err(|_| {
-            AppError::Invalid(format!("pair connect timed out after {PAIR_DIAL_TIMEOUT:?}"))
+            AppError::Invalid(format!(
+                "pair connect timed out after {PAIR_DIAL_TIMEOUT:?}"
+            ))
         })?
         .map_err(|e| AppError::Invalid(format!("pair connect failed: {e}")))?;
 

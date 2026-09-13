@@ -5,6 +5,36 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3] — 2026-09-13
+
+Update both devices to resume syncing with the new protocol. Existing data
+and pairings are preserved; upgraded devices automatically reconcile their
+saved changes, including changes missed by earlier timestamp tracking.
+
+### Fixed
+
+- Sync delivery no longer uses device clocks to decide which changes to
+  send. Edits made during a push and older changes forwarded through another
+  device remain eligible for delivery.
+- Received batches and their delivery position commit together. A failed
+  database write rolls back the batch and is retried instead of acknowledged.
+- Sync success now means both receiving and sending completed. Received
+  changes still refresh the UI and cancel relevant alerts if sending fails.
+- Android resume notifies Iroh, and repeated foreground failures can trigger
+  a bounded endpoint health check and recovery without losing pairings.
+- Scheduled sync and background workers share a coordinator to avoid
+  overlapping outgoing passes and competing endpoint lifetimes.
+
+### Changed
+
+- Each sync pass reuses one Iroh connection for version negotiation,
+  receiving, and sending, with bounded request deadlines.
+- Incompatible app versions receive an update message. Malformed requests
+  return an error instead of silently closing the response stream; transport
+  errors distinguish unavailable peers from protocol and storage failures.
+- Added migration, interrupted-write, forwarding, coordination, and real
+  Iroh transport regression coverage.
+
 ## [0.10.2] — 2026-09-13
 
 Update both devices to receive recurring reminders reliably. Existing data

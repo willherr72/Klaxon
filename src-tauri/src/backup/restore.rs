@@ -37,9 +37,17 @@ pub fn apply_staged_if_any(app_dir: &Path) -> AppResult<bool> {
         return Ok(false);
     }
     let staging = app_dir.join(STAGING);
+    // A restore rewinds revision numbers. Prepare a fresh delivery history
+    // before replacing live files, so a crash cannot expose the old epoch.
+    // Also handles a READY directory staged by a pre-v0.10.3 app.
+    {
+        let conn = crate::db::open(&staging.join("klaxon.db"))?;
+        crate::db::sync_log::reset_after_restore(&conn)?;
+        // All preparation must be in the main file before it is renamed.
+        conn.pragma_update(None, "journal_mode", "DELETE")?;
+    }
     let undo = app_dir.join(UNDO);
-    std::fs::create_dir_all(&undo)
-        .map_err(|e| AppError::Invalid(format!("create undo: {e}")))?;
+    std::fs::create_dir_all(&undo).map_err(|e| AppError::Invalid(format!("create undo: {e}")))?;
 
     for name in ["klaxon.db", "klaxon-iroh-secret.bin"] {
         let live = app_dir.join(name);
@@ -75,6 +83,11 @@ mod tests {
     }
 
     fn payload() -> BackupPayload {
+        let source = tmp();
+        let path = source.join("payload.db");
+        drop(crate::db::open(&path).unwrap());
+        let db = std::fs::read(path).unwrap();
+        std::fs::remove_dir_all(source).unwrap();
         BackupPayload {
             manifest: BackupManifest {
                 schema_version: 1,
@@ -82,9 +95,41 @@ mod tests {
                 device_name: "old-laptop".into(),
                 created_ms: 1,
             },
-            db: b"NEW-DB".to_vec(),
+            db,
             iroh_secret: b"NEW-SECRET-32-BYTES-PADDED......".to_vec(),
         }
+    }
+
+    #[test]
+    fn restoring_a_database_starts_a_new_delivery_history() {
+        let source = tmp();
+        let db_path = source.join("klaxon.db");
+        let conn = crate::db::open(&db_path).unwrap();
+        let before = crate::db::sync_log::snapshot(&conn, None).unwrap().cursor;
+        conn.execute("INSERT INTO peers(id,name,shared_secret,created_at) VALUES ('p','phone','preserved',1)", []).unwrap();
+        drop(conn);
+        let mut backup = payload();
+        backup.db = std::fs::read(&db_path).unwrap();
+        let dest = tmp();
+        stage(&dest, &backup).unwrap();
+        apply_staged_if_any(&dest).unwrap();
+        let restored = crate::db::open(&dest.join("klaxon.db")).unwrap();
+        let after = crate::db::sync_log::snapshot(&restored, None)
+            .unwrap()
+            .cursor;
+        assert_ne!(
+            before.epoch, after.epoch,
+            "restored revision numbers must not reuse the prior delivery history"
+        );
+        let secret: String = restored
+            .query_row("SELECT shared_secret FROM peers WHERE id='p'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(secret, "preserved");
+        drop(restored);
+        std::fs::remove_dir_all(source).unwrap();
+        std::fs::remove_dir_all(dest).unwrap();
     }
 
     #[test]
@@ -97,7 +142,16 @@ mod tests {
         assert!(staged_pending(&dir));
         assert!(apply_staged_if_any(&dir).unwrap(), "swap should run");
 
-        assert_eq!(std::fs::read(dir.join("klaxon.db")).unwrap(), b"NEW-DB");
+        let restored = crate::db::open(&dir.join("klaxon.db")).unwrap();
+        assert!(
+            crate::db::sync_log::snapshot(&restored, None)
+                .unwrap()
+                .changes
+                .lanes
+                .len()
+                > 0
+        );
+        drop(restored);
         assert_eq!(
             std::fs::read(dir.join("restore-undo").join("klaxon.db")).unwrap(),
             b"OLD-DB",
@@ -126,7 +180,16 @@ mod tests {
         let dir = tmp();
         stage(&dir, &payload()).unwrap();
         assert!(apply_staged_if_any(&dir).unwrap());
-        assert_eq!(std::fs::read(dir.join("klaxon.db")).unwrap(), b"NEW-DB");
+        let restored = crate::db::open(&dir.join("klaxon.db")).unwrap();
+        assert!(
+            crate::db::sync_log::snapshot(&restored, None)
+                .unwrap()
+                .changes
+                .lanes
+                .len()
+                > 0
+        );
+        drop(restored);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

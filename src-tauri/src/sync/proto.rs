@@ -1,24 +1,28 @@
-//! Klaxon RPC wire protocol for the v0.3 iroh transport.
-//!
-//! Every RPC call rides one bidi stream on the `klaxon/sync/0` ALPN. The
-//! caller writes a single `RpcEnvelope` frame and reads a single
-//! `RpcResponse` frame back — no streaming, no out-of-order pipelining,
-//! one round-trip per call. Auth lives in the envelope as the per-pair
-//! shared secret so the responder can reject anything that isn't from a
-//! paired peer before doing any DB work.
-//!
-//! Phase 2 implements Ping end-to-end and leaves Pull/Push stubbed; the
-//! full sync codepath cuts over to this transport in phase 3.
+//! Length-prefixed Postcard RPC. Versioned delivery uses klaxon/sync/1;
+//! klaxon/sync/0 is retained only for compatibility diagnostics.
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::db::sync_log::{Batch, Cursor};
 use crate::error::{AppError, AppResult};
 use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
 /// ALPN identifier handshook between iroh peers. Bump the suffix when the
 /// envelope shape changes incompatibly.
-pub const ALPN_SYNC: &[u8] = b"klaxon/sync/0";
+pub const ALPN_SYNC: &[u8] = b"klaxon/sync/1";
+pub const ALPN_LEGACY: &[u8] = b"klaxon/sync/0";
+pub const PROTOCOL_VERSION: u16 = 1;
+pub const UPDATE_REQUIRED: &str = "Update Klaxon on both devices to v0.10.3 or later to resume syncing. Your data and pairing are preserved.";
+
+pub fn validate_protocol(version: u16) -> AppResult<()> {
+    if version != PROTOCOL_VERSION {
+        return Err(AppError::Invalid(format!(
+            "Unsupported sync protocol {version}. {UPDATE_REQUIRED}"
+        )));
+    }
+    Ok(())
+}
 
 /// Pre-auth pair-handshake ALPN. Deliberately separate from `ALPN_SYNC`:
 /// pairing has no shared secret yet, so the handler skips secret check —
@@ -68,13 +72,25 @@ pub struct RpcEnvelope {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RpcRequest {
     Ping,
-    Pull { since: i64 },
+    Pull {
+        since: i64,
+    },
     Push(ChangeSet),
     /// v0.7.1: version exchange. Trailing on purpose — postcard tags
     /// variants by index, so older peers decode the earlier variants
     /// unchanged and drop only the one stream carrying a Hello they
     /// can't parse (the handler's per-stream error isolation).
-    Hello { app_version: String },
+    Hello {
+        app_version: String,
+    },
+    HelloV1 {
+        protocol: u16,
+        app_version: String,
+    },
+    PullV1 {
+        since: Option<Cursor>,
+    },
+    PushV1(Batch),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,7 +102,17 @@ pub enum RpcResponse {
     /// the client uses to surface "your shared secret didn't match".
     Error(String),
     /// v0.7.1: version exchange reply. Trailing — see `RpcRequest::Hello`.
-    Hello { app_version: String },
+    Hello {
+        app_version: String,
+    },
+    HelloV1 {
+        protocol: u16,
+        app_version: String,
+    },
+    PullV1(Batch),
+    PushV1 {
+        cursor: Cursor,
+    },
 }
 
 /// Length-prefixed postcard frame. Big-endian u32 length, then the body.
@@ -135,24 +161,27 @@ where
     r.read_exact(&mut buf)
         .await
         .map_err(|e| AppError::Invalid(format!("read frame body: {e}")))?;
-    postcard::from_bytes(&buf).map_err(|e| {
-        // postcard is not self-describing, so a peer running an older
-        // Klaxon sends a ChangeSet with fewer trailing fields than we
-        // expect and the decoder simply runs out of buffer. Between two
-        // devices that were previously syncing fine, that is far and away
-        // the likeliest cause — say so instead of leaking a bare postcard
-        // error the user can do nothing with.
-        log::warn!(
-            "frame decode failed ({e}) — if this peer was previously syncing, \
-             it is most likely running an older Klaxon; upgrade both devices"
-        );
-        AppError::Invalid(format!("postcard decode: {e}"))
-    })
+    let (message, remaining) = postcard::take_from_bytes(&buf)
+        .map_err(|e| AppError::Invalid(format!("sync frame decode failed: {e}")))?;
+    if !remaining.is_empty() {
+        return Err(AppError::Invalid(
+            "sync frame contains unexpected trailing data".into(),
+        ));
+    }
+    Ok(message)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn incompatible_protocol_is_rejected_before_data_exchange() {
+        assert!(validate_protocol(1).is_ok());
+        let err = validate_protocol(2).unwrap_err().to_string();
+        assert!(err.contains("Update"), "{err}");
+        assert!(validate_protocol(0).is_err());
+    }
     use tokio::io::duplex;
 
     #[tokio::test]
@@ -253,7 +282,9 @@ mod tests {
         let (mut a, mut b) = duplex(64 * 1024);
         let req = RpcEnvelope {
             secret: "s".into(),
-            request: RpcRequest::Hello { app_version: "0.7.1".into() },
+            request: RpcRequest::Hello {
+                app_version: "0.7.1".into(),
+            },
         };
         write_frame(&mut a, &req).await.unwrap();
         let got: RpcEnvelope = read_frame(&mut b).await.unwrap();
@@ -261,12 +292,12 @@ mod tests {
             matches!(got.request, RpcRequest::Hello { ref app_version } if app_version == "0.7.1")
         );
 
-        let resp = RpcResponse::Hello { app_version: "0.7.2".into() };
+        let resp = RpcResponse::Hello {
+            app_version: "0.7.2".into(),
+        };
         write_frame(&mut a, &resp).await.unwrap();
         let got: RpcResponse = read_frame(&mut b).await.unwrap();
-        assert!(
-            matches!(got, RpcResponse::Hello { ref app_version } if app_version == "0.7.2")
-        );
+        assert!(matches!(got, RpcResponse::Hello { ref app_version } if app_version == "0.7.2"));
     }
 
     /// Guards the wire-compat invariant that lets 0.7.0 peers keep
@@ -279,10 +310,15 @@ mod tests {
         assert_eq!(ping[0], 0, "Ping must stay variant 0");
         let pull = postcard::to_allocvec(&RpcRequest::Pull { since: 0 }).unwrap();
         assert_eq!(pull[0], 1, "Pull must stay variant 1");
-        let hello = postcard::to_allocvec(&RpcRequest::Hello { app_version: "x".into() }).unwrap();
+        let hello = postcard::to_allocvec(&RpcRequest::Hello {
+            app_version: "x".into(),
+        })
+        .unwrap();
         assert_eq!(hello[0], 3, "Hello is the new trailing variant 3");
-        let hello_resp =
-            postcard::to_allocvec(&RpcResponse::Hello { app_version: "x".into() }).unwrap();
+        let hello_resp = postcard::to_allocvec(&RpcResponse::Hello {
+            app_version: "x".into(),
+        })
+        .unwrap();
         assert_eq!(hello_resp[0], 4, "response Hello is trailing variant 4");
     }
 
@@ -439,5 +475,55 @@ mod tests {
         a.write_all(&huge).await.unwrap();
         let err: AppResult<RpcEnvelope> = read_frame(&mut b).await;
         assert!(err.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_trailing_payload_instead_of_accepting_a_different_schema() {
+        let env = RpcEnvelope {
+            secret: "test".into(),
+            request: RpcRequest::Ping,
+        };
+        let mut body = postcard::to_allocvec(&env).unwrap();
+        body.push(42);
+        let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+        frame.extend(body);
+        let result = read_frame::<_, RpcEnvelope>(&mut frame.as_slice()).await;
+        assert!(
+            result.is_err(),
+            "a frame with unconsumed bytes must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn revision_batch_frame_preserves_epoch_and_cursor() {
+        let changes = ChangeSet {
+            server_time_ms: 500,
+            reminders: vec![],
+            tombstones: vec![],
+            lanes: vec![],
+            thoughts: vec![],
+            day_notes: vec![],
+        };
+        let env = RpcEnvelope {
+            secret: "test".into(),
+            request: RpcRequest::PushV1(Batch {
+                cursor: Cursor {
+                    epoch: "epoch-a".into(),
+                    revision: 42,
+                },
+                changes,
+            }),
+        };
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &env).await.unwrap();
+        let decoded: RpcEnvelope = read_frame(&mut bytes.as_slice()).await.unwrap();
+        match decoded.request {
+            RpcRequest::PushV1(batch) => {
+                assert_eq!(batch.cursor.epoch, "epoch-a");
+                assert_eq!(batch.cursor.revision, 42);
+                assert_eq!(batch.changes.server_time_ms, 500);
+            }
+            _ => panic!("wrong RPC decoded"),
+        }
     }
 }

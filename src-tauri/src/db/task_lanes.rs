@@ -9,7 +9,7 @@
 //! deletes write to the shared `tombstones` table so peers learn to
 //! drop their copy.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
@@ -136,13 +136,24 @@ pub fn update(
 /// the wire value is accepted as
 /// canonical.
 pub fn apply_remote(conn: &Connection, lane: &Lane) -> AppResult<bool> {
+    let deleted: Option<i64> = conn
+        .query_row(
+            "SELECT deleted_at FROM tombstones WHERE id=?1",
+            [&lane.id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if deleted.is_some_and(|clock| clock >= lane.updated_at) {
+        return Ok(false);
+    }
+
     let existing_updated: Option<i64> = conn
         .query_row(
             "SELECT updated_at FROM task_lanes WHERE id = ?1",
             params![lane.id],
             |r| r.get(0),
         )
-        .ok();
+        .optional()?;
     if let Some(existing) = existing_updated {
         if lane.updated_at <= existing {
             return Ok(false);
