@@ -1,0 +1,48 @@
+name: Nightly recovery
+on:
+  schedule:
+    # Scheduling adds no compute charge on standard public-repository runners.
+    - cron: '23 8 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/nightly.yml'
+      - '.github/workflows/android-tests.yml'
+      - 'scripts/android-emulator-test.py'
+      - 'src-tauri/examples/android_sync_peer.rs'
+      - 'src-tauri/examples/sync_recovery.rs'
+      - 'src-tauri/gen/android/app/src/androidTest/**'
+permissions:
+  contents: read
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  android:
+    name: Android upgrade and recovery
+    uses: ./.github/workflows/android-tests.yml
+    with:
+      extended: true
+  transport:
+    name: Durable transport recovery
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.1'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Three-device, restart and restore regressions
+        working-directory: src-tauri
+        timeout-minutes: 10
+        run: cargo run --locked --example sync_recovery

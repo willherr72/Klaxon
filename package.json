@@ -13,6 +13,10 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
+    "verify": "node scripts/verify.mjs",
+    "test:tooling": "node --test scripts/*.test.mjs",
+    "test:sync": "cargo run --locked --manifest-path src-tauri/Cargo.toml --example sync_smoke",
+    "test:recovery": "cargo run --locked --manifest-path src-tauri/Cargo.toml --example sync_recovery",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -1,0 +1,87 @@
+name: Android emulator tests
+on:
+  workflow_call:
+    inputs:
+      extended:
+        description: Include network outage and previous-version upgrade
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/android-build-setup
+        with:
+          targets: x86_64-linux-android
+      - name: Host Iroh peer prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libxdo-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: android-emulator
+      - name: Check out upgrade baseline
+        if: inputs.extended
+        uses: actions/checkout@v4
+        with:
+          ref: v0.10.2
+          path: .ci-baseline
+      - name: Build older APK with this runner's test signing key
+        if: inputs.extended
+        working-directory: .ci-baseline
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run tauri -- android init
+          git restore -- src-tauri/gen/android
+          npm run tauri -- android build --target x86_64 --debug --apk
+          mapfile -t apks < <(find src-tauri/gen/android/app/build/outputs/apk -name '*-debug.apk')
+          [ "${#apks[@]}" -eq 1 ]
+          cp "${apks[0]}" "$RUNNER_TEMP/klaxon-baseline.apk"
+      - run: npm ci
+      - name: Build actual Android app
+        run: |
+          set -euo pipefail
+          npm run tauri -- android init
+          git restore -- src-tauri/gen/android
+          npm run tauri -- android build --target x86_64 --debug --apk
+      - name: Build test instrumentation
+        working-directory: src-tauri/gen/android
+        run: bash ./gradlew :app:assembleUniversalDebugAndroidTest -x :app:rustBuildUniversalDebug
+      - name: Build production Iroh fixture peer
+        working-directory: src-tauri
+        run: cargo build --locked --example android_sync_peer
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Run real sync and lifecycle assertions
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: bash scripts/run-emulator-ci.sh '${{ inputs.extended }}'
+      - name: Keep bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-failure-${{ inputs.extended && 'extended' || 'smoke' }}
+          path: |
+            emulator-results/*.txt
+            emulator-results/*.log
+            emulator-results/results.json
+            src-tauri/gen/android/app/build/reports/androidTests/
+          if-no-files-found: ignore
+          retention-days: 3
