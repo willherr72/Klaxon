@@ -1,70 +1,52 @@
-# CI: Rust/frontend tests, real loopback sync, a zero-warning build, and
-# svelte-check on every push and pull request.
-#
-# Windows runner because Windows is the primary desktop target. The
-# Android build is deliberately NOT here: it needs the NDK toolchain,
-# roughly triples the run, and is exercised locally before every release.
-
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      extended:
+        type: boolean
+        default: false
+permissions:
+  contents: read
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   test:
+    name: Windows validation
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
+        with:
+          toolchain: '1.97.1'
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .node-version
           cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: svelte-check (0 errors)
-        run: npx svelte-check --threshold error
-
-      # Component + logic tests for the frontend. Worth its own gate: every
-      # user-visible bug in the 0.7.5–0.8.2 run lived in Svelte, where
-      # svelte-check only ever proved the types lined up.
-      - name: Frontend tests
-        run: npm test
-
-      - name: Build frontend
-        # tauri::generate_context!() panics at compile time if frontendDist
-        # (../dist) doesn't exist — a fresh checkout has no built frontend.
-        run: npm run build
-
-      - name: cargo test
-        working-directory: src-tauri
-        run: cargo test
-
-      - name: Real sync transport smoke (loopback, no relay)
+      - run: npm ci
+      - name: Shared local and CI verification
+        run: npm run verify
+      - name: Extended release transport recovery
+        if: inputs.extended
         working-directory: src-tauri
         timeout-minutes: 10
-        run: cargo run --locked --example sync_smoke
-
-      - name: Zero-warning build
+        run: cargo run --locked --example sync_recovery
+      - name: Zero-warning Windows build
         working-directory: src-tauri
-        # -D warnings promotes workspace warnings to errors; dependencies
-        # are exempt via cargo's automatic --cap-lints allow.
         env:
           RUSTFLAGS: -D warnings
-        run: cargo build
+        run: cargo build --locked
+  android:
+    name: Android smoke
+    uses: ./.github/workflows/android-tests.yml
+    with:
+      extended: ${{ inputs.extended || false }}

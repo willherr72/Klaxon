@@ -60,3 +60,10 @@ src-tauri/lib/
 dev-launch.err
 dev-launch.out
 
+# Disposable CI fixtures and artifact reports.
+.ci-baseline/
+emulator-results/
+release-artifacts/
+__pycache__/
+*.pyc
+
