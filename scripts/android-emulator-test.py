@@ -7,10 +7,53 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import threading
 import time
 
 PACKAGE = "com.klaxon.app"
 RUNNER = PACKAGE + ".test/androidx.test.runner.AndroidJUnitRunner"
+
+
+class AppLogCapture:
+    """Continuously drain app-UID logs, retaining bounded startup and final output."""
+    LIMIT = 1024 * 1024
+
+    def __init__(self, serial, uid, path):
+        self.path = path
+        self.head = bytearray()
+        self.tail = bytearray()
+        self.closed = False
+        self.process = subprocess.Popen(
+            ["adb", "-s", serial, "logcat", f"--uid={uid}", "-v", "threadtime"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        self.reader = threading.Thread(target=self.drain, daemon=True)
+        self.reader.start()
+
+    def drain(self):
+        while True:
+            chunk = self.process.stdout.read(8192)
+            if not chunk:
+                return
+            available = self.LIMIT - len(self.head)
+            self.head.extend(chunk[:available])
+            self.tail.extend(chunk[available:])
+            if len(self.tail) > self.LIMIT:
+                del self.tail[:-self.LIMIT]
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
+        self.reader.join(timeout=5)
+        separator = b"\n--- end of retained startup; retained final logs follow ---\n" if self.tail else b""
+        self.path.write_bytes(self.head + separator + self.tail)
 
 
 def require_test_success(output):
@@ -26,6 +69,7 @@ class Harness:
         self.args = args
         self.output = args.output.resolve()
         self.peer = None
+        self.app_log = None
         self.events = []
 
     def adb(self, *args, timeout=45, check=True):
@@ -116,6 +160,11 @@ class Harness:
                 current_version = self.installed_version()
                 self.install(self.args.test_apk)
                 self.adb("logcat", "-c")
+                metadata = self.adb("shell", "dumpsys", "package", PACKAGE)
+                uid = re.search(r"\buserId=(\d+)\b", metadata)
+                if not uid:
+                    raise RuntimeError("Cannot identify synthetic app UID for startup log capture")
+                self.app_log = AppLogCapture(self.args.serial, uid.group(1), self.output / "app-startup-and-final.log")
                 self.instrument("seed")
                 self.instrument("identity")
                 for phase in ("initial", "resume", "restart"):
@@ -125,6 +174,14 @@ class Harness:
                     # Only the synthetic installation created above is removed.
                     self.adb("uninstall", PACKAGE)
                     self.install(self.args.previous_apk)
+                    # Reinstall may assign a new UID; retain the initial run log
+                    # and start a separate bounded capture before baseline seed.
+                    self.app_log.close()
+                    metadata = self.adb("shell", "dumpsys", "package", PACKAGE)
+                    uid = re.search(r"\buserId=(\d+)\b", metadata)
+                    if not uid:
+                        raise RuntimeError("Cannot identify upgrade baseline app UID")
+                    self.app_log = AppLogCapture(self.args.serial, uid.group(1), self.output / "upgrade-startup-and-final.log")
                     previous_version = self.installed_version()
                     if previous_version >= current_version:
                         raise RuntimeError("Upgrade baseline must have a strictly older versionCode")
@@ -142,6 +199,11 @@ class Harness:
                 (self.output / "results.json").write_text(json.dumps({"passed": False, "error": str(error), "phases": self.events}, indent=2))
                 raise
             finally:
+                if self.app_log:
+                    try:
+                        self.app_log.close()
+                    except Exception as error:
+                        (self.output / "app-log-capture-error.txt").write_text(str(error))
                 for name, command in (
                     ("logcat.txt", ("logcat", "-d", "-t", "5000", "-v", "threadtime")),
                     ("activity.txt", ("shell", "dumpsys", "activity", "activities")),

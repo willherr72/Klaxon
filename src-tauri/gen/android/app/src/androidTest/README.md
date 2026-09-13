@@ -20,7 +20,7 @@ The Android build requires Java 21, Android SDK 36, NDK 27.1.12297006, and Rust
 target `x86_64-linux-android`. The Tauri CLI generates Gradle bindings before
 the instrumentation-only Gradle invocation. Both APKs use the debug key.
 
-Start a fresh accelerated x86_64 emulator, then run:
+Start a fresh accelerated x86_64 emulator (CI uses API 35/36), then run:
 
 ```sh
 python scripts/android-emulator-test.py \
@@ -35,6 +35,12 @@ The output directory must be new. The harness refuses a non-emulator serial,
 requires `ro.kernel.qemu=1`, and refuses an existing Klaxon installation. Every
 ADB call specifies the serial. Only the installation created by this harness
 can be replaced or removed.
+
+Fixture database access uses the emulator's `sqlite3` command through `run-as`
+in a separate process. Do not use framework SQLite inside the app process:
+Rust bundles its own SQLite, and independent SQLite libraries cannot safely
+share a database within one process. The harness requires the system SQLite
+CLI and Android API 31 or newer for shell input/output handling.
 
 Basic coverage verifies completed push and pull, a fresh successful sync after
 Home/background/resume, and another fresh sync after force-stop/process restart.
@@ -66,7 +72,8 @@ individual assertions a 100-second deadline. Missing execution, crashes and
 Android's exit-zero instrumentation failures all fail the harness.
 
 Diagnostics include individual instrumentation output, the host report/log,
-bounded logcat, activity/package state and a structured `results.json`. Retain
+bounded app startup/final logs, logcat, activity/package state and a structured
+`results.json`. Database failures include schema and redacted settings. Retain
 these briefly in CI; there is no reason to upload an emulator image or build
 tree. Parser regressions run without Android:
 

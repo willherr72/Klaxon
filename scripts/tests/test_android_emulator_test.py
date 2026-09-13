@@ -1,7 +1,9 @@
 """Runner must reject Android's exit-zero failures and missing test execution."""
 
 import importlib.util
+import io
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 spec = importlib.util.spec_from_file_location(
@@ -27,6 +29,24 @@ class InstrumentationResultTests(unittest.TestCase):
         ):
             with self.subTest(output=output), self.assertRaises(RuntimeError):
                 module.require_test_success(output)
+
+
+class AppLogRetentionTests(unittest.TestCase):
+    def retained(self, content):
+        capture = module.AppLogCapture.__new__(module.AppLogCapture)
+        capture.LIMIT = 10
+        capture.head = bytearray()
+        capture.tail = bytearray()
+        capture.process = SimpleNamespace(stdout=io.BytesIO(content))
+        capture.drain()
+        return bytes(capture.head), bytes(capture.tail)
+
+    def test_large_log_preserves_startup_and_final_lines_with_fixed_bound(self):
+        self.assertEqual(self.retained(b"0123456789" + b"x" * 20000 + b"ABCDEFGHIJ"),
+                         (b"0123456789", b"ABCDEFGHIJ"))
+
+    def test_short_log_is_not_duplicated(self):
+        self.assertEqual(self.retained(b"startup"), (b"startup", b""))
 
 
 if __name__ == "__main__":

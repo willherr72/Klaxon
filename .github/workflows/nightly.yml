@@ -9,7 +9,10 @@ on:
     paths:
       - '.github/workflows/nightly.yml'
       - '.github/workflows/android-tests.yml'
+      - '.github/actions/android-build-setup/**'
       - 'scripts/android-emulator-test.py'
+      - 'scripts/run-emulator-ci.sh'
+      - 'scripts/tests/**'
       - 'src-tauri/examples/android_sync_peer.rs'
       - 'src-tauri/examples/sync_recovery.rs'
       - 'src-tauri/gen/android/app/src/androidTest/**'

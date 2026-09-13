@@ -1,17 +1,23 @@
 package com.klaxon.app
 
 import android.content.Intent
-import android.database.sqlite.SQLiteDatabase
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.Assert.*
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestWatcher
+import org.junit.runner.Description
 import org.junit.runner.RunWith
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Real MainActivity, lifecycle callbacks and Rust sync. Only disposable emulator fixtures. */
 @RunWith(AndroidJUnit4::class)
@@ -24,6 +30,14 @@ class SyncLifecycleTest {
     }
     private val dbFile get() = File(context.applicationInfo.dataDir, "klaxon.db")
     private val identitySentinel get() = File(context.filesDir, "ci-identity.json")
+    private lateinit var sqliteExecutable: String
+
+    @get:Rule
+    val failureDiagnostics = object : TestWatcher() {
+        override fun failed(error: Throwable, description: Description) {
+            println("CI database diagnostics: ${runCatching { databaseDiagnostics() }.getOrElse { it.toString() }}")
+        }
+    }
 
     private fun currentIdentity(): JSONObject {
         val secretFile = File(context.applicationInfo.dataDir, "klaxon-iroh-secret.bin")
@@ -46,15 +60,62 @@ class SyncLifecycleTest {
         assertEquals("App Iroh identity changed", expected.getString("iroh_secret_sha256"), actual.getString("iroh_secret_sha256"))
     }
 
-    private fun database(): SQLiteDatabase = SQLiteDatabase.openDatabase(
-        dbFile.absolutePath, null,
-        SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING
-    )
+    private fun shellQuote(value: String) = "'" + value.replace("'", "'\"'\"'") + "'"
+    private fun sqlQuote(value: String) = "'" + value.replace("'", "''") + "'"
 
-    private fun shell(command: String): String = instrumentation.uiAutomation
-        .executeShellCommand(command).use { descriptor ->
-            java.io.FileInputStream(descriptor.fileDescriptor).bufferedReader().readText()
+    private fun shell(command: String): String {
+        // CI uses API 35. Feed a real shell over stdin: UiAutomation's command
+        // string is Runtime.exec-tokenized and does not itself interpret quotes.
+        val pipes = instrumentation.uiAutomation.executeShellCommandRw("/system/bin/sh")
+        val reader = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ci-shell-output").apply { isDaemon = true }
         }
+        try {
+            val result = reader.submit<String> {
+                ParcelFileDescriptor.AutoCloseInputStream(pipes[0]).bufferedReader().use { it.readText() }
+            }
+            ParcelFileDescriptor.AutoCloseOutputStream(pipes[1]).bufferedWriter().use {
+                it.write("exec 2>&1\n$command\nci_status=\$?\nprintf '\\n__KLAXON_EXIT__%d\\n' \"\$ci_status\"\nexit\n")
+            }
+            val output = result.get(20, TimeUnit.SECONDS)
+            val marker = Regex("\n__KLAXON_EXIT__(\\d+)\\s*$").find(output)
+                ?: throw AssertionError("Shell command did not return an exit marker")
+            val body = output.substring(0, marker.range.first).trim()
+            if (marker.groupValues[1] != "0") {
+                val safeBody = body.replace(fixture.getString("secret"), "<redacted>").take(4000)
+                throw IllegalStateException("Shell command failed (${marker.groupValues[1]}): $safeBody")
+            }
+            return body
+        } finally {
+            pipes.forEach { runCatching { it.close() } }
+            reader.shutdownNow()
+        }
+    }
+
+    private fun sql(statement: String): String {
+        check(dbFile.isFile) { "Production database does not exist: ${dbFile.absolutePath}" }
+        // Framework SQLite and Rust's bundled SQLite must never access the same
+        // DB in one process: their independent POSIX lock bookkeeping is unsafe.
+        // https://sqlite.org/howtocorrupt.html#multiple_copies_of_sqlite_linked_into_the_same_application
+        return shell("run-as ${context.packageName} ${shellQuote(sqliteExecutable)} -batch -bail -json -cmd ${shellQuote(".timeout 5000")} ${shellQuote(dbFile.absolutePath)} ${shellQuote(statement)}")
+    }
+
+    private fun rows(statement: String) = JSONArray(sql(statement).ifBlank { "[]" })
+
+    private fun databaseDiagnostics(): JSONObject = JSONObject().apply {
+        put("path", dbFile.absolutePath)
+        put("database_bytes", dbFile.length())
+        put("wal_bytes", File(dbFile.absolutePath + "-wal").length())
+        put("shm_bytes", File(dbFile.absolutePath + "-shm").length())
+        for ((name, query) in listOf(
+            "schema" to "SELECT type,name,tbl_name FROM sqlite_schema ORDER BY name LIMIT 100",
+            "schema_version" to "SELECT * FROM schema_version",
+            "settings" to "SELECT key,CASE WHEN key IN ('device_id','sync_enabled') THEN value ELSE '<redacted>' END AS value FROM settings ORDER BY key LIMIT 100",
+            "peers" to "SELECT id,last_sync_ok_at,last_sync_error,last_sync_error_at FROM peers LIMIT 10"
+        )) {
+            put(name, runCatching { rows(query) }.getOrElse { it.toString() })
+        }
+    }
 
     private fun launch() {
         context.startActivity(Intent(context, MainActivity::class.java).apply {
@@ -74,34 +135,27 @@ class SyncLifecycleTest {
             }
             SystemClock.sleep(250)
         }
-        val evidence = runCatching {
-            database().use { db ->
-                db.rawQuery("SELECT last_sync_ok_at,last_sync_error,last_sync_error_at FROM peers WHERE id='ci-host'", null).use {
-                    if (it.moveToFirst()) "ok=${it.getString(0)} error=${it.getString(1)} errorAt=${it.getString(2)}" else "no peer"
-                }
-            }
-        }.getOrElse { it.toString() }
-        throw AssertionError("Timed out: $description; $evidence; last exception=$failure")
+        throw AssertionError("Timed out: $description; last exception=$failure")
     }
 
-    private fun scalar(sql: String): String? = database().use { db ->
-        db.rawQuery(sql, null).use { if (it.moveToFirst() && !it.isNull(0)) it.getString(0) else null }
+    private fun scalar(statement: String): String? {
+        val result = rows(statement)
+        if (result.length() == 0) return null
+        val row = result.getJSONObject(0)
+        val column = row.keys().next()
+        return if (row.isNull(column)) null else row.get(column).toString()
     }
 
     private fun lastSuccess(): Long = scalar("SELECT last_sync_ok_at FROM peers WHERE id='ci-host'")?.toLong() ?: 0
 
     private fun insertOutgoing(phase: String) {
-        database().use { db ->
-            db.execSQL(
-                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,repeat_rule) VALUES (?,?,2000000000000,2,'pending',?,?,1,'[\"ci\"]','{\"kind\":\"weekly\",\"weekdays\":[1,3,5]}')",
-                arrayOf("android-$phase", "Android fixture $phase", System.currentTimeMillis(), System.currentTimeMillis())
-            )
-        }
+        val now = System.currentTimeMillis()
+        sql("INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,repeat_rule) VALUES (${sqlQuote("android-$phase")},${sqlQuote("Android fixture $phase")},2000000000000,2,'pending',$now,$now,1,'[\"ci\"]','{\"kind\":\"weekly\",\"weekdays\":[1,3,5]}')")
     }
 
     private fun assertPairing() {
         assertEquals(fixture.getString("node_id"), scalar("SELECT iroh_node_id FROM peers WHERE id='ci-host'"))
-        assertEquals(fixture.getString("secret"), scalar("SELECT shared_secret FROM peers WHERE id='ci-host'"))
+        assertTrue("Pairing secret changed", fixture.getString("secret") == scalar("SELECT shared_secret FROM peers WHERE id='ci-host'"))
         assertEquals("true", scalar("SELECT value FROM settings WHERE key='sync_enabled'"))
         assertEquals("Synthetic upgrade sentinel", scalar("SELECT title FROM reminders WHERE id='ci-preserved'"))
     }
@@ -123,6 +177,9 @@ class SyncLifecycleTest {
     fun realSyncAndLifecycle() {
         assertEquals("Emulator guard must be set by the host harness", "true", arguments.getString("disposable_emulator"))
         assertTrue("Physical devices are forbidden", android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk_gphone"))
+        sqliteExecutable = shell("command -v sqlite3")
+        assertTrue("Emulator sqlite3 CLI must be in /system/bin or /system/xbin", sqliteExecutable.matches(Regex("/system/(bin|xbin)/sqlite3")))
+        shell("run-as ${context.packageName} ${shellQuote(sqliteExecutable)} --version")
         val phase = requireNotNull(arguments.getString("phase"))
         require(phase in listOf("seed", "identity", "initial", "resume", "restart", "outage", "upgrade"))
         if (phase == "seed") {
@@ -130,15 +187,10 @@ class SyncLifecycleTest {
             await("application creates and migrates its database") {
                 dbFile.isFile && !scalar("SELECT value FROM settings WHERE key='device_id'").isNullOrBlank()
             }
-            database().use { db ->
-                db.beginTransaction()
-                try {
-                    db.execSQL("INSERT INTO peers(id,name,shared_secret,created_at,iroh_node_id,endpoint_addrs) VALUES ('ci-host','Disposable CI host',?,1,?,?)", arrayOf(fixture.getString("secret"), fixture.getString("node_id"), fixture.getJSONArray("endpoint_addrs").toString()))
-                    db.execSQL("INSERT OR REPLACE INTO settings(key,value) VALUES ('sync_enabled','true')")
-                    db.execSQL("INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent) VALUES ('ci-preserved','Synthetic upgrade sentinel',2000000000000,2,'pending',1,1,1)")
-                    db.setTransactionSuccessful()
-                } finally { db.endTransaction() }
-            }
+            sql("BEGIN IMMEDIATE; " +
+                "INSERT INTO peers(id,name,shared_secret,created_at,iroh_node_id,endpoint_addrs) VALUES ('ci-host','Disposable CI host',${sqlQuote(fixture.getString("secret"))},1,${sqlQuote(fixture.getString("node_id"))},${sqlQuote(fixture.getJSONArray("endpoint_addrs").toString())}); " +
+                "INSERT OR REPLACE INTO settings(key,value) VALUES ('sync_enabled','true'); " +
+                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent) VALUES ('ci-preserved','Synthetic upgrade sentinel',2000000000000,2,'pending',1,1,1); COMMIT;")
             assertPairing()
             return
         }
