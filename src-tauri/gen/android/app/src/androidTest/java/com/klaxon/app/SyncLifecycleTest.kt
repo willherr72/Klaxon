@@ -70,7 +70,7 @@ class SyncLifecycleTest {
     private fun insertOutgoing(phase: String) {
         database().use { db ->
             db.execSQL(
-                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,dirty) VALUES (?,?,2000000000000,2,'pending',?,?,1,'[\"ci\"]',1)",
+                "INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags) VALUES (?,?,2000000000000,2,'pending',?,?,1,'[\"ci\"]')",
                 arrayOf("android-$phase", "Android fixture $phase", System.currentTimeMillis(), System.currentTimeMillis())
             )
         }
