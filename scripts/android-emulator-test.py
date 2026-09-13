@@ -137,6 +137,14 @@ class Harness:
             raise RuntimeError("Installed APK has no readable versionCode")
         return int(match.group(1))
 
+    def installed_uid(self):
+        # Ask the installed debug app's process identity directly. PackageManager
+        # changed its diagnostic field from userId to appId on newer Android.
+        uid = self.adb("shell", "run-as", PACKAGE, "id", "-u").strip()
+        if not re.fullmatch(r"\d+", uid):
+            raise RuntimeError("Cannot identify synthetic app UID for startup log capture")
+        return uid
+
     def run(self):
         if not re.fullmatch(r"emulator-\d+", self.args.serial):
             raise RuntimeError("Only an explicit emulator-NNNN serial is allowed; physical devices are forbidden")
@@ -160,11 +168,7 @@ class Harness:
                 current_version = self.installed_version()
                 self.install(self.args.test_apk)
                 self.adb("logcat", "-c")
-                metadata = self.adb("shell", "dumpsys", "package", PACKAGE)
-                uid = re.search(r"\buserId=(\d+)\b", metadata)
-                if not uid:
-                    raise RuntimeError("Cannot identify synthetic app UID for startup log capture")
-                self.app_log = AppLogCapture(self.args.serial, uid.group(1), self.output / "app-startup-and-final.log")
+                self.app_log = AppLogCapture(self.args.serial, self.installed_uid(), self.output / "app-startup-and-final.log")
                 self.instrument("seed")
                 self.instrument("identity")
                 for phase in ("initial", "resume", "restart"):
@@ -177,11 +181,7 @@ class Harness:
                     # Reinstall may assign a new UID; retain the initial run log
                     # and start a separate bounded capture before baseline seed.
                     self.app_log.close()
-                    metadata = self.adb("shell", "dumpsys", "package", PACKAGE)
-                    uid = re.search(r"\buserId=(\d+)\b", metadata)
-                    if not uid:
-                        raise RuntimeError("Cannot identify upgrade baseline app UID")
-                    self.app_log = AppLogCapture(self.args.serial, uid.group(1), self.output / "upgrade-startup-and-final.log")
+                    self.app_log = AppLogCapture(self.args.serial, self.installed_uid(), self.output / "upgrade-startup-and-final.log")
                     previous_version = self.installed_version()
                     if previous_version >= current_version:
                         raise RuntimeError("Upgrade baseline must have a strictly older versionCode")
