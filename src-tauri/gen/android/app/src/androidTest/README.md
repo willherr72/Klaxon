@@ -64,9 +64,11 @@ completed native tombstone. Tauri's last-window destruction requests process
 exit, so this evidence does not establish which native component owns the mutex.
 Disabling injected teardown does not fix that native shutdown behavior.
 
-`NativeLifecycleTest` separately launches with MAIN/LAUNCHER, presses Back, then
+`NativeLifecycleTest` separately taps the actual launcher icon, presses Back, then
 reopens and verifies actual Rust command responses, the stored device identity,
-and the preserved reminder. This normal Back path is required in every run.
+and the preserved reminder. Android also checks that the launch came from Home;
+an app-originated MAIN/LAUNCHER intent does not reproduce icon-launched Back.
+This normal Back path is required in every run.
 Explicit `recreate` and `finish` are available through the manual Android
 Activity diagnostic workflow or `--lifecycle-probe recreate|finish`. Their
 durable markers show how far the Activity got if its process exits before JUnit

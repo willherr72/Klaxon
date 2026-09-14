@@ -1,8 +1,8 @@
 package com.klaxon.app
 
 import android.app.Activity
-import android.content.Intent
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import android.os.SystemClock
 import android.util.AtomicFile
@@ -10,6 +10,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
 import android.webkit.WebView
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -40,11 +41,26 @@ class NativeLifecycleTest {
     private val arguments = InstrumentationRegistry.getArguments()
     private val events = JSONArray()
     private lateinit var phase: String
+    private var observedActivity: MainActivity? = null
+    private var launchHomePackage: String? = null
 
     private fun marker(status: String) {
         val event = JSONObject().apply {
             put("status", status)
             put("elapsed_ms", SystemClock.elapsedRealtime())
+            put("launch_method", "home_launcher_icon")
+            put("launcher_package", launchHomePackage ?: JSONObject.NULL)
+            observedActivity?.let { activity ->
+                instrumentation.runOnMainSync {
+                    put("activity_instance", System.identityHashCode(activity))
+                    put("task_id", activity.taskId)
+                    put("is_task_root", activity.isTaskRoot)
+                    put("is_finishing", activity.isFinishing)
+                    put("is_destroyed", activity.isDestroyed)
+                    put("intent_action", activity.intent.action)
+                    put("intent_flags", activity.intent.flags)
+                }
+            }
         }
         events.put(event)
         val result = JSONObject().apply {
@@ -89,15 +105,70 @@ class NativeLifecycleTest {
     }
 
     private fun launch(): MainActivity {
-        // API 31+ Back backgrounds a root LAUNCHER Activity. A component-only
-        // intent would not reproduce the same launch contract as the app icon.
-        context.startActivity(Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
-            setClass(context, MainActivity::class.java)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        })
+        // Android 15 also checks LAUNCH_SOURCE_TYPE_HOME before backgrounding
+        // on Back. startActivity() from our own UID fails that check even with
+        // MAIN/LAUNCHER flags. Tap the actual launcher's app icon instead.
+        shell("input keyevent KEYCODE_HOME")
+        val homeComponent = shell("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME")
+            .lineSequence().last { it.contains('/') }.trim()
+        val homePackage = homeComponent.substringBefore('/')
+        launchHomePackage = homePackage
+        await("home launcher visible") {
+            instrumentation.uiAutomation.rootInActiveWindow?.packageName?.toString() == homePackage
+        }
+        val label = context.applicationInfo.loadLabel(context.packageManager).toString()
+        var clicked = clickLauncherIcon(homePackage, label)
+        // Fresh emulators have no desktop shortcut for an ADB-installed app.
+        // Swipe up to open the app drawer, then scroll within it if necessary.
+        for (attempt in 0 until 6) {
+            if (clicked) break
+            val bounds = android.graphics.Rect()
+            requireNotNull(instrumentation.uiAutomation.rootInActiveWindow).getBoundsInScreen(bounds)
+            shell("input swipe ${bounds.centerX()} ${bounds.bottom - bounds.height() / 8} ${bounds.centerX()} ${bounds.top + bounds.height() / 4} 400")
+            instrumentation.uiAutomation.waitForIdle(200, 5000)
+            clicked = clickLauncherIcon(homePackage, label)
+        }
+        if (!clicked) {
+            Log.e("KlaxonLifecycleProbe", "Launcher icon missing; bounded hierarchy: ${launcherHierarchy()}")
+            fail("Launcher app drawer must contain the Klaxon icon; see bounded hierarchy log")
+        }
         await("MainActivity resumed") { resumedActivity() != null }
-        return requireNotNull(resumedActivity())
+        return requireNotNull(resumedActivity()).also { observedActivity = it }
+    }
+
+    private fun shell(command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command))
+            .bufferedReader().use { it.readText() }
+
+    private fun clickLauncherIcon(homePackage: String, label: String): Boolean {
+        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != homePackage) return false
+        for (match in root.findAccessibilityNodeInfosByText(label)) {
+            if (match.text?.toString() != label && match.contentDescription?.toString() != label) continue
+            var candidate: AccessibilityNodeInfo? = match
+            repeat(4) {
+                val node = candidate ?: return@repeat
+                if (node.isVisibleToUser && node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+                candidate = node.parent
+            }
+        }
+        return false
+    }
+
+    private fun launcherHierarchy(): String {
+        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return "No active window"
+        val pending = java.util.ArrayDeque<AccessibilityNodeInfo>()
+        pending.add(root)
+        val output = StringBuilder()
+        var count = 0
+        while (pending.isNotEmpty() && count++ < 100 && output.length < 6000) {
+            val node = pending.removeFirst()
+            output.append("[class=").append(node.className?.take(70))
+                .append(" text=").append(node.text?.take(120))
+                .append(" desc=").append(node.contentDescription?.take(120)).append("] ")
+            for (index in 0 until node.childCount) node.getChild(index)?.let { pending.add(it) }
+        }
+        return output.toString().take(6000)
     }
 
     private fun findWebView(view: View): WebView? {
@@ -187,7 +258,15 @@ class NativeLifecycleTest {
                 "normal_back" -> {
                     marker("triggered")
                     instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
-                    await("Back moves root Activity out of RESUMED") { resumedActivity() == null }
+                    await("Back stops the root launcher Activity") {
+                        var stopped = false
+                        instrumentation.runOnMainSync {
+                            assertFalse("Launcher Back must not finish the Activity", original.isFinishing)
+                            assertFalse("Launcher Back must not destroy the Activity", original.isDestroyed)
+                            stopped = ActivityLifecycleMonitorRegistry.getInstance().getLifecycleStageOf(original) == Stage.STOPPED
+                        }
+                        stopped
+                    }
                     marker("backgrounded")
                     val reopened = launch()
                     if (android.os.Build.VERSION.SDK_INT >= 31) {
@@ -203,6 +282,7 @@ class NativeLifecycleTest {
                         resumedActivity()?.let { it !== original } == true
                     }
                     val replacement = requireNotNull(resumedActivity())
+                    observedActivity = replacement
                     val after = snapshot(replacement)
                     assertEquals("Device identity changed after recreation", before.getString("device_id"), after.getString("device_id"))
                 }

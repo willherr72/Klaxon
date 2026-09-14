@@ -277,9 +277,9 @@ class Harness:
                 self.instrument("identity")
                 for phase in ("initial", "resume", "restart"):
                     self.stage(phase)
-                self.native_lifecycle("normal_back")
                 for scenario in ("approve", "decline"):
                     self.pairing(scenario)
+                self.native_lifecycle("normal_back")
                 if self.args.extended:
                     self.pairing("expire")
                     self.stage("outage")
