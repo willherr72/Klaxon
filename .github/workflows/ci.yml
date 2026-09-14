@@ -52,7 +52,7 @@ jobs:
           RUSTFLAGS: -D warnings
         run: cargo build --locked
   android:
-    name: Android smoke
+    name: ${{ inputs.lifecycle_probe && inputs.lifecycle_probe != 'none' && 'Android Activity diagnostic' || 'Android smoke' }}
     uses: ./.github/workflows/android-tests.yml
     with:
       extended: ${{ inputs.extended || false }}
