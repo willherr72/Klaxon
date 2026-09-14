@@ -102,6 +102,9 @@ class Harness:
         self.adb("shell", "am", "force-stop", PACKAGE)
         output = self.adb(
             "shell", "am", "instrument", "-w", "-r",
+            # Test phases own lifecycle transitions. Do not inject Activity.finish()
+            # teardown before the runner reports results; host force-stop stays explicit.
+            "-e", "waitForActivitiesToComplete", "false",
             "-e", "class", PACKAGE + ".SyncLifecycleTest#realSyncAndLifecycle",
             "-e", "phase", phase, "-e", "fixture", fixture,
             "-e", "disposable_emulator", "true", RUNNER,
