@@ -48,6 +48,22 @@ Each phase checks literal incoming content and the preserved pairing/secret and
 sentinel reminder. The independent host also checks the actual outgoing content.
 Separate instrumentation invocations provide real process restarts.
 
+The harness passes `-e waitForActivitiesToComplete false`, supported by the
+pinned [AndroidJUnitRunner 1.5.2 sources](https://dl.google.com/dl/android/maven2/androidx/test/runner/1.5.2/runner-1.5.2-sources.jar)
+and [MonitoringInstrumentation 1.6.1 sources](https://dl.google.com/dl/android/maven2/androidx/test/monitor/1.6.1/monitor-1.6.1-sources.jar).
+This disables the runner's extra `Activity.finish()` calls after test assertions.
+The explicit Home/resume transitions and host `am force-stop` between phases
+remain; instrumentation still terminates its process when reporting results.
+The parser still requires one completed passing test and rejects process crashes.
+
+Run 34799673475 exposed a native destroyed-mutex abort immediately after the
+runner forced MainActivity through `DESTROYED`, after the initial sync assertions
+passed. Disabling that injected teardown keeps this suite scoped to sync,
+background/resume, and process restart. It does not fix the native teardown
+problem or establish whether ordinary Activity destruction, recreation, or Back
+navigation can trigger it. Those paths need a separate reproduction and are not
+covered by this suite.
+
 An identity phase after each seed launches the app with sync enabled, waits for
 its 32-byte Iroh key, and saves only its SHA-256 hash and device ID in a test-only
 sentinel. Each sync phase verifies those identities before launch and after sync.
