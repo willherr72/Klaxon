@@ -20,9 +20,9 @@
 ## Tasks
 
 - [x] Require `Windows validation` and `Android smoke / emulator` on `main`, bound to GitHub Actions app15368, with no human review gate.
-- [ ] Add `PairingFlowTest.kt` and `android_pair_peer.rs`: approve/decline in smoke; actual120s expiration in extended; approved handshake must subsequently sync.
-- [ ] Reproduce stale pairing UI with focused component tests, then emit request-scoped backend closure events and safely clean up listeners.
-- [ ] Add `NativeLifecycleTest.kt`: usable native IPC and preserved identity/reminder after normal launcher Back; separate recreate/finish probes.
-- [ ] Integrate fixture processes and UDP redirects in `android-emulator-test.py`; retain bounded crash-buffer and process-exit diagnostics.
+- [x] Add `PairingFlowTest.kt` and `android_pair_peer.rs`: approve/decline in smoke; actual120s expiration in extended; approved handshake must subsequently sync.
+- [x] Reproduce stale pairing UI with focused component tests, then emit request-scoped backend closure events and safely clean up listeners.
+- [x] Add `NativeLifecycleTest.kt`: usable native IPC and preserved identity/reminder after normal launcher Back; separate recreate/finish probes. After a successful recreation probe, require recreation after upgrade in extended runs.
+- [x] Integrate fixture processes and UDP redirects in `android-emulator-test.py`; retain bounded crash-buffer and process-exit diagnostics.
 - [ ] Run local verification, cloud smoke/extended tests and explicit lifecycle probes. Record native root-cause limits honestly.
 - [ ] Review, align versions/changelog, merge through required checks, publish new signed release through the authorized release workflow.

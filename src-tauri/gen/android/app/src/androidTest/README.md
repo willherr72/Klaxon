@@ -69,6 +69,7 @@ reopens and verifies actual Rust command responses, the stored device identity,
 and the preserved reminder. Android also checks that the launch came from Home;
 an app-originated MAIN/LAUNCHER intent does not reproduce icon-launched Back.
 This normal Back path is required in every run.
+Extended runs also require successful Activity recreation after upgrade.
 Explicit `recreate` and `finish` are available through the manual Android
 Activity diagnostic workflow or `--lifecycle-probe recreate|finish`. Their
 durable markers show how far the Activity got if its process exits before JUnit

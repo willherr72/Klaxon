@@ -17,7 +17,8 @@ Existing reminders and pairings are preserved. Sync remains compatible with v0.1
 ### Changed
 
 - Automated Android coverage exercises actual pairing approval, rejection,
-  expiration, and sync after approval, plus normal launcher Back and reopen.
+  expiration, and sync after approval, plus normal launcher Back, reopen, and
+  Activity recreation after upgrade.
 - Activity destruction diagnostics retain native crash and process-exit details.
 
 ## [0.10.3] — 2026-09-13

@@ -302,6 +302,7 @@ class Harness:
                         raise RuntimeError("PackageManager did not install the current version")
                     self.stage("upgrade")
                     self.events[-1]["upgrade_version_codes"] = [previous_version, current_version]
+                    self.native_lifecycle("recreate")
                 if self.args.lifecycle_probe:
                     self.native_lifecycle(self.args.lifecycle_probe)
                 (self.output / "results.json").write_text(json.dumps({"passed": True, "phases": self.events}, indent=2))
