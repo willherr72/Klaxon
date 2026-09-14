@@ -14,6 +14,7 @@ on:
       - 'scripts/run-emulator-ci.sh'
       - 'scripts/tests/**'
       - 'src-tauri/examples/android_sync_peer.rs'
+      - 'src-tauri/examples/android_pair_peer.rs'
       - 'src-tauri/examples/sync_recovery.rs'
       - 'src-tauri/gen/android/app/src/androidTest/**'
 permissions:

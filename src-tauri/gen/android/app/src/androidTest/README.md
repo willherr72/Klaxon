@@ -9,7 +9,7 @@ Build the frontend first, then the Linux host fixture:
 ```sh
 npm ci
 npm run build
-cargo build --manifest-path src-tauri/Cargo.toml --locked --example android_sync_peer
+cargo build --manifest-path src-tauri/Cargo.toml --locked --example android_sync_peer --example android_pair_peer
 npx tauri android build --debug --target x86_64 --apk
 cd src-tauri/gen/android
 ./gradlew :app:assembleUniversalDebugAndroidTest -x :app:rustBuildUniversalDebug
@@ -28,6 +28,7 @@ python scripts/android-emulator-test.py \
   --apk src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk \
   --test-apk src-tauri/gen/android/app/build/outputs/apk/androidTest/universal/debug/app-universal-debug-androidTest.apk \
   --peer src-tauri/target/debug/examples/android_sync_peer \
+  --pair-peer src-tauri/target/debug/examples/android_pair_peer \
   --output artifacts/android-basic
 ```
 
@@ -56,13 +57,37 @@ The explicit Home/resume transitions and host `am force-stop` between phases
 remain; instrumentation still terminates its process when reporting results.
 The parser still requires one completed passing test and rejects process crashes.
 
-Run 34799673475 exposed a native destroyed-mutex abort immediately after the
+Run 34799673475 exposed a native destroyed-mutex diagnostic immediately after the
 runner forced MainActivity through `DESTROYED`, after the initial sync assertions
-passed. Disabling that injected teardown keeps this suite scoped to sync,
-background/resume, and process restart. It does not fix the native teardown
-problem or establish whether ordinary Activity destruction, recreation, or Back
-navigation can trigger it. Those paths need a separate reproduction and are not
-covered by this suite.
+passed. Logcat also records a clean process exit with code zero; there was no
+completed native tombstone. Tauri's last-window destruction requests process
+exit, so this evidence does not establish which native component owns the mutex.
+Disabling injected teardown does not fix that native shutdown behavior.
+
+`NativeLifecycleTest` separately taps the actual launcher icon, presses Back, then
+reopens and verifies actual Rust command responses, the stored device identity,
+and the preserved reminder. Android also checks that the launch came from Home;
+an app-originated MAIN/LAUNCHER intent does not reproduce icon-launched Back.
+This normal Back path is required in every run.
+Extended runs also require successful Activity recreation after upgrade.
+Explicit `recreate` and `finish` are available through the manual Android
+Activity diagnostic workflow or `--lifecycle-probe recreate|finish`. Their
+durable markers show how far the Activity got if its process exits before JUnit
+reports. Missing completion remains a failure. Crash-buffer logs and Android
+process-exit information are retained without app-UID filtering.
+
+The upstream [Activity relaunch issue](https://github.com/tauri-apps/tauri/issues/15671)
+explains why simply preventing process exit can leave a blank webview. No such
+workaround is applied by this suite.
+
+`PairingFlowTest` exercises the actual incoming pairing dialog and production
+Iroh PairHandler. A second host fixture sends a real offer through emulator UDP
+redirects, using only the app's public endpoint identity and socket ports.
+Approval must produce a matching secret digest and authenticated bidirectional
+sync; decline must create no peer. Extended runs also wait for the real
+120-second expiration and verify the dialog closes and stale approval fails.
+Only synthetic fixture files and digests enter diagnostics; endpoint keys and
+pairing secrets are not exported. Emulator redirects are removed after each case.
 
 An identity phase after each seed launches the app with sync enabled, waits for
 its 32-byte Iroh key, and saves only its SHA-256 hash and device ID in a test-only

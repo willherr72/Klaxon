@@ -31,7 +31,7 @@ use tokio::sync::oneshot;
 use crate::db::peers;
 use crate::models::now_ms;
 use crate::sync::proto::{self, PairAck, PairOffer};
-use crate::sync::types::{PairDecision, PendingPairEvent};
+use crate::sync::types::{PairDecision, PairRequestClosedEvent, PendingPairEvent};
 use crate::sync::{DeviceIdentity, PendingPairs};
 
 #[derive(Clone)]
@@ -122,6 +122,14 @@ impl PairHandler {
 
         let decision = tokio::time::timeout(Duration::from_secs(120), rx).await;
         self.pending_pairs.lock().remove(&offer.request_id);
+        // Close the matching prompt even when no command was issued (timeout),
+        // and before persistence or network failures can exit the handler.
+        let _ = self.app.emit(
+            "klaxon://pair-request-closed",
+            PairRequestClosedEvent {
+                request_id: offer.request_id.clone(),
+            },
+        );
 
         match decision {
             Ok(Ok(PairDecision::Approve)) => {

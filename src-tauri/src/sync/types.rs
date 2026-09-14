@@ -125,6 +125,12 @@ pub struct PendingPairEvent {
     pub confirmation_code: String,
 }
 
+/// Tells the responder UI that approval, decline, or expiration ended a request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairRequestClosedEvent {
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum PairDecision {
     Approve,

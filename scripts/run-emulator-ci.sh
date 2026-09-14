@@ -6,9 +6,13 @@ mapfile -t tests < <(find src-tauri/gen/android/app/build/outputs/apk/androidTes
 [ "${#apks[@]}" -eq 1 ]
 [ "${#tests[@]}" -eq 1 ]
 arguments=(--serial emulator-5554 --apk "${apks[0]}" --test-apk "${tests[0]}"
-  --peer src-tauri/target/debug/examples/android_sync_peer --output emulator-results)
+  --peer src-tauri/target/debug/examples/android_sync_peer
+  --pair-peer src-tauri/target/debug/examples/android_pair_peer --output emulator-results)
 if [ "${1:-false}" = true ]; then
   arguments+=(--extended --previous-apk "$RUNNER_TEMP/klaxon-baseline.apk")
+fi
+if [ -n "${2:-}" ]; then
+  arguments+=(--lifecycle-probe "$2")
 fi
 python3 scripts/android-emulator-test.py "${arguments[@]}"
 cat emulator-results/results.json >> "$GITHUB_STEP_SUMMARY"
