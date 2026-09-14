@@ -1,0 +1,16 @@
+name: Android Activity diagnostic
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Explicit Activity transition to diagnose
+        type: choice
+        options: [recreate, finish]
+        default: recreate
+permissions:
+  contents: read
+jobs:
+  probe:
+    uses: ./.github/workflows/android-tests.yml
+    with:
+      lifecycle_probe: ${{ inputs.phase }}

@@ -6,6 +6,10 @@ on:
         description: Include network outage and previous-version upgrade
         type: boolean
         default: false
+      lifecycle_probe:
+        description: Optional explicit Activity destruction diagnostic
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -60,7 +64,7 @@ jobs:
         run: bash ./gradlew :app:assembleUniversalDebugAndroidTest -x :app:rustBuildUniversalDebug
       - name: Build production Iroh fixture peer
         working-directory: src-tauri
-        run: cargo build --locked --example android_sync_peer
+        run: cargo build --locked --example android_sync_peer --example android_pair_peer
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -75,7 +79,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: bash scripts/run-emulator-ci.sh '${{ inputs.extended }}'
+          script: bash scripts/run-emulator-ci.sh '${{ inputs.extended }}' '${{ inputs.lifecycle_probe }}'
       - name: Keep bounded failure diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
@@ -85,6 +89,9 @@ jobs:
             emulator-results/*.txt
             emulator-results/*.log
             emulator-results/results.json
+            emulator-results/pair-*/*.txt
+            emulator-results/pair-*/*.log
+            emulator-results/pair-*/peer/report.json
             src-tauri/gen/android/app/build/reports/androidTests/
           if-no-files-found: ignore
           retention-days: 3

@@ -5,6 +5,21 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] — 2026-09-13
+
+Existing reminders and pairings are preserved. Sync remains compatible with v0.10.3.
+
+### Fixed
+
+- Expired pairing requests now close their approval dialog. A completed older
+  request cannot dismiss a newer incoming request.
+
+### Changed
+
+- Automated Android coverage exercises actual pairing approval, rejection,
+  expiration, and sync after approval, plus normal launcher Back and reopen.
+- Activity destruction diagnostics retain native crash and process-exit details.
+
 ## [0.10.3] — 2026-09-13
 
 Update both devices to resume syncing with the new protocol. Existing data

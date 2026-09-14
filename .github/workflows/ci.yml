@@ -5,6 +5,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      lifecycle_probe:
+        description: Optional Activity diagnostic (normally leave none)
+        type: choice
+        options: [none, recreate, finish]
+        default: none
   workflow_call:
     inputs:
       extended:
@@ -50,3 +56,4 @@ jobs:
     uses: ./.github/workflows/android-tests.yml
     with:
       extended: ${{ inputs.extended || false }}
+      lifecycle_probe: ${{ inputs.lifecycle_probe != 'none' && inputs.lifecycle_probe || '' }}

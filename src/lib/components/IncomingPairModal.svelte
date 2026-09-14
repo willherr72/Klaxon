@@ -1,55 +1,72 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
+  import { onMount } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { api, type PendingPairEvent } from "../api";
+  import { api, type PendingPairEvent, type PairRequestClosedEvent } from "../api";
 
   let pending = $state<PendingPairEvent | null>(null);
   let busy = $state(false);
   let elapsed = $state(0);
-  let unlisten: UnlistenFn | null = null;
-  let tickHandle: number | null = null;
   let openedAt = 0;
 
-  onMount(async () => {
-    unlisten = await listen<PendingPairEvent>(
+  function closeRequest(requestId: string) {
+    if (pending?.request_id !== requestId) return;
+    pending = null;
+    busy = false;
+  }
+
+  onMount(() => {
+    let disposed = false;
+    const unlisteners: UnlistenFn[] = [];
+    function retain(unlisten: UnlistenFn) {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    }
+
+    void listen<PairRequestClosedEvent>("klaxon://pair-request-closed", (event) => {
+      if (!disposed) closeRequest(event.payload.request_id);
+    }).then(retain).catch((e) => console.error("pair close listener failed", e));
+    void listen<PendingPairEvent>(
       "klaxon://pair-request",
       (event) => {
+        if (disposed) return;
         pending = event.payload;
         busy = false;
         openedAt = Date.now();
         elapsed = 0;
       },
-    );
-    tickHandle = window.setInterval(() => {
+    ).then(retain).catch((e) => console.error("pair request listener failed", e));
+    const tickHandle = window.setInterval(() => {
       if (pending) elapsed = Math.floor((Date.now() - openedAt) / 1000);
     }, 500);
-  });
-
-  onDestroy(() => {
-    if (unlisten) unlisten();
-    if (tickHandle !== null) clearInterval(tickHandle);
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) unlisten();
+      clearInterval(tickHandle);
+    };
   });
 
   async function approve() {
     if (!pending || busy) return;
+    const requestId = pending.request_id;
     busy = true;
     try {
-      await api.approvePairRequest(pending.request_id);
+      await api.approvePairRequest(requestId);
     } catch (e) {
       console.error("approve failed", e);
     }
-    pending = null;
+    closeRequest(requestId);
   }
 
   async function decline() {
     if (!pending || busy) return;
+    const requestId = pending.request_id;
     busy = true;
     try {
-      await api.declinePairRequest(pending.request_id);
+      await api.declinePairRequest(requestId);
     } catch (e) {
       console.error("decline failed", e);
     }
-    pending = null;
+    closeRequest(requestId);
   }
 </script>
 

@@ -6,6 +6,7 @@ import base64
 import json
 from pathlib import Path
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -130,6 +131,106 @@ class Harness:
         self.events[-1]["host_received"] = expected
         print(f"PASS host persisted Android fixture {phase}", flush=True)
 
+    def native_lifecycle(self, phase):
+        self.adb("shell", "am", "force-stop", PACKAGE)
+        output = self.adb(
+            "shell", "am", "instrument", "-w", "-r",
+            "-e", "waitForActivitiesToComplete", "false",
+            "-e", "class", PACKAGE + ".NativeLifecycleTest#lifecycleProbe",
+            "-e", "phase", phase, "-e", "disposable_emulator", "true", RUNNER,
+            timeout=300, check=False,
+        )
+        (self.output / f"native-{phase}.txt").write_text(output)
+        marker = self.adb("shell", "run-as", PACKAGE, "cat",
+                          f"files/ci-native-lifecycle-{phase}.json", check=False)
+        (self.output / f"native-{phase}-marker.txt").write_text(marker)
+        require_test_success(output)
+        self.events.append({"phase": phase, "instrumentation": "passed"})
+        print(f"PASS Android native lifecycle {phase}", flush=True)
+
+    def pairing(self, scenario):
+        directory = self.output / f"pair-{scenario}"
+        directory.mkdir()
+        for name in ("ready", "offer", "result"):
+            self.adb("shell", "run-as", PACKAGE, "rm", "-f", f"files/ci-pair-{name}.json")
+        self.adb("shell", "am", "force-stop", PACKAGE)
+        redirects = []
+        pair_peer = None
+        with (directory / "instrumentation.txt").open("w") as log, (directory / "peer.log").open("w") as peer_log:
+            instrument = subprocess.Popen([
+                "adb", "-s", self.args.serial, "shell", "am", "instrument", "-w", "-r",
+                "-e", "waitForActivitiesToComplete", "false",
+                "-e", "class", PACKAGE + ".PairingFlowTest#incomingPairingUi",
+                "-e", "scenario", scenario, "-e", "disposable_emulator", "true", RUNNER,
+            ], stdout=log, stderr=subprocess.STDOUT)
+            try:
+                ready = {}
+                def read_ready():
+                    nonlocal ready
+                    if instrument.poll() is not None:
+                        raise RuntimeError("Pairing instrumentation exited before endpoint discovery")
+                    raw = self.adb("shell", "run-as", PACKAGE, "cat", "files/ci-pair-ready.json", check=False)
+                    try:
+                        ready = json.loads(raw)
+                        return ready.get("scenario") == scenario and bool(ready.get("udp_ports"))
+                    except json.JSONDecodeError:
+                        return False
+                self.wait("Android pairing endpoint", read_ready, seconds=100)
+                addresses = []
+                for guest_port in ready["udp_ports"]:
+                    if not isinstance(guest_port, int) or not 1 <= guest_port <= 65535 or guest_port == 5353:
+                        continue
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reservation:
+                        reservation.bind(("127.0.0.1", 0))
+                        host_port = reservation.getsockname()[1]
+                    reply = self.adb("emu", "redir", "add", f"udp:{host_port}:{guest_port}")
+                    if "KO:" in reply or "OK" not in reply:
+                        raise RuntimeError(f"Emulator UDP redirect failed: {reply}")
+                    redirects.append(host_port)
+                    addresses.append({"Ip": f"127.0.0.1:{host_port}"})
+                if not addresses:
+                    raise RuntimeError("Android exposed no usable UDP pairing socket")
+                input_file = directory / "input.json"
+                input_file.write_text(json.dumps({"scenario": scenario, "node_id": ready["node_id"], "endpoint_addrs": addresses}))
+                peer_directory = directory / "peer"
+                pair_peer = subprocess.Popen([str(self.args.pair_peer.resolve()), str(peer_directory), str(input_file)],
+                                             stdout=peer_log, stderr=subprocess.STDOUT)
+                def transfer(name):
+                    source = peer_directory / f"{name}.json"
+                    if not source.is_file():
+                        if pair_peer.poll() is not None:
+                            raise RuntimeError(f"Pairing peer exited before {name}; see pair-{scenario}/peer.log")
+                        if instrument.poll() is not None:
+                            raise RuntimeError(f"Pairing instrumentation exited before {name}")
+                        return False
+                    destination = f"/data/local/tmp/klaxon-ci-pair-{name}.json"
+                    self.adb("push", str(source), destination)
+                    target = "result" if name == "report" else name
+                    self.adb("shell", "run-as", PACKAGE, "cp", destination, f"files/ci-pair-{target}.json")
+                    self.adb("shell", "rm", "-f", destination)
+                    return True
+                self.wait("host pairing offer", lambda: transfer("offer"), seconds=45)
+                self.wait("host pairing result", lambda: transfer("report"), seconds=200)
+                instrument.wait(timeout=120)
+                pair_peer.wait(timeout=30)
+                log.flush()
+                require_test_success((directory / "instrumentation.txt").read_text())
+                if pair_peer.returncode:
+                    raise RuntimeError(f"Pairing peer failed with exit {pair_peer.returncode}")
+                self.events.append({"phase": f"pair-{scenario}", "instrumentation": "passed"})
+                print(f"PASS real pairing {scenario}", flush=True)
+            finally:
+                for process in (instrument, pair_peer):
+                    if process is not None and process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=5)
+                for port in redirects:
+                    self.adb("emu", "redir", "del", f"udp:{port}", check=False)
+
     def install(self, apk):
         self.adb("install", "-r", "-g", str(apk.resolve()), timeout=120)
 
@@ -176,7 +277,11 @@ class Harness:
                 self.instrument("identity")
                 for phase in ("initial", "resume", "restart"):
                     self.stage(phase)
+                self.native_lifecycle("normal_back")
+                for scenario in ("approve", "decline"):
+                    self.pairing(scenario)
                 if self.args.extended:
+                    self.pairing("expire")
                     self.stage("outage")
                     # Only the synthetic installation created above is removed.
                     self.adb("uninstall", PACKAGE)
@@ -197,6 +302,8 @@ class Harness:
                         raise RuntimeError("PackageManager did not install the current version")
                     self.stage("upgrade")
                     self.events[-1]["upgrade_version_codes"] = [previous_version, current_version]
+                if self.args.lifecycle_probe:
+                    self.native_lifecycle(self.args.lifecycle_probe)
                 (self.output / "results.json").write_text(json.dumps({"passed": True, "phases": self.events}, indent=2))
             except Exception as error:
                 (self.output / "results.json").write_text(json.dumps({"passed": False, "error": str(error), "phases": self.events}, indent=2))
@@ -211,6 +318,8 @@ class Harness:
                     ("logcat.txt", ("logcat", "-d", "-t", "5000", "-v", "threadtime")),
                     ("activity.txt", ("shell", "dumpsys", "activity", "activities")),
                     ("package.txt", ("shell", "dumpsys", "package", PACKAGE)),
+                    ("native-crash.txt", ("logcat", "-b", "crash", "-d", "-t", "2000", "-v", "threadtime")),
+                    ("process-exit.txt", ("shell", "dumpsys", "activity", "exit-info", PACKAGE)),
                 ):
                     try:
                         (self.output / name).write_text(self.adb(*command, timeout=15, check=False))
@@ -232,13 +341,15 @@ def main():
     parser.add_argument("--apk", type=Path, required=True)
     parser.add_argument("--test-apk", type=Path, required=True)
     parser.add_argument("--peer", type=Path, required=True)
+    parser.add_argument("--pair-peer", type=Path, required=True)
+    parser.add_argument("--lifecycle-probe", choices=("recreate", "finish"))
     parser.add_argument("--output", type=Path, required=True, help="New directory for bounded diagnostics")
     parser.add_argument("--extended", action="store_true")
     parser.add_argument("--previous-apk", type=Path)
     args = parser.parse_args()
     if args.extended and not args.previous_apk:
         parser.error("--extended requires --previous-apk; upgrade coverage is mandatory")
-    for path in (args.apk, args.test_apk, args.peer, args.previous_apk):
+    for path in (args.apk, args.test_apk, args.peer, args.pair_peer, args.previous_apk):
         if path is not None and not path.is_file():
             parser.error(f"File not found: {path}")
     Harness(args).run()

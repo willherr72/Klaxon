@@ -164,6 +164,10 @@ export interface PairProgress {
   confirmation_code: string;
 }
 
+export interface PairRequestClosedEvent {
+  request_id: string;
+}
+
 export interface PendingPairEvent {
   request_id: string;
   initiator_id: string;
