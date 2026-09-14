@@ -6,8 +6,12 @@
 - Keep `package.json`, the root package entries in `package-lock.json`,
   `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and
   `src-tauri/tauri.conf.json` versions aligned. Add a dated changelog entry.
-- Verify the change, build the Windows NSIS installer and locally signed
+- Verify the change, build the Windows NSIS installer and production-signed
   Android arm64 APK, and attach both before publishing the release.
+- Android release signing may run locally or through `.github/workflows/release.yml`
+  using the restricted `release` GitHub environment: `main` for nonpublishing
+  checks and `v*` tags for releases. PR and nightly jobs must never receive
+  production signing credentials. Preserve the existing signing certificate.
 - Asset names must match the updater: `Klaxon_<version>_x64-setup.exe` and
   `klaxon-<version>-arm64.apk`. CI's unsigned Android APK is not shippable.
 - Preserve app data and pairings during upgrades. Never commit signing
