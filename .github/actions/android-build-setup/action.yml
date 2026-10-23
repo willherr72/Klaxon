@@ -12,6 +12,9 @@ runs:
         distribution: temurin
         java-version: '21'
     - uses: android-actions/setup-android@v3
+      with:
+        # v3 defaults to "tools platform-tools"; Google removed "tools".
+        packages: platform-tools
     - uses: actions/setup-node@v4
       with:
         node-version-file: .node-version
