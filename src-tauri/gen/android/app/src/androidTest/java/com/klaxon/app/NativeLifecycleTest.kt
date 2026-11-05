@@ -108,7 +108,13 @@ class NativeLifecycleTest {
         // Android 15 also checks LAUNCH_SOURCE_TYPE_HOME before backgrounding
         // on Back. startActivity() from our own UID fails that check even with
         // MAIN/LAUNCHER flags. Tap the actual launcher's app icon instead.
-        shell("input keyevent KEYCODE_HOME")
+        // A shell-injected Home key can return before its queued Home launch.
+        // If the launcher is already visible, the icon click can win that race
+        // and the late Home launch immediately backgrounds Klaxon. Wait for
+        // ActivityManager to complete Home before looking for the app icon.
+        val homeLaunch = shell("am start -W -a android.intent.action.MAIN -c android.intent.category.HOME")
+        assertTrue("Home Activity launch completed: $homeLaunch", Regex("(?m)^Status: ok\\s*$").containsMatchIn(homeLaunch))
+        instrumentation.uiAutomation.waitForIdle(500, 5000)
         val homeComponent = shell("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME")
             .lineSequence().last { it.contains('/') }.trim()
         val homePackage = homeComponent.substringBefore('/')
@@ -132,7 +138,12 @@ class NativeLifecycleTest {
             Log.e("KlaxonLifecycleProbe", "Launcher icon missing; bounded hierarchy: ${launcherHierarchy()}")
             fail("Launcher app drawer must contain the Klaxon icon; see bounded hierarchy log")
         }
-        await("MainActivity resumed") { resumedActivity() != null }
+        try {
+            await("MainActivity resumed") { resumedActivity() != null }
+        } catch (error: AssertionError) {
+            Log.e("KlaxonLifecycleProbe", "Icon click did not resume MainActivity; bounded hierarchy: ${launcherHierarchy()}")
+            throw error
+        }
         return requireNotNull(resumedActivity()).also { observedActivity = it }
     }
 
