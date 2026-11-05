@@ -148,9 +148,14 @@ class SyncLifecycleTest {
 
     private fun lastSuccess(): Long = scalar("SELECT last_sync_ok_at FROM peers WHERE id='ci-host'")?.toLong() ?: 0
 
-    private fun insertOutgoing(phase: String) {
+    private fun insertOutgoing(phase: String, includeStep: Boolean = true) {
         val now = System.currentTimeMillis()
         sql("INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,repeat_rule) VALUES (${sqlQuote("android-$phase")},${sqlQuote("Android fixture $phase")},2000000000000,2,'pending',$now,$now,1,'[\"ci\"]','{\"kind\":\"weekly\",\"weekdays\":[1,3,5]}')")
+        if (includeStep) insertOutgoingStep(phase)
+    }
+
+    private fun insertOutgoingStep(phase: String) {
+        val now = System.currentTimeMillis()
         sql("INSERT INTO task_steps(id,task_id,title,completed,sort_key,created_at,updated_at) VALUES (${sqlQuote("android-$phase-step")},${sqlQuote("android-$phase")},${sqlQuote("Android step $phase")},1,0,$now,$now)")
     }
 
@@ -244,6 +249,17 @@ class SyncLifecycleTest {
                 shell("svc wifi enable")
                 shell("svc data enable")
             }
+        } else if (phase == "upgrade") {
+            // The installed baseline has no task_steps table. Preserve a task
+            // written to its old schema, then let production startup migrate
+            // the database before exercising the new step schema and sync.
+            insertOutgoing(phase, includeStep = false)
+            launch()
+            await("upgrade creates the task steps table") {
+                scalar("SELECT name FROM sqlite_schema WHERE type='table' AND name='task_steps'") == "task_steps"
+            }
+            insertOutgoingStep(phase)
+            assertSynced(phase, previous)
         } else {
             insertOutgoing(phase)
             launch()
