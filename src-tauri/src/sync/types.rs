@@ -97,6 +97,8 @@ pub struct ChangeSet {
     /// frame. Upgrade paired devices together.
     #[serde(default)]
     pub day_notes: Vec<RemoteDayNote>,
+    /// Protocol 2: ordered task children. Negotiate before reading batches.
+    pub steps: Vec<crate::db::task_steps::TaskStep>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

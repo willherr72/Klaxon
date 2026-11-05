@@ -67,6 +67,10 @@ fn apply_in_transaction(conn: &Connection, set: &ChangeSet) -> AppResult<Applied
             }
         }
     }
+    let mut steps_changed = false;
+    for step in &set.steps {
+        steps_changed |= crate::db::task_steps::apply_remote(conn, step)?;
+    }
     for t in &set.thoughts {
         if thoughts::apply_remote(conn, t)? {
             response.accepted_thoughts += 1;
@@ -89,7 +93,7 @@ fn apply_in_transaction(conn: &Connection, set: &ChangeSet) -> AppResult<Applied
     cancel_committed.sort();
     cancel_committed.dedup();
     Ok(Applied {
-        reminders_changed: response.accepted_reminders
+        reminders_changed: steps_changed || response.accepted_reminders
             + response.accepted_tombstones
             + response.accepted_lanes
             > 0,
@@ -120,6 +124,7 @@ mod tests {
     }
     fn set() -> ChangeSet {
         ChangeSet {
+            steps: vec![],
             server_time_ms: 0,
             reminders: vec![],
             tombstones: vec![],

@@ -11,6 +11,7 @@
   import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
   import { relativeTime } from "../time";
   import SignalLight from "./SignalLight.svelte";
+  import AgentAccess from "./AgentAccess.svelte";
   import SyncSection from "./SyncSection.svelte";
   import type { Priority } from "../types";
   import type { UpdateCheck } from "../api";
@@ -563,6 +564,8 @@
           </div>
           {/if}
         </section>
+
+        {#if !isMobile}<AgentAccess />{/if}
 
         <SyncSection
           collapsed={!sectionOpen.sync}

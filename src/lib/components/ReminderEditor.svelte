@@ -5,6 +5,7 @@
   import { msToLocalInput, localInputToMs } from "../time";
   import type { Priority, Reminder, ReminderCreate, RepeatRule } from "../types";
   import { starCount, priorityForStars } from "../stars";
+  import TaskSteps from "./TaskSteps.svelte";
   import SignalLight from "./SignalLight.svelte";
 
   let lanes = $state<Lane[]>([]);
@@ -259,6 +260,12 @@
         bind:value={description}
       ></textarea>
     </label>
+
+    {#if open && reminder?.silent && silent}
+      {#key reminder.id}<TaskSteps taskId={reminder.id} />{/key}
+    {:else if open && silent && !reminder}
+      <p class="mono-caps-faint">Save this task to add steps.</p>
+    {/if}
 
     <label class="field">
       <span class="mono-caps-faint">When</span>

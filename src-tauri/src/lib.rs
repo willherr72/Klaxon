@@ -5,6 +5,9 @@ pub mod backup;
 #[cfg(desktop)]
 mod capture;
 mod commands;
+mod domain;
+#[cfg(desktop)]
+pub mod agent;
 mod mobile_bg;
 pub mod db;
 pub mod error;
@@ -373,6 +376,11 @@ pub fn run() {
                 iroh_router: iroh_router_state,
             });
 
+            #[cfg(desktop)]
+            if let Err(error) = agent::start(app.handle()) {
+                log::error!("Agent access unavailable: {error}");
+            }
+
             // Mobile: stash the app handle so the WorkManager background-sync
             // worker can reach AppState via JNI. No-op / absent on desktop.
             #[cfg(mobile)]
@@ -384,6 +392,21 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(desktop)]
+            agent::agent_clients,
+            #[cfg(desktop)]
+            agent::agent_add_client,
+            #[cfg(desktop)]
+            agent::agent_client_config,
+            #[cfg(desktop)]
+            agent::agent_revoke_client,
+            #[cfg(desktop)]
+            agent::agent_activity,
+            commands::list_steps,
+            commands::add_step,
+            commands::update_step,
+            commands::move_step,
+            commands::delete_step,
             commands::list_reminders,
             commands::get_reminder,
             commands::create_reminder,

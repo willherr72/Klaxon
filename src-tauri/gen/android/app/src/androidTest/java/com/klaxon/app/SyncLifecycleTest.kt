@@ -151,6 +151,7 @@ class SyncLifecycleTest {
     private fun insertOutgoing(phase: String) {
         val now = System.currentTimeMillis()
         sql("INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,tags,repeat_rule) VALUES (${sqlQuote("android-$phase")},${sqlQuote("Android fixture $phase")},2000000000000,2,'pending',$now,$now,1,'[\"ci\"]','{\"kind\":\"weekly\",\"weekdays\":[1,3,5]}')")
+        sql("INSERT INTO task_steps(id,task_id,title,completed,sort_key,created_at,updated_at) VALUES (${sqlQuote("android-$phase-step")},${sqlQuote("android-$phase")},${sqlQuote("Android step $phase")},1,0,$now,$now)")
     }
 
     private fun assertPairing() {
@@ -162,7 +163,8 @@ class SyncLifecycleTest {
 
     private fun assertSynced(phase: String, previous: Long) {
         await("fresh successful sync and incoming $phase") {
-            lastSuccess() > previous && scalar("SELECT title FROM reminders WHERE id='host-$phase'") == "Host fixture $phase"
+            lastSuccess() > previous && scalar("SELECT title FROM reminders WHERE id='host-$phase'") == "Host fixture $phase" &&
+                scalar("SELECT title FROM task_steps WHERE id='host-$phase-step' AND completed=1") == "Host step $phase"
         }
         assertPairing()
         assertIdentity()

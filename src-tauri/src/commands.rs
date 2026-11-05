@@ -41,14 +41,11 @@ pub fn create_reminder(
     app: AppHandle,
     input: ReminderCreate,
 ) -> AppResult<Reminder> {
-    let r = {
-        let conn = state.db.lock();
-        repo::create(&conn, input)?
-    };
-    let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
-    let _ = app.emit("klaxon://reminders-changed", ());
-    nudge_write(&state);
-    Ok(r)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::CreateReminder { input },
+    )
 }
 
 #[tauri::command]
@@ -58,27 +55,15 @@ pub fn update_reminder(
     id: String,
     patch: ReminderUpdate,
 ) -> AppResult<Reminder> {
-    let r = {
-        let conn = state.db.lock();
-        repo::update(&conn, &id, patch)?
-    };
-    let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
-    // Announce the change instead of trusting the caller to re-fetch. The
-    // editor happens to call refresh() after saving, which masked this;
-    // the Tasks board's star control has no such path, so its cards
-    // rendered stale priorities even though the write had landed. Every
-    // reminder-mutating command emits now, so no caller has to know.
-    let _ = app.emit("klaxon://reminders-changed", ());
-    nudge_write(&state);
-    Ok(r)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::UpdateReminder { id, patch },
+    )
 }
 
 #[tauri::command]
-pub fn delete_reminder(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    id: String,
-) -> AppResult<()> {
+pub fn delete_reminder(state: State<'_, AppState>, app: AppHandle, id: String) -> AppResult<()> {
     {
         let conn = state.db.lock();
         repo::delete(&conn, &id)?;
@@ -97,18 +82,14 @@ pub fn snooze_reminder(
     id: String,
     snooze_until_ms: i64,
 ) -> AppResult<Reminder> {
-    let r = {
-        let conn = state.db.lock();
-        repo::set_state(&conn, &id, ReminderState::Snoozed, Some(snooze_until_ms))?
-    };
-    alerts::cancel_alert(&app, &id);
-    let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
-    // The alarm window and the Android notification actions are separate
-    // callers with no way to refresh the main window's list — without this
-    // the countdown there keeps showing the pre-snooze time.
-    let _ = app.emit("klaxon://reminders-changed", ());
-    nudge_write(&state);
-    Ok(r)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::SnoozeReminder {
+            id,
+            snooze_until_ms,
+        },
+    )
 }
 
 #[tauri::command]
@@ -146,15 +127,11 @@ pub fn complete_reminder(
     app: AppHandle,
     id: String,
 ) -> AppResult<Reminder> {
-    let r = {
-        let conn = state.db.lock();
-        repo::set_state(&conn, &id, ReminderState::Completed, None)?
-    };
-    alerts::cancel_alert(&app, &id);
-    let _ = state.scheduler_tx.send(SchedulerMsg::Reload);
-    let _ = app.emit("klaxon://reminders-changed", ());
-    nudge_write(&state);
-    Ok(r)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::CompleteReminder { id },
+    )
 }
 
 #[tauri::command]
@@ -170,11 +147,7 @@ pub fn get_setting(state: State<'_, AppState>, key: String) -> AppResult<Option<
 }
 
 #[tauri::command]
-pub fn set_setting(
-    state: State<'_, AppState>,
-    key: String,
-    value: String,
-) -> AppResult<()> {
+pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> AppResult<()> {
     let conn = state.db.lock();
     cfg::set(&conn, &key, &value)
 }
@@ -271,11 +244,7 @@ pub fn list_lanes(state: State<'_, AppState>) -> AppResult<Vec<Lane>> {
 }
 
 #[tauri::command]
-pub fn create_lane(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    name: String,
-) -> AppResult<Lane> {
+pub fn create_lane(state: State<'_, AppState>, app: AppHandle, name: String) -> AppResult<Lane> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(AppError::Invalid("lane name required".into()));
@@ -321,13 +290,7 @@ pub fn rename_lane(
         let conn = state.db.lock();
         let existing = task_lanes::get_by_id(&conn, &id)?
             .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?;
-        task_lanes::update(
-            &conn,
-            &id,
-            trimmed,
-            existing.order_index,
-            now_ms(),
-        )?;
+        task_lanes::update(&conn, &id, trimmed, existing.order_index, now_ms())?;
         task_lanes::get_by_id(&conn, &id)?
             .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?
     };
@@ -356,8 +319,7 @@ pub fn delete_lane(
             .ok_or_else(|| AppError::NotFound(format!("lane {id}")))?;
         if lane.is_default {
             return Err(AppError::Invalid(
-                "cannot delete the default lane — rename it or move tasks to it instead"
-                    .into(),
+                "cannot delete the default lane — rename it or move tasks to it instead".into(),
             ));
         }
         let default_id = task_lanes::default_lane(&conn)?.id;
@@ -375,9 +337,7 @@ pub fn delete_lane(
         // Tombstone uses the shared tombstones table so peers learn
         // to drop the lane too.
         crate::db::tombstones::create(&conn, &id, now)?;
-        DeleteLaneOutcome {
-            tasks_moved: moved,
-        }
+        DeleteLaneOutcome { tasks_moved: moved }
     };
     let _ = app.emit("klaxon://lanes-changed", ());
     nudge_write(&state);
@@ -418,28 +378,16 @@ pub fn place_task(
     before_id: Option<String>,
     after_id: Option<String>,
 ) -> AppResult<Reminder> {
-    let trimmed = lane_id.trim();
-    if trimmed.is_empty() {
-        return Err(AppError::Invalid("lane_id required".into()));
-    }
-    let updated = {
-        let conn = state.db.lock();
-        // Validate the lane exists so a stale UI state doesn't write a
-        // dangling FK.
-        if task_lanes::get_by_id(&conn, trimmed)?.is_none() {
-            return Err(AppError::NotFound(format!("lane {trimmed}")));
-        }
-        repo::place(
-            &conn,
-            &reminder_id,
-            trimmed,
-            before_id.as_deref(),
-            after_id.as_deref(),
-        )?
-    };
-    let _ = app.emit("klaxon://reminders-changed", ());
-    nudge_write(&state);
-    Ok(updated)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::PlaceTask {
+            id: reminder_id,
+            lane_id,
+            before_id,
+            after_id,
+        },
+    )
 }
 
 #[tauri::command]
@@ -581,10 +529,7 @@ pub fn remove_peer(state: State<'_, AppState>, id: String) -> AppResult<()> {
 /// `iroh_node_id` (paired pre-v0.3 — must re-pair) or if our local iroh
 /// endpoint isn't up.
 #[tauri::command]
-pub async fn ping_peer(
-    state: State<'_, AppState>,
-    id: String,
-) -> AppResult<PingResponse> {
+pub async fn ping_peer(state: State<'_, AppState>, id: String) -> AppResult<PingResponse> {
     let (node_id, secret) = {
         let conn = state.db.lock();
         let peers = peer_repo::list_all(&conn)?;
@@ -612,11 +557,7 @@ pub async fn ping_peer(
 pub fn device_identity(state: State<'_, AppState>) -> AppResult<DeviceInfo> {
     let identity = sync::read_identity(&state.db);
     let enabled = sync::read_enabled(&state.db);
-    let iroh_node_id = state
-        .iroh_node
-        .lock()
-        .as_ref()
-        .map(|n| n.node_id.clone());
+    let iroh_node_id = state.iroh_node.lock().as_ref().map(|n| n.node_id.clone());
     Ok(DeviceInfo {
         device_id: identity.device_id,
         device_name: identity.device_name,
@@ -633,7 +574,11 @@ pub fn generate_secret() -> AppResult<String> {
 #[tauri::command]
 pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<()> {
     let conn = state.db.lock();
-    cfg::set(&conn, "sync_enabled", if enabled { "true" } else { "false" })?;
+    cfg::set(
+        &conn,
+        "sync_enabled",
+        if enabled { "true" } else { "false" },
+    )?;
     // Note: starting/stopping the actual server + mDNS requires a restart.
     // The sync TASK respects the flag immediately on its next tick.
     Ok(())
@@ -643,7 +588,9 @@ pub fn set_sync_enabled(state: State<'_, AppState>, enabled: bool) -> AppResult<
 /// requests coalesce with writes and cannot race a worker's outgoing pass.
 #[tauri::command]
 pub fn sync_now(state: State<'_, AppState>) -> AppResult<()> {
-    state.sync_nudge.send(crate::sync::trigger::Nudge::Resume)
+    state
+        .sync_nudge
+        .send(crate::sync::trigger::Nudge::Resume)
         .map_err(|_| AppError::Invalid("sync scheduler is unavailable".into()))
 }
 
@@ -765,10 +712,7 @@ pub async fn start_pair_with(
 use crate::sync::types::PairDecision;
 
 #[tauri::command]
-pub fn approve_pair_request(
-    state: State<'_, AppState>,
-    request_id: String,
-) -> AppResult<()> {
+pub fn approve_pair_request(state: State<'_, AppState>, request_id: String) -> AppResult<()> {
     let mut guard = state.pending_pairs.lock();
     if let Some(tx) = guard.remove(&request_id) {
         let _ = tx.send(PairDecision::Approve);
@@ -781,10 +725,7 @@ pub fn approve_pair_request(
 }
 
 #[tauri::command]
-pub fn decline_pair_request(
-    state: State<'_, AppState>,
-    request_id: String,
-) -> AppResult<()> {
+pub fn decline_pair_request(state: State<'_, AppState>, request_id: String) -> AppResult<()> {
     let mut guard = state.pending_pairs.lock();
     if let Some(tx) = guard.remove(&request_id) {
         let _ = tx.send(PairDecision::Decline);
@@ -831,13 +772,11 @@ pub fn create_thought(
     app: AppHandle,
     input: ThoughtCreate,
 ) -> AppResult<Thought> {
-    let thought = {
-        let conn = state.db.lock();
-        thoughts::create(&conn, input)?
-    };
-    let _ = app.emit("klaxon://thoughts-changed", ());
-    nudge_write(&state);
-    Ok(thought)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::CreateThought { input },
+    )
 }
 
 #[tauri::command]
@@ -847,23 +786,17 @@ pub fn update_thought(
     id: String,
     patch: ThoughtUpdate,
 ) -> AppResult<Thought> {
-    let thought = {
-        let conn = state.db.lock();
-        thoughts::update(&conn, &id, patch)?
-    };
-    let _ = app.emit("klaxon://thoughts-changed", ());
-    nudge_write(&state);
-    Ok(thought)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::UpdateThought { id, patch },
+    )
 }
 
 /// `thoughts::delete` writes the tombstone, so paired devices drop their
 /// copy on the next sync.
 #[tauri::command]
-pub fn delete_thought(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    id: String,
-) -> AppResult<()> {
+pub fn delete_thought(state: State<'_, AppState>, app: AppHandle, id: String) -> AppResult<()> {
     {
         let conn = state.db.lock();
         thoughts::delete(&conn, &id)?;
@@ -888,13 +821,11 @@ pub fn set_day_note(
     day: String,
     body: String,
 ) -> AppResult<crate::models::DayNote> {
-    let note = {
-        let conn = state.db.lock();
-        crate::db::day_notes::set(&conn, &day, &body)?
-    };
-    let _ = app.emit("klaxon://day-notes-changed", ());
-    nudge_write(&state);
-    Ok(note)
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::SetDayNote { day, body },
+    )
 }
 
 #[tauri::command]
@@ -956,4 +887,61 @@ pub fn thoughts_between(
 #[tauri::command]
 pub fn reconcile_notifications(state: State<'_, AppState>) -> AppResult<()> {
     crate::os_alarms::reconcile_os_alarms(&state.db)
+}
+
+// Task children share the reminder refresh event and durable sync journal.
+#[tauri::command]
+pub fn list_steps(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> AppResult<Vec<crate::db::task_steps::TaskStep>> {
+    crate::db::task_steps::list(&state.db.lock(), &task_id)
+}
+#[tauri::command]
+pub fn add_step(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    task_id: String,
+    title: String,
+) -> AppResult<crate::db::task_steps::TaskStep> {
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::AddStep { task_id, title },
+    )
+}
+#[tauri::command]
+pub fn update_step(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+    title: Option<String>,
+    completed: Option<bool>,
+) -> AppResult<crate::db::task_steps::TaskStep> {
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::UpdateStep {
+            id,
+            title,
+            completed,
+        },
+    )
+}
+#[tauri::command]
+pub fn move_step(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    id: String,
+    before_id: Option<String>,
+) -> AppResult<Vec<crate::db::task_steps::TaskStep>> {
+    crate::domain::from_ui(
+        &state,
+        &app,
+        crate::domain::Mutation::MoveStep { id, before_id },
+    )
+}
+#[tauri::command]
+pub fn delete_step(state: State<'_, AppState>, app: AppHandle, id: String) -> AppResult<()> {
+    crate::domain::from_ui(&state, &app, crate::domain::Mutation::DeleteStep { id })
 }

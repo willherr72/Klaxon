@@ -635,6 +635,7 @@ mod tests {
 
     fn empty_change_set() -> ChangeSet {
         ChangeSet {
+            steps: vec![],
             server_time_ms: 0,
             reminders: vec![],
             tombstones: vec![],

@@ -1,7 +1,8 @@
 # Agent collaboration through MCP
 
 Date: 2026-11-05
-Status: proposal; no agent endpoint or model integration is implemented by this change.
+Status: v0.11.0 implements local MCP reads/writes and ordered task steps.
+Reviewed bulk plans, undo, and embedded chat remain future work.
 
 ## Experience
 
@@ -171,3 +172,22 @@ package/Cargo/Tauri versions, dated changelog, verified Windows NSIS installer,
 and production-signed Android arm64 APK using the existing signing identity.
 The current nightly test-helper fix and this proposal do not change app behavior
 or require a replacement app binary.
+
+## v0.11.0 implementation notes
+
+The installed app executable also runs the stdio bridge in `--mcp` mode, avoiding
+an additional executable/runtime dependency. The app hosts MCP over a local
+Windows named pipe (remote clients rejected) or a mode-0600 Unix socket, with
+per-client credentials in a separate app-data directory. Windows uses the
+current user's app-data ACL; the local OS account is the security boundary.
+
+`domain.rs` is shared by UI and MCP mutations. Agent receipts and mutation data
+commit in one transaction, then scheduler reload, UI events, alert cancellation
+and sync nudges run. Revision checks use the local sync epoch and global journal
+head: any intervening content change requires a reread, even an unrelated edit.
+This deliberately favors preventing lost edits over avoiding extra reads.
+
+The initial grant is either read-only or read/write for all supported content.
+There are no generic invocation, SQL, settings, pairing, backup, or deletion tools.
+The ordered task-step table extends protocol negotiation to version 2; v0.10.x
+peers are explicitly rejected before transferring changed batch shapes.
