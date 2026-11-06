@@ -51,6 +51,9 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
         run: cargo build --locked
+      - name: Live MCP bridge and app assertions
+        timeout-minutes: 3
+        run: python scripts/agent-smoke.py --executable src-tauri/target/debug/klaxon.exe
   android:
     name: ${{ inputs.lifecycle_probe && inputs.lifecycle_probe != 'none' && 'Android Activity diagnostic' || 'Android smoke' }}
     uses: ./.github/workflows/android-tests.yml

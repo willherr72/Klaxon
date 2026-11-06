@@ -128,6 +128,12 @@ class Harness:
             f"production host committed outgoing {phase}",
             lambda: expected in self.read_json("report.json").get("received", []),
         )
+        expected_step = {"id": f"android-{phase}-step", "title": f"Android step {phase}", "completed": True}
+        self.wait(
+            f"production host committed outgoing step {phase}",
+            lambda: expected_step in self.read_json("report.json").get("received_steps", []),
+        )
+        self.events[-1]["host_received_step"] = expected_step
         self.events[-1]["host_received"] = expected
         print(f"PASS host persisted Android fixture {phase}", flush=True)
 

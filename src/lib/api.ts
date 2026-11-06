@@ -11,7 +11,16 @@ import type {
   ThoughtUpdate,
 } from "./types";
 
+export interface TaskStep {
+  id: string; task_id: string; title: string; completed: boolean; sort_key: number; created_at: number; updated_at: number;
+}
+
 export const api = {
+  listSteps: (taskId: string) => invoke<TaskStep[]>("list_steps", { taskId }),
+  addStep: (taskId: string, title: string) => invoke<TaskStep>("add_step", { taskId, title }),
+  updateStep: (id: string, title: string | null, completed: boolean | null) => invoke<TaskStep>("update_step", { id, title, completed }),
+  moveStep: (id: string, beforeId: string | null) => invoke<TaskStep[]>("move_step", { id, beforeId }),
+  deleteStep: (id: string) => invoke<void>("delete_step", { id }),
   listReminders: () => invoke<Reminder[]>("list_reminders"),
   getReminder: (id: string) =>
     invoke<Reminder>("get_reminder", { id }),

@@ -12,7 +12,7 @@ Klaxon is reminders, tasks, and a private thought inbox in one app, synced devic
 
 - **Reminders that escalate.** Three priority tiers — quiet toast, always-on-top popup with a repeating tone, fullscreen alarm. Configurable repeat count, interval, and tone per tier. Snooze presets or custom. Recurring: daily, weekdays, interval, monthly.
 - **Rings cold.** A reminder created on your desktop rings on your phone even if Klaxon isn't running there — background sync arms real OS alarms. Late arrivals ring once within a 30-minute grace window; a reminder you dismiss anywhere goes quiet everywhere.
-- **Tasks board.** Silent reminders organized in drag-and-drop swim lanes.
+- **Tasks board.** Silent reminders organized in drag-and-drop swim lanes, with ordered steps inside tasks. Edit, complete, and reorder steps in the task editor.
 - **Thoughts inbox.** A permanent, searchable feed for ideas: global capture hotkey on desktop, share-to-Klaxon on Android, `#tags` inline, promote any thought into a task or reminder.
 - **True peer-to-peer sync.** Devices pair with a 6-digit confirmation code and sync directly over [iroh](https://iroh.computer) — LAN when possible, encrypted relays when not. No store-and-forward server exists; only your devices ever hold your data.
 - **Backups.** Automatic daily local snapshots, plus passphrase-encrypted full export/restore (Argon2id + AES-256-GCM) that resurrects a device completely — pairings included.
@@ -56,11 +56,37 @@ Klaxon checks for new releases quietly (on launch and daily) and shows a hint in
 - **Snapshots:** once a day Klaxon copies its database into `backups/` (newest 7 kept) — plain SQLite files, restorable with a file manager.
 - **Export:** Settings → System → Export backup writes a single passphrase-encrypted `.klaxonbak` containing the database *and* the device's sync identity. Restoring it makes a machine *be* the old device, pairings intact. There is no passphrase recovery — keep it safe. Never restore one identity onto two live devices.
 
+## Work with an agent
+
+On desktop, open **Settings → Agent access**, name the client, and choose read-only
+access or allow changes. Copy the generated MCP configuration into your agent's
+MCP settings and keep Klaxon running. The bundled executable serves as a stdio
+bridge; no separate runtime, cloud account, or public network listener is needed.
+Each client can be revoked in Settings, including an already connected client.
+
+Try “What should I work on today?”, “Move testing before publishing in this task”,
+“Save this idea as a thought”, or “Remind me Friday at 9”. Agent changes appear in
+the app and use ordinary peer sync to reach Android. Settings shows recent agent
+changes. Planning requests only read context; an agent should make changes only
+when asked. Reads include a revision token; writes reject stale context and
+require a unique operation ID to avoid duplicate creations on retry.
+
+Access covers tasks, steps, reminders, thoughts and day notes. A hosted agent
+may send this content to its model provider. A local agent/model can keep it on
+your computer. Local credentials are stored separately from the synced database
+and Klaxon backup exports. This release connects external agents; it does not
+include embedded chat, remote agent access, bulk plans, or undo for agent edits.
+
+Task steps require **v0.11.0 on both paired devices**. Upgrade preserves existing
+items and pairings; older peers receive an update requirement before data exchange.
+
 ## Privacy model
 
 What leaves a device, exhaustively:
 
 - **Sync traffic to your own paired peers**, end-to-end encrypted by iroh. When no direct path exists, it flows through n0's public relays, which see only encrypted bytes.
+- **Optional local agent access**, when you connect a client in Settings. The
+  chosen agent may forward returned content to its model provider.
 - **A release check to `api.github.com`** (unauthenticated, roughly daily) and the release download when you ask for an update.
 
 There is no telemetry, no account, no analytics, and no server of ours anywhere.

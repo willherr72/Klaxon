@@ -5,6 +5,24 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-11-05
+
+Update both paired devices to v0.11.0 to sync task steps. Existing tasks,
+reminders, thoughts, device identities and pairings are preserved.
+
+### Added
+
+- Ordered task steps with completion, editing, and move controls, synced between devices.
+- Local MCP agent access from desktop Settings: planning context, task and step
+  edits, reminders, thoughts, and day notes, with per-client read/write grants
+  and revocation. Hosted agents may send shared content to their model provider.
+- Agent writes reject stale revisions, preserve retry receipts to prevent
+  duplicate creations, and appear in a recent activity list.
+
+### Fixed
+
+- Android lifecycle tests wait for Home to finish before clicking the app icon.
+
 ## [0.10.4] — 2026-09-13
 
 Existing reminders and pairings are preserved. Sync remains compatible with v0.10.3.

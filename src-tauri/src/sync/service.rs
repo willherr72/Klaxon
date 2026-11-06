@@ -135,7 +135,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(matches!(response, RpcResponse::HelloV1 { protocol: 1, .. }));
+        assert!(matches!(response, RpcResponse::HelloV1 { protocol: PROTOCOL_VERSION, .. }));
         let version: String = db
             .query_row("SELECT last_app_version FROM peers WHERE id='p'", [], |r| {
                 r.get(0)

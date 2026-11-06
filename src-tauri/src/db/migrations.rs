@@ -281,6 +281,7 @@ const MIGRATIONS: &[&str] = &[
     "#,
     // 016 -- local delivery revisions and durable per-peer cursors.
     include_str!("migration_016.sql"),
+    include_str!("migration_017.sql"),
 ];
 
 pub fn run(conn: &Connection) -> AppResult<()> {

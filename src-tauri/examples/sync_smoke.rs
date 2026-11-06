@@ -178,6 +178,7 @@ async fn smoke() -> Result {
     };
     let router = Router::builder(server.clone())
         .accept(ALPN_SYNC.to_vec(), handler.clone())
+        .accept(proto::ALPN_PREVIOUS.to_vec(), handler.clone())
         .accept(ALPN_LEGACY.to_vec(), handler)
         .spawn();
     let address = server.addr();
@@ -202,6 +203,23 @@ async fn smoke() -> Result {
         .iter()
         .any(|row| row.id == "incoming"));
     storage::apply_pulled(&source, "peer", &received)?;
+    let task = reminders::create(
+        &source,
+        klaxon_lib::models::ReminderCreate {
+            title: "Task with synced steps".into(),
+            description: None,
+            due_at: 2_000_000_000_000,
+            priority: klaxon_lib::models::Priority::Normal,
+            sound_path: None,
+            repeat_rule: None,
+            silent: true,
+            tags: vec![],
+            task_lane_id: None,
+        },
+    )?;
+    let first = klaxon_lib::db::task_steps::add(&source, &task.id, "Publish")?;
+    let second = klaxon_lib::db::task_steps::add(&source, &task.id, "Test")?;
+    klaxon_lib::db::task_steps::place(&source, &second.id, Some(&first.id))?;
     let batch = sync_log::snapshot(&source, None)?;
     let ack = session.push(batch.clone()).await?;
     assert_eq!(
@@ -215,6 +233,11 @@ async fn smoke() -> Result {
         .reminders
         .iter()
         .any(|row| row.id == "outgoing"));
+    assert_eq!(
+        klaxon_lib::db::task_steps::list(&source, &task.id)?,
+        klaxon_lib::db::task_steps::list(&target.lock(), &task.id)?,
+        "ordered steps survive production QUIC sync"
+    );
     let stored = reminders::get_by_id(&target.lock(), "outgoing")?;
     assert_eq!(stored.title, "Client weekly reminder");
     assert!(
@@ -234,7 +257,10 @@ async fn smoke() -> Result {
     );
     assert!(matches!(
         rpc(&raw, hello()).await?,
-        RpcResponse::HelloV1 { protocol: 1, .. }
+        RpcResponse::HelloV1 {
+            protocol: proto::PROTOCOL_VERSION,
+            ..
+        }
     ));
     // An oversized frame is rejected before allocation; its stream must not kill
     // the established connection or erase negotiation for the next stream.
@@ -304,7 +330,8 @@ async fn smoke() -> Result {
     drop(retry_session);
     println!("PASS interrupted push: committed request with lost ACK retries idempotently");
 
-    let legacy = tokio::time::timeout(DEADLINE, client.connect(address, ALPN_LEGACY)).await??;
+    let legacy =
+        tokio::time::timeout(DEADLINE, client.connect(address.clone(), ALPN_LEGACY)).await??;
     assert!(matches!(
         rpc(
             &legacy,
@@ -320,6 +347,15 @@ async fn smoke() -> Result {
     );
     assert_eq!(sync_log::snapshot(&target.lock(), None)?.cursor, committed);
     legacy.close(0u32.into(), b"smoke finished");
+    let previous = tokio::time::timeout(
+        DEADLINE,
+        client.connect(address.clone(), proto::ALPN_PREVIOUS),
+    )
+    .await??;
+    assert!(
+        matches!(rpc(&previous, RpcRequest::HelloV1 { protocol: 1, app_version: "0.10.4".into() }).await?, RpcResponse::Error(message) if message.contains("v0.11.0"))
+    );
+    previous.close(0u32.into(), b"protocol 1 refused");
     println!("PASS legacy ALPN: Hello remains reachable; data transfer requires update and does not mutate");
 
     // The inverse mixed-version direction: a new client reaches a server

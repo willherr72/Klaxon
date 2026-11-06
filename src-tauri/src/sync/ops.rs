@@ -53,6 +53,7 @@ pub fn pull(db: &Arc<Mutex<Connection>>, since: i64) -> AppResult<ChangeSet> {
         .map(RemoteDayNote::from)
         .collect();
     Ok(ChangeSet {
+        steps: vec![],
         server_time_ms: now_ms(),
         reminders,
         tombstones: ts,

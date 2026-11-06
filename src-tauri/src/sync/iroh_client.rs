@@ -58,7 +58,12 @@ async fn request(
             .map_err(|e| AppError::Invalid(format!("{phase}: finish request: {e}")))?;
         let response: RpcResponse = proto::read_frame(&mut recv).await?;
         match response {
-            RpcResponse::Error(message) => Err(AppError::Invalid(format!("{phase}: {message}"))),
+            RpcResponse::Error(message) => {
+                let update = if phase == "protocol negotiation" && message.contains("Unsupported sync protocol") {
+                    format!(" {}", proto::UPDATE_REQUIRED)
+                } else { String::new() };
+                Err(AppError::Invalid(format!("{phase}: {message}{update}")))
+            },
             response => Ok(response),
         }
     })

@@ -18,7 +18,7 @@ pub struct Batch {
     pub changes: ChangeSet,
 }
 
-fn current(conn: &Connection) -> AppResult<Cursor> {
+pub fn current(conn: &Connection) -> AppResult<Cursor> {
     Ok(conn.query_row("SELECT epoch, COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_journal'),0) FROM sync_epoch WHERE singleton=1",[],|r|Ok(Cursor{epoch:r.get(0)?,revision:r.get(1)?}))?)
 }
 
@@ -48,6 +48,7 @@ pub fn snapshot(conn: &Connection, since: Option<&Cursor>) -> AppResult<Batch> {
     }
     let upper = cursor.revision;
     let changes = ChangeSet {
+        steps: rows(&tx, "task_steps", "step", "id", lower, upper, super::task_steps::row)?,
         server_time_ms: crate::models::now_ms(),
         reminders: rows(&tx, "reminders", "reminder", "id", lower, upper, |r| {
             Ok(RemoteReminder::from(&reminders::row_to_reminder(r)?))

@@ -40,15 +40,15 @@ fn renumber_lane(conn: &Connection, lane_id: &str) -> AppResult<()> {
     let ids: Vec<String> = stmt
         .query_map(params![lane_id], |r| r.get(0))?
         .collect::<Result<_, _>>()?;
-    let tx = conn.unchecked_transaction()?;
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
     let now = now_ms();
     for (i, rid) in ids.iter().enumerate() {
-        tx.execute(
+        conn.execute(
             "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
             params![rid, ((i + 1) as f64) * KEY_STRIDE, now],
         )?;
     }
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(())
 }
 
@@ -130,7 +130,7 @@ pub fn place(
     get_by_id(conn, id)
 }
 
-pub(super) fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
+pub(crate) fn row_to_reminder(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     let repeat_rule_json: Option<String> = row.get("repeat_rule")?;
     let repeat_rule = repeat_rule_json
         .as_deref()
@@ -526,7 +526,7 @@ pub fn sort_lane_by_stars(conn: &Connection, lane_id: &str) -> AppResult<usize> 
     // Vec::sort_by_key is stable — equal priorities keep drag order.
     rows.sort_by_key(|(_, prio, _)| std::cmp::Reverse(*prio));
 
-    let tx = conn.unchecked_transaction()?;
+    let tx = if conn.is_autocommit() { Some(conn.unchecked_transaction()?) } else { None };
     let now = now_ms();
     let mut changed = 0usize;
     for (i, (rid, _, old_key)) in rows.iter().enumerate() {
@@ -534,13 +534,13 @@ pub fn sort_lane_by_stars(conn: &Connection, lane_id: &str) -> AppResult<usize> 
         if *old_key == Some(target) {
             continue;
         }
-        tx.execute(
+        conn.execute(
             "UPDATE reminders SET task_sort_key = ?2, updated_at = ?3 WHERE id = ?1",
             params![rid, target, now],
         )?;
         changed += 1;
     }
-    tx.commit()?;
+    if let Some(tx) = tx { tx.commit()?; }
     Ok(changed)
 }
 

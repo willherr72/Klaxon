@@ -1,5 +1,5 @@
-//! Length-prefixed Postcard RPC. Versioned delivery uses klaxon/sync/1;
-//! klaxon/sync/0 is retained only for compatibility diagnostics.
+//! Length-prefixed Postcard RPC. Versioned delivery uses klaxon/sync/2;
+//! klaxon/sync/0 and /1 are retained only for compatibility diagnostics.
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,10 +10,11 @@ use crate::sync::types::{ChangeSet, PingResponse, PushResponse};
 
 /// ALPN identifier handshook between iroh peers. Bump the suffix when the
 /// envelope shape changes incompatibly.
-pub const ALPN_SYNC: &[u8] = b"klaxon/sync/1";
+pub const ALPN_SYNC: &[u8] = b"klaxon/sync/2";
+pub const ALPN_PREVIOUS: &[u8] = b"klaxon/sync/1";
 pub const ALPN_LEGACY: &[u8] = b"klaxon/sync/0";
-pub const PROTOCOL_VERSION: u16 = 1;
-pub const UPDATE_REQUIRED: &str = "Update Klaxon on both devices to v0.10.3 or later to resume syncing. Your data and pairing are preserved.";
+pub const PROTOCOL_VERSION: u16 = 2;
+pub const UPDATE_REQUIRED: &str = "Update Klaxon on both devices to v0.11.0 or later to resume syncing. Your data and pairing are preserved.";
 
 pub fn validate_protocol(version: u16) -> AppResult<()> {
     if version != PROTOCOL_VERSION {
@@ -177,8 +178,8 @@ mod tests {
 
     #[test]
     fn incompatible_protocol_is_rejected_before_data_exchange() {
-        assert!(validate_protocol(1).is_ok());
-        let err = validate_protocol(2).unwrap_err().to_string();
+        assert!(validate_protocol(PROTOCOL_VERSION).is_ok());
+        let err = validate_protocol(1).unwrap_err().to_string();
         assert!(err.contains("Update"), "{err}");
         assert!(validate_protocol(0).is_err());
     }
@@ -217,6 +218,7 @@ mod tests {
         ] {
             let expected_rule = serde_json::to_value(&rule).unwrap();
             let set = ChangeSet {
+                steps: vec![],
                 server_time_ms: 42,
                 reminders: vec![RemoteReminder {
                     id: "recurring".into(),
@@ -330,6 +332,7 @@ mod tests {
         let sent = RpcEnvelope {
             secret: "deadbeef".into(),
             request: RpcRequest::Push(ChangeSet {
+                steps: vec![],
                 server_time_ms: 42,
                 reminders: vec![],
                 tombstones: vec![],
@@ -364,6 +367,7 @@ mod tests {
         let sent = RpcEnvelope {
             secret: "deadbeef".into(),
             request: RpcRequest::Push(ChangeSet {
+                steps: vec![],
                 server_time_ms: 42,
                 reminders: vec![],
                 tombstones: vec![],
@@ -419,6 +423,7 @@ mod tests {
         use crate::sync::types::{ChangeSet, RemoteDayNote, RemoteThought};
 
         let new = ChangeSet {
+            steps: vec![],
             server_time_ms: 7,
             reminders: vec![],
             tombstones: vec![],
@@ -497,6 +502,7 @@ mod tests {
     #[tokio::test]
     async fn revision_batch_frame_preserves_epoch_and_cursor() {
         let changes = ChangeSet {
+            steps: vec![],
             server_time_ms: 500,
             reminders: vec![],
             tombstones: vec![],

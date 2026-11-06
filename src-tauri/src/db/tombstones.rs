@@ -64,6 +64,8 @@ pub fn apply_remote(conn: &Connection, id: &str, deleted_at: i64) -> AppResult<b
             params![id, effective],
         )?;
     }
+    // Step IDs are never reused: deletion beats a concurrent child edit.
+    removed += conn.execute("DELETE FROM task_steps WHERE id=?1", [id])?;
     Ok(written + removed > 0)
 }
 

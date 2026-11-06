@@ -6,6 +6,7 @@ pub mod reminders;
 pub mod settings;
 pub mod sync_log;
 pub mod task_lanes;
+pub mod task_steps;
 pub mod thoughts;
 pub mod tombstones;
 

@@ -102,6 +102,18 @@ async fn run() -> Result {
                         task_sort_key: None,
                     },
                 )?;
+                klaxon_lib::db::task_steps::apply_remote(
+                    &db.lock(),
+                    &klaxon_lib::db::task_steps::TaskStep {
+                        id: format!("host-{requested}-step"),
+                        task_id: format!("host-{requested}"),
+                        title: format!("Host step {requested}"),
+                        completed: true,
+                        sort_key: 0,
+                        created_at: 1,
+                        updated_at: klaxon_lib::models::now_ms(),
+                    },
+                )?;
                 stage = requested.to_owned();
             }
         }
@@ -115,9 +127,19 @@ async fn run() -> Result {
             })?;
             rows.collect::<std::result::Result<Vec<_>, _>>()?
         };
+        let received_steps = {
+            let conn = db.lock();
+            let mut query = conn.prepare(
+                "SELECT id,title,completed FROM task_steps WHERE id LIKE 'android-%' ORDER BY id",
+            )?;
+            let rows = query.query_map([], |row| Ok(json!({"id":row.get::<_,String>(0)?,"title":row.get::<_,String>(1)?,"completed":row.get::<_,bool>(2)?})))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
         std::fs::write(
             directory.join("report.json"),
-            serde_json::to_vec(&json!({"stage": stage, "received": received}))?,
+            serde_json::to_vec(
+                &json!({"stage": stage, "received": received, "received_steps": received_steps}),
+            )?,
         )?;
         tokio::time::sleep(Duration::from_millis(200)).await;
     }

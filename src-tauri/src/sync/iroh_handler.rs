@@ -1,6 +1,6 @@
 //! Versioned, authenticated RPC streams. One connection serves a full sync pass.
 use crate::sync::{
-    proto::{self, RpcEnvelope, RpcResponse, ALPN_LEGACY},
+    proto::{self, RpcEnvelope, RpcResponse, ALPN_SYNC},
     service,
     storage::Applied,
     DeviceIdentity,
@@ -25,7 +25,7 @@ pub struct SyncHandler {
 
 impl ProtocolHandler for SyncHandler {
     async fn accept(&self, conn: Connection) -> Result<(), AcceptError> {
-        let legacy = conn.alpn() == ALPN_LEGACY;
+        let legacy = conn.alpn() != ALPN_SYNC;
         let negotiated = Arc::new(AtomicBool::new(false));
         // Bound work from a connection, including peers that never finish a frame.
         let streams = Arc::new(tokio::sync::Semaphore::new(8));

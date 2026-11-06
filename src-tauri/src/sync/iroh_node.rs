@@ -24,7 +24,7 @@ use crate::error::{AppError, AppResult};
 use crate::sync::discovery::DiscoveryHandle;
 use crate::sync::iroh_handler::SyncHandler;
 use crate::sync::pair_handler::PairHandler;
-use crate::sync::proto::{ALPN_PAIR, ALPN_SYNC, ALPN_LEGACY};
+use crate::sync::proto::{ALPN_PAIR, ALPN_SYNC, ALPN_LEGACY, ALPN_PREVIOUS};
 use crate::sync::{DeviceIdentity, PendingPairs};
 
 /// Filename for the persisted Ed25519 secret key inside the app data dir.
@@ -82,6 +82,7 @@ pub fn spawn_sync_router(
 ) -> Router {
     Router::builder(endpoint)
         .accept(ALPN_SYNC, sync_handler.clone())
+        .accept(ALPN_PREVIOUS, sync_handler.clone())
         .accept(ALPN_LEGACY, sync_handler)
         .accept(ALPN_PAIR, pair_handler)
         .spawn()
