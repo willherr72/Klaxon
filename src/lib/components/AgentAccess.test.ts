@@ -8,7 +8,6 @@ beforeEach(() => { invoke.mockReset();invoke.mockImplementation(async (command) 
 afterEach(cleanup);
 it("defaults a new client to read-only and displays configuration only after creation", async () => {
   render(AgentAccess);const user=userEvent.setup();
-  await user.click(screen.getByText("Agent access"));
   await user.type(screen.getByLabelText("Client name"),"Planner");
   await user.click(screen.getByText("Connect agent"));
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("agent_add_client",{name:"Planner",write:false}));
@@ -17,7 +16,6 @@ it("defaults a new client to read-only and displays configuration only after cre
 it("revokes the selected client and removes the displayed configuration", async () => {
   invoke.mockImplementation(async (command) => command === "agent_clients" ? [{id:"c",name:"Planner",write:true}] : command === "agent_client_config" ? {mcpServers:{klaxon:{command:"klaxon"}}} : []);
   render(AgentAccess);const user=userEvent.setup();
-  await user.click(screen.getByText("Agent access"));
   await user.click(await screen.findByText("Show configuration"));
   await screen.findByLabelText("MCP configuration");
   await user.click(screen.getByText("Revoke"));

@@ -217,10 +217,11 @@
 
   // Each panel section starts collapsed so the modal stays compact. Click a
   // section header to expand the one you want to edit.
-  type SectionKey = "alerts" | "display" | "sync" | "hotkeys" | "startup" | "system";
+  type SectionKey = "alerts" | "display" | "agent" | "sync" | "hotkeys" | "startup" | "system";
   let sectionOpen = $state<Record<SectionKey, boolean>>({
     alerts: false,
     display: false,
+    agent: false,
     sync: false,
     hotkeys: false,
     startup: false,
@@ -565,7 +566,26 @@
           {/if}
         </section>
 
-        {#if !isMobile}<AgentAccess />{/if}
+        {#if !isMobile}
+        <section class="section">
+          <button
+            class="section-head"
+            class:open={sectionOpen.agent}
+            onclick={() => toggleSection("agent")}
+            aria-expanded={sectionOpen.agent}
+            aria-controls="agent-access-content"
+            type="button"
+          >
+            <span class="chevron" class:open={sectionOpen.agent}>▸</span>
+            <span class="section-tick"></span>
+            <h3 class="mono-caps section-title">Agent access</h3>
+            <span class="section-line"></span>
+          </button>
+          <div id="agent-access-content" hidden={!sectionOpen.agent}>
+            <AgentAccess />
+          </div>
+        </section>
+        {/if}
 
         <SyncSection
           collapsed={!sectionOpen.sync}

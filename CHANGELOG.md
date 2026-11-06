@@ -5,6 +5,20 @@ All notable changes to Klaxon are documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versioning: [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-11-05
+
+Existing data, agent connections and device pairings are preserved.
+Sync remains compatible with v0.11.0.
+
+### Fixed
+
+- Agent access now uses the same collapsible section header, spacing, typography,
+  square controls and signal colors as the rest of System Config.
+- Agent configuration, permissions, connected clients and recent activity follow
+  the settings layout, including narrow windows and keyboard focus indicators.
+- Task steps now match the task editor, with compact reorder controls and
+  wrapping titles and edit actions on smaller screens.
+
 ## [0.11.0] — 2026-11-05
 
 Update both paired devices to v0.11.0 to sync task steps. Existing tasks,
