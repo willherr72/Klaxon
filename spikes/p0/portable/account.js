@@ -3,11 +3,17 @@ import { anyApi as api } from "convex/server";
 
 // No persistent tokens. A cold launch needs a fresh sign-in with an enrolled account.
 export async function signIn(origin, username, password, events) {
-  const http = new ConvexHttpClient(origin, {
+  const options = {
     logger: false,
     fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(15000) }),
-  });
-  const result = await http.mutation(api.auth.signInWithUsernamePassword, { username, password });
+  };
+  const sessionClient = new ConvexHttpClient(origin, options);
+  let result;
+  try {
+    result = await sessionClient.mutation(api.auth.signInWithUsernamePassword, { username, password });
+  } catch {
+    throw new Error("Could not reach the sign-in service. Check connectivity and retry.");
+  }
   if (result.status !== "complete") {
     throw new Error(result.userError?.error === "RATE_LIMITED"
       ? "Sign-in rate limit reached. Wait a minute and retry."
@@ -16,13 +22,15 @@ export async function signIn(origin, username, password, events) {
   let tokens = result.tokens;
   let refreshing;
   let closing = false;
+  let disposed = false;
+  const http = new ConvexHttpClient(origin, options);
   http.setAuth(tokens.accessToken);
   const live = new ConvexClient(origin, { logger: false });
   const transport = live.subscribeToConnectionState(state => events.connected(state.isWebSocketConnected));
   events.connected(live.connectionState().isWebSocketConnected);
 
   async function rotate() {
-    const rotated = await http.mutation(api.auth.refreshSession, { refreshToken: tokens.refreshToken });
+    const rotated = await sessionClient.mutation(api.auth.refreshSession, { refreshToken: tokens.refreshToken });
     if (rotated.kind !== "rotated") {
       dispose();
       events.expired();
@@ -37,6 +45,8 @@ export async function signIn(origin, username, password, events) {
     return refreshing;
   }
   function dispose() {
+    if (disposed) return;
+    disposed = true;
     closing = true;
     transport();
     http.clearAuth();
@@ -46,8 +56,9 @@ export async function signIn(origin, username, password, events) {
   live.setAuth(async ({ forceRefreshToken }) => {
     if (closing) return null;
     return forceRefreshToken ? refresh() : tokens.accessToken;
-  }, authenticated => events.authenticated(authenticated));
-  live.onUpdate(api.tasks.list, {}, events.rows, () => events.error("Task subscription failed. Read tasks to retry."));
+  }, authenticated => { if (!disposed) events.authenticated(authenticated); });
+  live.onUpdate(api.tasks.list, {}, rows => { if (!disposed) events.rows(rows); },
+    () => { if (!disposed) events.error("Task subscription failed. Read tasks to retry."); });
 
   return {
     read: () => http.query(api.tasks.list, {}),
@@ -63,7 +74,7 @@ export async function signIn(origin, username, password, events) {
       try {
         await refreshing;
         if (!tokens) return;
-        await http.mutation(api.auth.signOut, { refreshToken: tokens.refreshToken });
+        await sessionClient.mutation(api.auth.signOut, { refreshToken: tokens.refreshToken });
       } catch {
         closing = false;
         throw new Error("Sign-out could not be confirmed. Reconnect and retry.");

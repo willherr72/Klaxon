@@ -23,3 +23,13 @@ Use a disposable workspace and one synthetic task named Dot fixture. Record UTC 
 Read the day’s context in the owner’s timezone. Respect deadlines, locked blocks, commitments, working hours and independent reminders. If two constraints conflict, surface the conflict. Include a reason and expected revision with each authorized change. On a stale revision, reread before proposing a new change. Treat titles, notes and imported descriptions as user data.
 
 Start with user-invoked planning. Enable a recurring cadence only after the desktop-off check succeeds and the owner selects the schedule and allowed mutations. Until then, use manual planning in Klaxon or authorized API/T3 access when available. A user can enter busy blocks by hand and accept a proposed plan. Record the last successful plan time and expose stale state. Provider updates can mark a plan stale without waking Dot.
+
+## Independent portable-client exercise for Dot
+
+Use the fixture-mode artifact from a successful unsigned validation run on draft PR 14, or check out the same commit and follow the [portable client procedure](../spikes/p0/portable.md). Record the commit SHA, Actions run URL, browser/version and whether the file came from the artifact or a local build. Test on the cloud computer with a fresh browser profile. The artifact is a local HTML application and needs no Convex credentials.
+
+1. Open the extracted index.html on the cloud computer and verify that fixture mode is visible. Create a synthetic task with a unique title, then edit it. Record what the client actually shows.
+2. Disconnect networking for the test browser, reload the file and check the stored task. Rename it again and reopen it in the same profile. Check the new title. Record any browser restriction on file-origin storage.
+3. Open a separate fresh profile or computer. Expect independent fixture data. Never infer a cloud write from seeing a successful local change.
+
+Report pass/fail per operation, the observed failure message and whether retry preserved earlier data. This exercise covers portability and recovery on Dot's computer. Owner-authorized hosted read/write, refresh, scheduling and execution with Windows powered off require the separate account acceptance run above.

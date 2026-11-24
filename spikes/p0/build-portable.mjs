@@ -7,9 +7,8 @@ import { compile } from "svelte/compiler";
 
 const { values } = parseArgs({ options: { outdir: { type: "string", default: "dist" } } });
 const origin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
-if (origin && origin !== "http://127.0.0.1:3210" &&
-    !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(origin)) {
-  throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin or http://127.0.0.1:3210");
+if (origin && !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(origin)) {
+  throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin");
 }
 
 const bundle = await build({

@@ -50,6 +50,7 @@
     renamed = "";
   }
   async function login() {
+    if (!P0_PORTABLE_ORIGIN) return;
     const credentials = password;
     password = "";
     session = await signIn(origin, username.trim(), credentials, {
@@ -63,7 +64,7 @@
   }
   async function save(id, draft) {
     const value = draft.trim();
-    if (!value || !canSubmit()) return;
+    if (!value) return;
     if (origin) {
       try {
         if (id) await session.rename(id, value);
@@ -82,9 +83,6 @@
     if (id) { editing = null; renamed = ""; }
     else title = "";
     notice = origin ? "Server acknowledged the write." : "Saved on this device.";
-  }
-  function canSubmit() {
-    return !origin || (online && authenticated && connected && !!receivedAt);
   }
   async function read() {
     if (origin) {
