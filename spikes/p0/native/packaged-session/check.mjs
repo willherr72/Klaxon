@@ -53,7 +53,10 @@ export async function exerciseSession(withActivity, adb, app) {
       });
       for (const [button, expected] of actions) {
         await panel.getByRole("button", { name: button, exact: true }).click();
-        await page.waitForFunction(status => document.querySelector('[aria-label="Native session status"]').textContent === status, expected);
+        await page.waitForFunction(() => window.p0Replies.length > 0 &&
+          !document.querySelector('[aria-label="Native session fixture"] button').disabled);
+        assert.ok(await panel.getByLabel("Native session status").textContent() === expected,
+          `expected packaged UI status ${expected}`);
         assert.equal(await page.evaluate(status => {
           const raw = window.p0Replies.splice(0);
           return raw.length === 1 && raw[0] === status;
@@ -74,8 +77,19 @@ export async function exerciseSession(withActivity, adb, app) {
 
   await launch([["Resume session", "signed-out"], ["Start synthetic session", "fixture-ready"],
     ["Start synthetic session", "unavailable"]]); // Existing record: also inspect the rejection payload.
-  const sealed = Buffer.from(adb("shell", "run-as", app, "base64", "no_backup/packaged.bin"), "base64");
+  const readRecord = () => Buffer.from(adb("shell", "run-as", app, "base64", "no_backup/packaged.bin"), "base64");
+  const sealed = readRecord();
   assert.ok(sealed.length > 28 && !sealed.includes(Buffer.from(marker)), "expected protected native record");
+  const outage = "cache/p0-provider-offline";
+  adb("shell", "run-as", app, "touch", outage);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await launch([["Resume session", "retry-required"]]);
+      assert.ok(readRecord().equals(sealed), "denied resume changed the protected record");
+    }
+  } finally {
+    adb("shell", "run-as", app, "rm", "-f", outage);
+  }
   await launch([["Resume session", "authenticated"], ["Sign out", "signed-out"]]);
   await launch([["Resume session", "signed-out"]]);
   assert.equal(adb("shell", "run-as", app, "ls", "-A", "no_backup"), "");
@@ -87,5 +101,5 @@ export async function exerciseSession(withActivity, adb, app) {
     logLines += count;
   }
   console.log("PASS packaged session:", pids.size, "app PIDs,", replies,
-    "status-only replies,", logLines, "app log lines; empty WebView stores, protected native record, sign-out and clean relaunch");
+    "status-only replies,", logLines, "app log lines; two denied cold resumes preserved identical ciphertext, recovered on retry, signed out and relaunched cleanly");
 }

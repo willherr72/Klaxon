@@ -6,6 +6,7 @@ import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import dev.klaxon.p0session.FixtureStore
+import java.io.File
 
 /** Available only in the offline x86_64 session fixture. The WebView has no marker API. */
 @TauriPlugin
@@ -25,7 +26,9 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
                 "resume" -> when {
                     store.inventory(owner) == "no-key/no-file" -> "signed-out"
                     // Simulated provider accepts only the native fixture's known generation.
-                    store.hasRecord(owner) && store.marker(owner, 1).contentEquals(store.read(owner)) -> "authenticated"
+                    store.hasRecord(owner) && store.marker(owner, 1).contentEquals(store.read(owner)) -> {
+                        if (File(host.cacheDir, "p0-provider-offline").isFile) "retry-required" else "authenticated"
+                    }
                     else -> "unavailable"
                 }
                 "sign-out" -> {

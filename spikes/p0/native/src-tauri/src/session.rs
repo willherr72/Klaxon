@@ -29,6 +29,7 @@ async fn fixture_session(
     match reply.as_str() {
         "fixture-ready" => Ok("fixture-ready"),
         "authenticated" => Ok("authenticated"),
+        "retry-required" => Ok("retry-required"),
         "signed-out" => Ok("signed-out"),
         _ => Err("unavailable"),
     }
