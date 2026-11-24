@@ -143,3 +143,5 @@ Local native build evidence for source `4490cfc587e2366d79ca8a0435b06a8f3079e9b3
 | Android arm64 APK | `e01763928c28f9b77fa70aae39c1f72c48383798aea9bc2eb60323301ad507ee` | Built locally. Android build tools confirmed dev.klaxon.p0native and arm64-v8a. Physical install and execution pending. |
 
 Both APKs are debug packages for the spike, with a test signing identity. The build now starts from a fresh APK output and the smoke verifies the selected fixture artifact. Package digests identify these local files. Rebuilds using a different debug certificate or native toolchain can differ. Frontend source, fixture protocol and native wrapper are versioned in the draft PR. Production signing, release and device migration were not exercised.
+
+Final cleanup: the smoke uninstalled the test package, removed its debug forwards, stopped the disposable emulator and removed its Windows WebView2 profiles. Automatic approval review blocked recursive deletion of the stopped AVD directory under Windows Temp. The retained synthetic directory is outside the repository.

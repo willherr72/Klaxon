@@ -68,3 +68,12 @@ Run `native/package.mjs` for each target. It rebuilds `native/.frontend/index.ht
 Windows ran the debug x64 executable with WebView2 157.0.4341.60. The disposable Android 16/API 36 Google Play x86_64 AVD used emulator 36.3.10.0 and System WebView 133.0.6943.137. Both loaded the embedded client at `http://tauri.localhost/`, matched its script and style hashes, rendered its stylesheet, created and renamed a synthetic task, and retained the title and stable ID across page reload and process restart. Android reported airplane mode enabled and no active default network. The arm64 APK received static package/signature verification. Native Convex sessions, physical Android and desktop-off cross-device synchronization remain open.
 
 The commands above used Node 24.12.0, Rust 1.97.1, Tauri CLI 2.11.0, JDK 21.0.8 and Gradle 8.14.3. Starting Cargo before generating the portable assets failed at compile time. The packager now builds the HTML first. The first Android WebView attachment stalled, and attaching before the page existed timed out. The smoke now waits for the Tauri page in the selected app process’s DevTools target list and connects without desktop browser defaults. A second simultaneous package command failed before changing the frontend. Fresh APK output eliminates unused ZIP space retained by Gradle during incremental packaging.
+
+| Local fixture artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `.frontend/index.html` (matches `../dist/index.html`) | 165623 | `19ce40ffabe6a07e504c44144a55e24e975a8b8f74162daa4944e86a3278796f` |
+| `src-tauri/target/debug/klaxon-p0-native.exe` | 12219904 | `debd90f919e252fea6bfba5153969b4f0529762ce1b3c62c08e4b89749e11cf9` |
+| `.run/klaxon-p0-x86_64-fixture.apk` | 28982439 | `c875ada4874723e3b0111d31b844e0fd177900e1b6ec93a2b0dc9b41876951f2` |
+| `.run/klaxon-p0-arm64-fixture.apk` | 29367666 | `e01763928c28f9b77fa70aae39c1f72c48383798aea9bc2eb60323301ad507ee` |
+
+Android Build Tools `aapt dump badging` identified each expected single ABI, the spike package, version 0.1.0 and the debuggable flag. `apksigner verify --print-certs` validated both APKs with the local Android Debug certificate. Each archived native library’s SHA-256 matched its compiled Rust library. The smoke removed the package and its debug forwards. The emulator was shut down and the Windows WebView2 profiles were removed. The stopped AVD’s temporary directory was retained.
