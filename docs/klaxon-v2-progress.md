@@ -8,8 +8,8 @@ Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in
 
 | Gate | Evidence already available | Next test and stop condition |
 |---|---|---|
-| P0-03 native session | Windows current-user DPAPI and Android Keystore on a disposable emulator restored inert markers across fresh processes with simulated provider confirmation. Browser refresh/revocation and intercepted recovery tests also passed. The offline packaged Android client now resumes a synthetic session through its WebView and stays signed out after restart. The hosted account client still requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
-| P0-06 ordinary reminders | The offline reminder evidence fixture passed four synthetic replay cases. Windows and Android notification delivery remain unmeasured. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
+| P0-03 native session | Windows current-user DPAPI and Android Keystore restored inert markers across fresh processes. The packaged Android fixture preserved its record through a simulated outage, cleared its alias and record on definitive expiry, and required a fresh synthetic sign-in after provider recovery. Browser refresh/revocation and intercepted recovery tests also passed. | Exercise the Windows DPAPI candidate through the packaged WebView2 boundary. Hosted authenticated resume, refresh and revocation through OS-protected storage remain open on both platforms. The portable account client still requires sign-in after reload. |
+| P0-06 ordinary reminders | Five synthetic replay cases passed, including a denied or revoked Web Push permission. The same reopening must show denied status and overdue history for the current occurrence revision. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
 | P0-04 owner Dot | Scheduled browser fallback passed once with Windows off (owner-confirmed). Dot restored the verified client after the prior tab and preview were lost, signed in, saw a connected subscription and renamed exactly one pre-staged synthetic task. A fresh server read at 2026-11-24 16:31:38 UTC confirmed the same ID and new title. Will independently reported seeing the result on Android and Windows. | Remote MCP, scoped agent identity, audit attribution, idempotency receipts and expiry/revocation remain unverified. The browser smoke needs no repeat. See the [Dot playbook](dot-playbook.md#scheduled-browser-fallback) for the managed-preview caveat and evidence limits. |
 
 ### Packaged Android session evidence
@@ -41,7 +41,20 @@ On November 24, 2026, the new outage assertion failed on the previous APK at the
 
 All eight raw Tauri callbacks matched their expected scalar status. Across five distinct app PIDs, the eight actions triggered zero Web Storage writes. The checked stores and origin cookies were empty after each action. The harness detected no marker in the inspected DOM, WebView console/errors or 482 app log lines. The fixture was uninstalled, its debug forwards were absent and the emulator stopped.
 
-**Next offline P0-03 test:** simulate definitive provider expiry on packaged cold resume, verify the native slot and alias are cleared, then restore provider availability and confirm another process still requires sign-in. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. P1 remains queued.
+#### Definitive expiry on cold resume
+
+On November 24, 2026 the previous APK failed the new assertion at the first cold resume after simulated expiry (expected `signed-out`). With tested source `f127a8c9f53ec300e8429ce73f588dd7a4eedae7`, both `node native/package.mjs --target x86_64 --session` and `node native/smoke.mjs android-session emulator-5576` exited 0 from `spikes/p0`. The API 36 x86_64 emulator ran WebView 133.0.6943.137 with airplane mode enabled and no default network. APK SHA-256 was `d42ffc4e0757f25f240442bfaff93e68131f27d6ea479ee4693b26bc2a4c51d6`.
+
+| Fresh app process | Observed result |
+|---|---|
+| 1–4 | Seeded one synthetic session. Two cold outage attempts preserved byte-identical ciphertext, then a recovered provider accepted the same record. |
+| 5 | With definitive expiry simulated, resume returned `signed-out` after native code checked both the alias and file were absent. The harness independently observed an empty no-backup directory. |
+| 6 | After restoring provider availability, cold resume still returned `signed-out`. Only then did an explicit fresh seed succeed. Seeding refuses to overwrite a surviving alias or file. |
+| 7–8 | A cold resume accepted the newly seeded session. Sign-out cleared it and the next cold resume returned `signed-out`. |
+
+Eight distinct app PIDs produced twelve status-only Tauri replies and zero Web Storage writes. The checked stores and origin cookies were empty. The harness found no marker in the inspected DOM, WebView console/errors or 760 app log lines. It uninstalled the fixture and removed the debug forwards. The emulator was stopped. Independent review checked the alias/file assertions and status-only bridge. The provider decision was simulated throughout.
+
+For integration, `npm run build` and `npm run test:portable` from `spikes/p0` built the ordinary offline client and passed 11/11 regressions with zero skips. **Next offline P0-03 test:** exercise inert Windows DPAPI session resume and sign-out through the packaged WebView2 client after a process restart. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. P1 remains queued.
 
 ### Android Keystore emulator evidence
 
@@ -60,6 +73,8 @@ An initial offline build failed during resource linking because the standalone p
 The subsequent [packaged Android session run](#packaged-android-session-evidence) verified resume and sign-out through the Tauri/WebView boundary. This run establishes Keystore feasibility under the test APK's UID. Hosted refresh/revocation, physical hardware protection and real-device reminders remain unverified.
 
 ### Windows native session and reminder evidence
+
+On November 24, 2026 the new P0-06 permission trace initially failed against the old replay with an unknown event (four passed, one failed). From the repository root, `node --test spikes/p0/reminder-evidence.test.mjs` passed 5/5 with zero skips on `d19810558374b1d9ca9d5abc390f5fad242fbaee`. Independent review found that observing the same denied permission twice could discard valid evidence from the current reopening. The regression now retains that evidence while an actual permission change or another opening requires fresh observations. Provider receipts alone never established display. All Windows and Android device measurements remain pending.
 
 Tested source `d3b90b345fe3dbec5e102344047d12f010b00917` on November 24, 2026, using Node 24.12.0 and Windows PowerShell 5.1. The [candidate decision](adr/p0-architecture.md#p0-03-native-session-candidate) and the [offline probe](../spikes/p0/native/README.md#synthetic-secure-session-probe) apply only to P0. Both new suites now run in the existing unsigned v2 PR workflow.
 
@@ -109,7 +124,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 - P0-01. Baseline architecture and regression evidence belong in [testing](testing.md) and [migration](migration.md).
 - P0-02/03. Branch created from the production baseline. Hosted isolation, authenticated web/native sessions and desktop-off synchronization require separate evidence. See [spike](../spikes/p0/README.md).
 - P0-04/05/06. Track provider support, actual identity/device observations and fallbacks in the [platform investigation](adr/platform-capabilities.md) and [Dot playbook](dot-playbook.md).
-- P0-07. [Architecture ADR](adr/p0-architecture.md), [cost](deployment.md), [security](security.md), [API boundary](api/README.md). The owner confirmed Free for the spike. Native session persistence and notification delivery still need evidence.
+- P0-07. The owner confirmed Free for the spike. A read-only review on November 24, 2026 verified the allowances in the [cost record](deployment.md) against [Convex pricing](https://www.convex.dev/pricing) and [Cloudflare Pages limits](https://developers.cloudflare.com/pages/platform/limits/). Deployment region, actual shared-team usage and remaining capacity are unverified. Hosted native refresh/revocation, physical delivery and scoped Dot execution remain open. [Architecture ADR](adr/p0-architecture.md) · [Security](security.md) · [API boundary](api/README.md)
 
 ## Backlog register
 
@@ -120,7 +135,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. The standalone storage probes and packaged Android synthetic resume/sign-out passed. Restoring an authenticated session through the packaged account client remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
-| P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |
+| P0-06 | Reminders | Device tests pending | [Push matrix and synthetic permission evidence](adr/platform-capabilities.md#ordinary-reminder-delivery). Actual Windows and Android delivery remain unmeasured. |
 | P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
 | P1-02 | Schema | Queued | — |
