@@ -4,8 +4,8 @@ import { once } from "node:events";
 
 // Build the expected canary in the test runner. Never inject it into the WebView or logs.
 const marker = "KLAXON-P0-INERT/";
-const representations = [marker, ...[1, 2].flatMap(owner => {
-  const bytes = Buffer.from(marker + "packaged/" + owner);
+const representations = [marker, ...[1, 2, 3].flatMap(generation => {
+  const bytes = Buffer.from(marker + "packaged/" + generation);
   return [bytes.toString("base64"), bytes.toString("hex")];
 })];
 export const containsMarker = value => representations.some(form => value.includes(form));

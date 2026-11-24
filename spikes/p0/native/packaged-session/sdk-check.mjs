@@ -235,7 +235,52 @@ export async function exerciseWindowsSdkHandoff(launch, root, record) {
     rotate: rotated => rotated ? writeFile(rotation, "", { flag: "wx" }) : rm(rotation),
     assertEmpty: () => assert.rejects(access(record), { code: "ENOENT" }),
   });
+  await exerciseWindowsRefreshRecord(launch, root, record);
   await checkProfile(join(root, "webview"));
+}
+
+async function exerciseWindowsRefreshRecord(launch, root, record) {
+  const exchange = join(root, "p0-provider-refresh");
+  const requireSuccessor = join(root, "p0-require-successor");
+  let predecessor;
+  let successor;
+  await launch([async (page, panel) => {
+    await seed(page, panel);
+    predecessor = await readFile(record);
+    await writeFile(exchange, "", { flag: "wx" });
+    await resume(page, panel, "A");
+    successor = await readFile(record);
+    assert.ok(successor.length > 0 && !successor.equals(predecessor), "refresh must replace the sealed record");
+    await readAndPush(page, panel, "A");
+  }]);
+  await rm(exchange);
+  assert.ok((await readFile(record)).equals(successor), "the acknowledged replacement must survive host exit");
+  for (const encoding of ["latin1", "utf16le"]) {
+    assert.ok(!containsMarker(successor.toString(encoding)) && !containsSdkAccess(successor.toString(encoding)),
+      "expected only protected bytes in the replacement record");
+  }
+
+  // Present the retired record to the same verifier before testing the saved successor.
+  await writeFile(requireSuccessor, "", { flag: "wx" });
+  await writeFile(record, predecessor);
+  await launch([async (page, panel) => {
+    await click(panel, "Resume session");
+    await statusIs(page, "signed-out");
+    await nativeDenies(page);
+    assert.equal(await taskRows(panel).count(), 0);
+    assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened), 0);
+  }]);
+  await assert.rejects(access(record), { code: "ENOENT" });
+  await writeFile(record, successor);
+  await launch([async (page, panel) => {
+    await nativeDenies(page);
+    await resume(page, panel, "A");
+    await readAndPush(page, panel, "A");
+    await signOut(page, panel);
+  }]);
+  await assert.rejects(access(record), { code: "ENOENT" });
+  await rm(requireSuccessor);
+  assert.deepEqual(await readdir(root), ["webview"], "sign-out must retire any staged refresh material");
 }
 
 // Inspect only regular files in the retired, harness-owned WebView profile.

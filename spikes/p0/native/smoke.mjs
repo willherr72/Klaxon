@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,89 +60,187 @@ async function verifyRestart(page, saved, artifact) {
     "fixture, CSS, create, rename, reload/read and native process restart with stable task ID; SHA-256", digest);
 }
 
-async function withWindowsHost(exe, profile, action, session) {
+function windowsLoopbackListeners() {
+  const sockets = execFileSync("netstat.exe", ["-ano", "-p", "tcp"],
+    { encoding: "utf8", timeout: 5000, windowsHide: true });
+  const listeners = [];
+  for (const line of sockets.split(/\r?\n/)) {
+    const [protocol, local, remote, , owner] = line.trim().split(/\s+/);
+    const port = /^127\.0\.0\.1:([1-9]\d*)$/.exec(local)?.[1];
+    const pid = Number(owner);
+    if (protocol === "TCP" && port && remote === "0.0.0.0:0" && Number.isSafeInteger(pid) && pid > 0) {
+      listeners.push({ port, pid });
+    }
+  }
+  return listeners;
+}
+
+function windowsListenerPid(port) {
+  const listeners = windowsLoopbackListeners().filter(listener => listener.port === port);
+  return listeners.length === 1 ? listeners[0].pid : undefined;
+}
+
+function windowsProfilePids(hostPid, profile) {
+  // Query only WebView2 children of the fixture host. Return PIDs for this profile
+  // without exposing their command lines.
+  const script = String.raw`
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $fixtureProfile = [IO.Path]::GetFullPath($env:KLAXON_P0_WEBVIEW_PROFILE)
+    $browserProfile = Join-Path $fixtureProfile 'EBWebView'
+    Get-CimInstance Win32_Process -Filter "ParentProcessId = ${hostPid} AND Name = 'msedgewebview2.exe'" | ForEach-Object {
+      if ($_.CommandLine -match '(?i)(?:^|\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^"\s]+))(?=\s|$)') {
+        $path = [IO.Path]::GetFullPath($Matches[1] + $Matches[2] + $Matches[3])
+        if ($path -eq $fixtureProfile -or $path -eq $browserProfile) { $_.ProcessId }
+      }
+    }
+  `;
+  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf8", timeout: 10000, windowsHide: true,
+    env: { ...process.env, KLAXON_P0_WEBVIEW_PROFILE: profile },
+  });
+  return output.trim().split(/\r?\n/).map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0);
+}
+
+function windowsPidIsRunning(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (error) { if (error.code === "ESRCH") return false; throw error; }
+}
+
+async function withWindowsHost(exe, profile, action, capture) {
+  const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
+  const removed = [];
+  // Chromium can leave the debugger files after exit. Keep the profile and its
+  // data, but require this launch to create its own debugger advertisement.
+  for (const file of portFiles) {
+    try {
+      await unlink(join(profile, file));
+      removed.push(file);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+
+  const started = Date.now();
   const host = spawn(exe, [], { windowsHide: true, env: { ...process.env,
-    ...(session && { KLAXON_P0_SESSION_RUN: session.runName }),
+    ...(capture.runName && { KLAXON_P0_SESSION_RUN: capture.runName }),
     WEBVIEW2_USER_DATA_FOLDER: profile,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1",
   } });
-  host.stdout.on("data", chunk => session?.stdout.push(chunk));
-  host.stderr.on("data", chunk => session?.stderr.push(chunk));
+  host.stdout.on("data", chunk => capture.stdout?.push(chunk));
+  host.stderr.on("data", chunk => capture.stderr?.push(chunk));
   let spawnError;
   host.once("error", error => { spawnError = error; });
   const closed = new Promise(resolve => host.once("close", resolve));
+  const observations = new Map(portFiles.map(file => [file, "missing"]));
+  const ownedPids = new Set();
+  function assertHostRunning() {
+    if (spawnError) throw spawnError;
+    assert.ok(host.pid && host.exitCode === null && host.signalCode === null,
+      "Windows fixture host exited (PID " + host.pid + ", exit " + host.exitCode + ", signal " + host.signalCode + ")");
+  }
+  function observeOwnedPids() {
+    const pids = windowsProfilePids(host.pid, profile);
+    for (const pid of pids) ownedPids.add(pid);
+    return pids;
+  }
+
   let browser;
-  let attachedEndpoint;
-  let webviewPid;
-  const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
-  const observed = new Set();
+  let browserPid;
+  let attachedPort;
   try {
-    for (let attempt = 0; attempt < 150; attempt++) {
-      if (spawnError) throw spawnError;
-      if (host.exitCode !== null || !host.pid) throw new Error("Windows host exited before attachment (exit " + host.exitCode + ")");
+    assertHostRunning();
+    assert.ok(!capture.hostPids.has(host.pid), "expected a new native Windows host PID");
+    capture.hostPids.add(host.pid);
+    for (let attempt = 0; attempt < 150 && !browser; attempt++) {
+      assertHostRunning();
       for (const file of portFiles) {
-        const data = await readFile(join(profile, file), "utf8").catch(() => "");
-        if (!data) continue;
-        observed.add(file);
-        const [port, path] = data.trim().split(/\r?\n/);
-        if (/^\d+$/.test(port) && path?.startsWith("/devtools/browser/")) {
-          const endpoint = "ws://127.0.0.1:" + port + path;
-          if (session?.endpoints.has(endpoint)) continue;
-          browser = await chromium.connectOverCDP(endpoint, { timeout: 2000 }).catch(() => undefined);
-          if (browser) {
-            session?.endpoints.add(endpoint);
-            attachedEndpoint = endpoint;
-            break;
-          }
+        let data;
+        try {
+          data = await readFile(join(profile, file), "utf8");
+        } catch (error) {
+          if (error.code !== "ENOENT") observations.set(file, "read failed (" + error.code + ")");
+          continue;
+        }
+        const [port, path, ...extra] = data.trim().split(/\r?\n/);
+        if (!/^[1-9]\d{0,4}$/.test(port) || Number(port) > 65535 || extra.length ||
+            !/^\/devtools\/browser\/[a-z0-9_-]+$/i.test(path ?? "")) {
+          observations.set(file, "invalid debugger advertisement");
+          continue;
+        }
+
+        const pid = windowsListenerPid(port);
+        if (!pid) {
+          observations.set(file, "port " + port + " has no unique IPv4 loopback listener");
+          continue;
+        }
+        if (!observeOwnedPids().includes(pid)) {
+          observations.set(file, "port " + port + " listener PID " + pid + " is outside the fixture host/profile");
+          continue;
+        }
+        assert.ok(!capture.browserPids.has(pid), "expected a new WebView2 browser PID, got " + pid);
+        assertHostRunning();
+        const currentPid = windowsListenerPid(port);
+        if (currentPid !== pid) {
+          observations.set(file, "port " + port + " changed from PID " + pid + " to " + (currentPid ?? "no listener"));
+          continue;
+        }
+        const endpoint = "ws://127.0.0.1:" + port + path;
+        try {
+          browser = await chromium.connectOverCDP(endpoint, { timeout: 2000 });
+          browserPid = pid;
+          attachedPort = port;
+          break;
+        } catch (error) {
+          const reason = error.message.split(/\r?\n/)[0].replaceAll(endpoint, "<fixture endpoint>");
+          observations.set(file, "CDP connection failed for verified PID " + pid + " on port " + port + " (" + reason + ")");
         }
       }
-      if (browser) break;
-      await delay(300);
+      if (!browser) await delay(300);
     }
-    assert.ok(browser, "WebView2 attach timed out, host PID " + host.pid + ", exit " + host.exitCode +
-      ", observed port files: " + ([...observed].join(", ") || "none"));
-    if (session) {
-      const debuggerSession = await browser.newBrowserCDPSession();
+    if (!browser) {
+      assertHostRunning();
+      const current = observeOwnedPids();
+      const listeners = windowsLoopbackListeners().filter(listener => current.includes(listener.pid));
+      const details = [...observations].map(([file, status]) => file + ": " + status).join(", ");
+      throw new Error("WebView2 attach timed out after " + (Date.now() - started) + "ms, host PID " + host.pid +
+        ", profile browser PIDs: " + (current.join(", ") || "none") +
+        ", profile listeners: " + (listeners.map(({ port, pid }) => port + " (PID " + pid + ")").join(", ") || "none") +
+        ", retired files removed: " + (removed.join(", ") || "none") + ", " + details);
+    }
+
+    const debuggerSession = await browser.newBrowserCDPSession();
+    try {
       const { processInfo } = await debuggerSession.send("SystemInfo.getProcessInfo");
-      webviewPid = processInfo.find(process => process.type === "browser")?.id;
-      assert.ok(Number.isSafeInteger(webviewPid) && webviewPid > 0, "missing WebView2 browser PID");
+      assert.equal(processInfo.find(process => process.type === "browser")?.id, browserPid,
+        "CDP browser PID differs from the verified WebView2 listener PID");
+    } finally {
       await debuggerSession.detach();
     }
+    assertHostRunning();
+    assert.equal(windowsListenerPid(attachedPort), browserPid, "WebView2 listener changed during CDP attachment");
+    capture.browserPids.add(browserPid);
+
     const context = browser.contexts()[0];
-    return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), host.pid);
+    assert.ok(context, "WebView2 reported no fixture browser context");
+    const page = context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 });
+    await page.waitForURL("http://tauri.localhost/**");
+    assertHostRunning();
+    return await action(page);
   } finally {
     try { await browser?.close(); }
     finally {
       host.kill();
       await closed;
-      if (session && attachedEndpoint) {
-        // The WebView2 browser may outlive its native host and be reused if we reopen too soon.
-        const address = new URL(attachedEndpoint);
-        let active = true;
-        for (let attempt = 0; active && attempt < 100; attempt++) {
-          try {
-            const response = await fetch("http://" + address.host + "/json/version", { signal: AbortSignal.timeout(600) });
-            const info = await response.json();
-            // Chromium may advertise localhost even though we connected to 127.0.0.1.
-            active = new URL(info.webSocketDebuggerUrl).pathname === address.pathname;
-          } catch (error) {
-            // A timeout or unreadable response alone does not establish retirement.
-            active = error.cause?.code !== "ECONNREFUSED";
-          }
-          if (active) await delay(200);
-        }
-        assert.ok(!active, "prior WebView2 endpoint remained active after its host exited");
-        // Endpoint retirement can precede process exit. Reopen the same profile only
-        // after its browser has exited, so the next host can start its own debugger.
-        if (webviewPid) {
-          const running = () => {
-            try { process.kill(webviewPid, 0); return true; }
-            catch (error) { if (error.code === "ESRCH") return false; throw error; }
-          };
-          for (let attempt = 0; attempt < 100 && running(); attempt++) await delay(200);
-          assert.ok(!running(), "prior WebView2 browser PID remained active after its host exited");
-        }
+      // Closing the debugger connection can precede WebView2 exit. Wait for
+      // the verified profile processes before clearing their debugger files.
+      let running = [...ownedPids].filter(windowsPidIsRunning);
+      for (let attempt = 0; attempt < 100 && running.length; attempt++) {
+        await delay(200);
+        running = running.filter(windowsPidIsRunning);
       }
+      assert.equal(running.length, 0, "fixture WebView2 browser PIDs still active after host exit: " + running.join(", "));
     }
   }
 }
@@ -151,9 +249,10 @@ async function windows() {
   const exe = join(nativeDir, "src-tauri/target/debug/klaxon-p0-native.exe");
   await access(exe);
   const profile = await mkdtemp(join(tmpdir(), "klaxon-p0-native-webview-"));
+  const capture = { hostPids: new Set(), browserPids: new Set() };
   try {
-    const saved = await withWindowsHost(exe, profile, exercise);
-    await withWindowsHost(exe, profile, page => verifyRestart(page, saved, exe));
+    const saved = await withWindowsHost(exe, profile, exercise, capture);
+    await withWindowsHost(exe, profile, page => verifyRestart(page, saved, exe), capture);
   } finally {
     await rm(profile, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
   }
@@ -193,15 +292,12 @@ async function windowsSession(sdk = false) {
   const root = await mkdtemp(join(tmpdir(), "klaxon-p0-session-"));
   const profile = join(root, "webview");
   const record = join(root, "packaged.bin");
-  const capture = { runName: basename(root), endpoints: new Set(), stdout: [], stderr: [] };
   const pids = new Set();
+  const capture = { runName: basename(root), hostPids: pids, browserPids: new Set(), stdout: [], stderr: [] };
   let replies = 0;
   let webviewVersion;
   async function launch(actions) {
-    await withWindowsHost(exe, profile, async (page, pid) => {
-      assert.ok(!pids.has(pid), "expected a new native Windows host PID");
-      pids.add(pid);
-      await page.waitForURL("http://tauri.localhost/**");
+    await withWindowsHost(exe, profile, async page => {
       if (sdk) {
         await page.goto("http://tauri.localhost/#sdk");
         await page.reload();
