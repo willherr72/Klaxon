@@ -78,7 +78,9 @@ jobs:
       - name: Verify the Evergreen WebView2 Runtime
         run: ./spikes/p0/ci/webview2-runtime.ps1
       - name: Exercise the current-user DPAPI session fixture
-        run: node --test spikes/p0/native/session.test.mjs
+        run: |
+          $env:P0_SESSION_POWERSHELL = Join-Path $PSHOME 'pwsh.exe'
+          node --test spikes/p0/native/session.test.mjs
       - name: Build isolated Tauri executable
         working-directory: spikes/p0
         run: cargo build --locked --manifest-path native/src-tauri/Cargo.toml --features custom-protocol

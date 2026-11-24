@@ -26,6 +26,8 @@ Independent review found that a failed DPAPI read could discard a recoverable re
 
 **Next offline P0 check.** Run the same synthetic lifecycle on a disposable Android emulator, using the test app's Android Keystore key across process restart, then remove the key and uninstall the fixture. Android Keystore is currently a candidate with no runtime evidence from this spike. P1 remains queued.
 
+On `94481b40e14ecb2cd06ed6d07162e7c13524c366`, Linux validation passed. All three Windows cases timed out starting their first Windows PowerShell worker, including the empty-slot read. CI skipped the later WebView2 build and smoke steps. The log did not identify the operation that stalled inside the worker. The revised CI command selects the job's PowerShell 7 executable and closes worker stdin. The 15-second per-operation limit and all DPAPI assertions remain active. Locally, `node --test spikes/p0/native/session.test.mjs` passed 3/3 on each host with zero skips. An independent reviewer also ran the PowerShell 7 workflow command. [Failed Windows job](https://github.com/willherr72/Klaxon/actions/runs/45445259790/job/138627783353)
+
 ### Local synthetic verification
 
 The November 24 replay used local synthetic data. Baseline source was `25caf30aa406ff2ed9d5882ef443db020fa19ca2`. The added browser regression is in `7caddeb3e4d153ed2aad7966ca0fe18d65a86c96`. The owner report does not identify the artifact revision used on the phone.

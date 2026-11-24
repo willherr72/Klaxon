@@ -18,12 +18,14 @@ async function fixture(t) {
   // Each invocation starts a new process. Only the DPAPI-protected files survive.
   function run(action, owner, expected, response = "grant", generation = 1) {
     const systemRoot = process.env.SystemRoot;
-    const powershell = join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const powershell = process.env.P0_SESSION_POWERSHELL ??
+      join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const child = spawnSync(powershell, [
       "-NoProfile", "-NonInteractive", "-File", worker, basename(directory),
       action, owner, response, String(generation),
     ], {
       env: { SystemRoot: systemRoot, TEMP: tmpdir(), TMP: tmpdir() },
+      stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8", timeout: 15000, windowsHide: true,
     });
     if (child.error) throw child.error;
