@@ -341,7 +341,7 @@ async function android() {
   const sdk = platform === "android-sdk";
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(sdk ? ["-H", "127.0.0.1"] : []), "-s", serial, ...args,
-  ], { input, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
+  ], { input, timeout: args[0] === "install" ? 120000 : 30000, maxBuffer: 16 * 1024 * 1024 });
   const deviceAdb = (...args) => deviceAdbBytes(args).toString("utf8").trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
   const session = platform === "android-session" || sdk;
@@ -362,8 +362,8 @@ async function android() {
   }
   const apk = join(nativeDir, session ? ".run/klaxon-p0-x86_64-session.apk" : ".run/klaxon-p0-x86_64-fixture.apk");
   await access(apk);
-  assert.match(deviceAdb("install", apk), /Success/);
   try {
+    assert.match(deviceAdb("install", apk), /Success/);
     async function withActivity(action) {
       deviceAdb("shell", "am", "start", "-W", "-n", appId + "/.MainActivity");
       const pid = deviceAdb("shell", "pidof", appId);
@@ -412,11 +412,14 @@ async function android() {
     deviceAdb("shell", "am", "force-stop", appId);
     await withActivity(page => verifyRestart(page, saved, apk));
   } finally {
-    assert.match(deviceAdb("uninstall", appId), /Success/);
+    // The host can lose the install acknowledgment after Android has committed the APK.
+    if (deviceAdb("shell", "pm", "list", "packages", appId) === "package:" + appId) {
+      assert.match(deviceAdb("uninstall", appId), /Success/);
+    }
     assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "");
     if (sdk) {
       assertNoMappings();
-      console.log("Android fixture APK uninstalled. ADB forwards and reverse routes are empty.");
+      console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
     }
   }
 }

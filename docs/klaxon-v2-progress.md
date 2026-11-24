@@ -185,6 +185,10 @@ During development an earlier debugger attachment timed out before the new stora
 
 These interruption tests used actual Windows processes and files. The response came from an in-process fixture. Power interruption, a live issuer, refresh-token replacement on Android and hosted reconnect remain open. [Windows reproduction](../spikes/p0/native/README.md#packaged-windows-sdk-handoff)
 
+### Portable account task freshness
+
+At `9d0238fcd1d3897ed975330820fac82b332a8801`, a browser regression held a manual HTTP read open while the same account's SDK subscription delivered a changed task title. Before the fix, completing the HTTP read restored the old title. The client now compares the active session and the version of its displayed rows before applying the read. The regression checks the visible title after the read completes. From `spikes/p0`, `node --test --test-name-pattern="a manual read cannot replace" account-session.test.mjs` passed, and the full portable suite passed 31/31. The browser ran the bundled Convex SDK with intercepted HTTP and WebSocket traffic.
+
 ### Android refresh-record recovery
 
 On November 24, 2026, the previous session APK (SHA-256 `3cb85ac93ba665a95e155570790d4fd5059ea476536071420af807e20509a213`) returned `authenticated` after the harness requested a synthetic refresh, but its encrypted record was byte-identical. The same focused comparison passed after rebuilding the Android fixture from `c5cf828`. The fixture uses the Windows spike’s pinned Convex response decoder and verifies that the published ciphertext contains the accepted replacement before issuing access.
