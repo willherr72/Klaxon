@@ -30,9 +30,12 @@ async function client(t, respond) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => context.close());
   const authenticating = Promise.withResolvers();
+  const socketReopened = Promise.withResolvers();
+  let connections = 0;
   const errors = [];
   let logins = 0;
   await context.routeWebSocket(/.*/, socket => {
+    if (++connections === 2) socketReopened.resolve();
     socket.onMessage(data => {
       const message = JSON.parse(data);
       if (message.type === "Authenticate") authenticating.resolve(() => socket.send(JSON.stringify({
@@ -62,7 +65,8 @@ async function client(t, respond) {
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.getByRole("button", { name: "Read tasks" }).waitFor();
   }
-  return { page, login, errors, rejectSocketToken: async () => (await authenticating.promise)() };
+  return { page, login, errors, socketReopened: socketReopened.promise,
+    rejectSocketToken: async () => (await authenticating.promise)() };
 }
 
 test("a transport failure during SDK token refresh returns the user to sign-in", { timeout: 20000 }, async t => {
@@ -115,4 +119,55 @@ test("a negative auth check after explicit token rotation ends the session", asy
   await page.getByRole("alert").getByText(/expired/i).waitFor();
   await page.getByRole("button", { name: "Sign in" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Read tasks" }).count(), 0);
+});
+
+test("socket auth loss during a failed revocation leaves sign-out retryable", { timeout: 20000 }, async t => {
+  const revoking = Promise.withResolvers();
+  const failRevocation = Promise.withResolvers();
+  let attempts = 0;
+  t.after(() => failRevocation.resolve());
+  const { page, login, rejectSocketToken, socketReopened } = await client(t, async (path, route, success) => {
+    assert.equal(path, "auth:signOut");
+    if (++attempts > 1) return success(null);
+    revoking.resolve();
+    await failRevocation.promise;
+    await route.abort("connectionfailed");
+  });
+  await login("synthetic-a");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await revoking.promise;
+  await rejectSocketToken();
+  // Convex closes and then reopens its socket after the null-token response.
+  await socketReopened;
+  failRevocation.resolve();
+  await page.getByRole("alert").getByText(/sign-out could not be confirmed/i).waitFor();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  assert.equal(attempts, 2);
+});
+
+test("a refresh already in flight can fail during sign-out without dropping the revocation token", { timeout: 20000 }, async t => {
+  const refreshing = Promise.withResolvers();
+  const finishRefresh = Promise.withResolvers();
+  t.after(() => finishRefresh.resolve());
+  let revoked;
+  const { page, login, rejectSocketToken } = await client(t, async (path, route, success) => {
+    if (path === "auth:refreshSession") {
+      refreshing.resolve();
+      await finishRefresh.promise;
+      return route.abort("connectionfailed");
+    }
+    assert.equal(path, "auth:signOut");
+    revoked = route.request().postDataJSON().args[0].refreshToken;
+    await success(null);
+  });
+  await login("synthetic-a");
+  await rejectSocketToken();
+  await refreshing.promise;
+  await page.getByRole("button", { name: "Sign out" }).click();
+  finishRefresh.resolve();
+  await page.getByRole("alert").getByText(/sign-out could not be confirmed/i).waitFor();
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  assert.equal(revoked, "refresh-1");
 });

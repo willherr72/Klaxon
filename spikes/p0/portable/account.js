@@ -60,20 +60,23 @@ export async function signIn(origin, username, password, events) {
     dispose();
     events.expired(message);
   }
-  live.setAuth(async ({ forceRefreshToken }) => {
+  async function fetchToken({ forceRefreshToken }) {
     if (closing) return null;
     if (!forceRefreshToken) return tokens.accessToken;
     try { return await refresh(); }
     catch {
       // Convex pauses the socket while awaiting this callback. Always settle it.
-      expire("Session refresh could not be confirmed. Reconnect and sign in again.");
+      if (!closing) expire("Session refresh could not be confirmed. Reconnect and sign in again.");
       return null;
     }
-  }, authenticated => {
+  }
+  function authChanged(authenticated) {
     if (disposed) return;
-    if (!authenticated) expire();
-    else events.authenticated(true);
-  });
+    // A null token while sign-out owns revocation is local, not a server denial.
+    if (!authenticated && !closing) expire();
+    else events.authenticated(authenticated);
+  }
+  live.setAuth(fetchToken, authChanged);
   live.onUpdate(api.tasks.list, {}, rows => { if (!disposed) events.rows(rows); },
     () => { if (!disposed) events.error("Task subscription failed. Read tasks to retry."); });
 
@@ -93,6 +96,7 @@ export async function signIn(origin, username, password, events) {
         await sessionClient.mutation(api.auth.signOut, { refreshToken: tokens.refreshToken });
       } catch {
         closing = false;
+        if (!disposed) live.setAuth(fetchToken, authChanged);
         throw new Error("Sign-out could not be confirmed. Reconnect and retry.");
       }
       dispose();
