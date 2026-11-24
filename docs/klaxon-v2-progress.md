@@ -29,7 +29,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | ID | Planned PR scope | Status | PR / verification |
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
-| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Owner confirmed Free team. Supplied endpoint is Production. Separate Development deployment and CLI access pending. |
+| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Owner confirmed the Free team and identified the supplied endpoint as Development. Scoped access and contents check pending. |
 | P0-03 | Auth/realtime spike | Edge, WebView2 and Android Chrome emulator passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
@@ -104,4 +104,4 @@ Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and
 
 The Windows Edge and Android emulator Chrome probe passed twice. The final run exited successfully and removed all test ADB mappings. The disposable emulator and local Convex backend were stopped.
 
-Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner subsequently confirmed the Free plan and identified this endpoint as Production. Only read-only reachability checks ran against it. The hosted desktop-off gate remains open.
+Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner confirmed the Free plan and corrected the deployment classification to Development. Only read-only reachability checks ran against it. The hosted desktop-off gate remains open.
