@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 
 // Build the expected canary in the test runner. Never inject it into the WebView or logs.
@@ -8,11 +9,14 @@ const representations = [marker, ...[1, 2].flatMap(owner => {
   return [bytes.toString("base64"), bytes.toString("hex")];
 })];
 export const containsMarker = value => representations.some(form => value.includes(form));
-const accessForms = ["a", "b"].flatMap(owner => {
-  const access = "p0-inert-access-" + owner;
-  return [access, Buffer.from(access).toString("base64"), Buffer.from(access).toString("hex")];
-});
+const rotatedAccess = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  "eyJzdWIiOiJwMC1pbmVydC1hY2Nlc3MtYTIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDA4NjQwMH0.cDAtbm90LWEtc2lnbmF0dXJl";
+const rotatedAccessDigest = createHash("sha256").update(rotatedAccess).digest("hex");
+const accessForms = ["p0-inert-access-a", rotatedAccess, "p0-inert-access-b"].flatMap(access =>
+  [access, Buffer.from(access).toString("base64"), Buffer.from(access).toString("hex")]);
 export const containsSdkAccess = value => accessForms.some(form => value.includes(form));
+// The longest form may be stored as UTF-16LE and split at any byte.
+export const canaryOverlap = 2 * Math.max(...[...representations, ...accessForms].map(form => form.length)) - 1;
 
 export async function checkSessionPage(page, actions, sdkPlatform) {
   const sdk = sdkPlatform !== undefined;
@@ -55,10 +59,10 @@ export async function checkSessionPage(page, actions, sdkPlatform) {
   page.on("pageerror", error => { if (leaks(error.message)) pageErrorLeak = true; });
 
   // Observe the actual Tauri callbacks before the Svelte component handles them.
-  await page.evaluate(({ sdk, android }) => {
+  await page.evaluate(({ sdk, android, rotatedAccessDigest, rotatedAccessLength }) => {
     const callbacks = window.__TAURI_INTERNALS__.callbacks;
     window.p0Replies = [];
-    // Attribute a reply to the actual SDK command before recording its owner.
+    // Attribute a reply to the actual SDK command before recording its access generation.
     const accessCallbacks = new Set();
     const accessErrors = new Set();
     if (sdk) {
@@ -92,13 +96,27 @@ export async function checkSessionPage(page, actions, sdkPlatform) {
     }
     callbacks.set = function (id, callback) {
       return Map.prototype.set.call(this, id, data => {
-        const access = accessCallbacks.delete(id) && typeof data === "string" && /^p0-inert-access-([ab])$/.exec(data);
-        const sdkDenial = accessErrors.delete(id) && ["signed-out", "retry-required", "unavailable"].includes(data);
-        window.p0Replies.push(access ? "sdk-owner-" + access[1] : sdkDenial ? "sdk-denial-" + data : data);
+        let observed = data;
+        if (accessCallbacks.delete(id)) {
+          const access = typeof data === "string" && /^p0-inert-access-([ab])$/.exec(data);
+          observed = access ? "sdk-access-" + access[1] + "1" : "unexpected-sdk-reply";
+          if (typeof data === "string" && data.length === rotatedAccessLength) {
+            const replies = window.p0Replies;
+            const index = replies.length;
+            void crypto.subtle.digest("SHA-256", new TextEncoder().encode(data)).then(bytes => {
+              const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+              if (digest === rotatedAccessDigest) replies[index] = "sdk-access-a2";
+            });
+          }
+        } else if (accessErrors.delete(id)) {
+          observed = ["signed-out", "retry-required", "unavailable"].includes(data)
+            ? "sdk-denial-" + data : "unexpected-sdk-reply";
+        }
+        window.p0Replies.push(observed);
         return callback(data);
       });
     };
-  }, { sdk, android: sdkPlatform === "android" });
+  }, { sdk, android: sdkPlatform === "android", rotatedAccessDigest, rotatedAccessLength: rotatedAccess.length });
   async function checkPageState() {
     const store = await page.evaluate(async () => ({
       local: localStorage.length, session: sessionStorage.length, hasCookie: document.cookie !== "",
@@ -107,6 +125,13 @@ export async function checkSessionPage(page, actions, sdkPlatform) {
     assert.deepEqual(store, { local: 0, session: 0, hasCookie: false, databases: 0, caches: 0 });
     assert.equal((await cdp.send("Network.getCookies", { urls: [page.url()] })).cookies.length, 0);
     assert.ok(!leaks(await page.content()), "session material in WebView DOM or inline bundle");
+    if (sdk) {
+      const evidence = await page.evaluate(() => {
+        const { evidence, accessRequests } = window.p0SdkFixture;
+        return JSON.stringify({ evidence, accessRequests });
+      });
+      assert.ok(!leaks(evidence), "session material in WebView fixture evidence");
+    }
   }
 
   for (const action of actions) {
@@ -114,7 +139,7 @@ export async function checkSessionPage(page, actions, sdkPlatform) {
       await action(page, panel, checkPageState);
       if (sdk) {
         const clean = await page.evaluate(() => window.p0Replies.every(reply =>
-          ["authenticated", "signed-out", "fixture-ready", "unavailable", "retry-required", "sdk-owner-a", "sdk-owner-b",
+          ["authenticated", "signed-out", "fixture-ready", "unavailable", "retry-required", "sdk-access-a1", "sdk-access-a2", "sdk-access-b1",
             "sdk-denial-signed-out", "sdk-denial-retry-required", "sdk-denial-unavailable"].includes(reply)));
         assert.ok(clean, "unexpected reply from packaged SDK bridge");
       }

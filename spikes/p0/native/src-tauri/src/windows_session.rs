@@ -71,18 +71,24 @@ impl Provider {
     fn sdk_access(&mut self, slot: Option<&Path>) -> Result<&'static str, &'static str> {
         let active = self.owner.ok_or("signed-out")?;
         // Recheck even for cached SDK sessions. A changed record requires a new explicit resume.
-        let access = slot
-            .ok_or("unavailable")
-            .and_then(confirmed_owner)
-            .and_then(|owner| {
-                if owner != active {
-                    return Err("unavailable");
-                }
-                Ok(match owner {
-                    Owner::A => "p0-inert-access-a",
-                    Owner::B => "p0-inert-access-b",
-                })
-            });
+        let access = slot.ok_or("unavailable").and_then(|slot| {
+            let owner = confirmed_owner(slot)?;
+            if owner != active {
+                return Err("unavailable");
+            }
+            if owner == Owner::A
+                && slot
+                    .with_file_name("p0-provider-rotated")
+                    .try_exists()
+                    .map_err(|_| "unavailable")?
+            {
+                return Ok(crate::ROTATED_OWNER_A_ACCESS);
+            }
+            Ok(match owner {
+                Owner::A => "p0-inert-access-a",
+                Owner::B => "p0-inert-access-b",
+            })
+        });
         if access.is_err() {
             self.revoke();
         }
@@ -341,6 +347,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let slot = directory.join("packaged.bin");
         let offline = directory.join("p0-provider-offline");
+        let rotated = directory.join("p0-provider-rotated");
         let path = Some(slot.as_path());
 
         seed(&slot, MARKER).unwrap();
@@ -348,6 +355,8 @@ mod tests {
         provider.owner = Some(confirmed_owner(&slot).unwrap());
         let expected = "p0-inert-access-a";
         assert!(provider.sdk_access(path).unwrap() == expected);
+        fs::write(&rotated, []).unwrap();
+        let rotated_access = provider.sdk_access(path);
 
         fs::write(&offline, []).unwrap();
         assert_eq!(provider.sdk_access(path).err(), Some("retry-required"));
@@ -367,6 +376,13 @@ mod tests {
         assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
         assert!(provider.owner.is_none());
         fs::remove_file(&slot).unwrap();
+        fs::remove_file(&rotated).unwrap();
         fs::remove_dir(&directory).unwrap();
+        let expected = concat!(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
+            "eyJzdWIiOiJwMC1pbmVydC1hY2Nlc3MtYTIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDA4NjQwMH0.",
+            "cDAtbm90LWEtc2lnbmF0dXJl"
+        );
+        assert!(rotated_access.is_ok_and(|access| access == expected));
     }
 }

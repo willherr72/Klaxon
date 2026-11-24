@@ -231,7 +231,7 @@ async function windowsSession(sdk = false) {
   await assert.rejects(access(root), { code: "ENOENT" });
   if (sdk) {
     console.log("PASS packaged Windows DPAPI-to-SDK:", pids.size,
-      "fresh hosts and WebViews; SDK read, subscription, forced refresh and sign-out checked; fixture removed; WebView2", webviewVersion);
+      "fresh hosts and WebViews; SDK read, subscription, simulated access cutover and sign-out checked; fixture removed; WebView2", webviewVersion);
     return;
   }
   console.log("PASS packaged Windows session:", pids.size, "host PIDs and fresh WebViews,", replies,

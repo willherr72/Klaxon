@@ -33,6 +33,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     write: bytes => adbBytes(["shell", "-T", "run-as", app, "sh", "-c", "'base64 -d > " + record + "'"],
       bytes.toString("base64")),
     outage: offline => offline ? runAs("touch", outage) : runAs("rm", outage),
+    rotate: rotated => runAs(rotated ? "touch" : "rm", "cache/p0-provider-rotated"),
     expiry: expired => runAs(expired ? "touch" : "rm", "cache/p0-provider-expired"),
     assertEmpty: () => assert.equal(runAs("ls", "-A", "no_backup"), "", "expected an empty Keystore record directory"),
   }, { verifyAndroidKeystore: true });
@@ -47,5 +48,5 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     logLines += count;
   }
   console.log("PASS packaged Android Keystore-to-SDK", pids.size, "fresh app processes and WebViews,", logLines,
-    "app log lines; SDK read, subscription, outage recovery, forced expiry and alias/file cleanup checked;", webview);
+    "app log lines; SDK read, subscription, simulated access cutover, outage recovery, forced expiry and alias/file cleanup checked;", webview);
 }

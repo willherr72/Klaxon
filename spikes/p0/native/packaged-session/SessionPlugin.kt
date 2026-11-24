@@ -8,6 +8,11 @@ import app.tauri.plugin.Plugin
 import dev.klaxon.p0session.FixtureStore
 import java.io.File
 
+// JWT-shaped fixture value for the SDK's refresh state machine, with a fake signature.
+private const val ROTATED_OWNER_A_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+    "eyJzdWIiOiJwMC1pbmVydC1hY2Nlc3MtYTIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDA4NjQwMH0." +
+    "cDAtbm90LWEtc2lnbmF0dXJl"
+
 /** Available only in the offline x86_64 session fixture. The WebView has no marker API. */
 @TauriPlugin
 class SessionPlugin(private val host: Activity) : Plugin(host) {
@@ -73,9 +78,14 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
                 "signed-out"
             } else {
                 val status = confirm(FixtureStore(host), owner)
-                if (status == "authenticated") owner.access else status
+                when {
+                    status != "authenticated" -> status
+                    owner == Owner.A && File(host.cacheDir, "p0-provider-rotated").isFile -> ROTATED_OWNER_A_ACCESS
+                    else -> owner.access
+                }
             }
         } catch (_: Exception) {
+            activeOwner = null
             "unavailable"
         }
         invoke.resolveObject(reply)

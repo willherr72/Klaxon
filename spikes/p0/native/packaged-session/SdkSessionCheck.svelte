@@ -10,6 +10,7 @@
   let renderCount = 0;
   let holding = false;
   const queued = { read: [], update: [] };
+  const accessRequests = [];
 
   const { invoke } = window.__TAURI__.core;
   const changeNative = operation => invoke("fixture_session", { operation });
@@ -22,7 +23,10 @@
     fetch: transport.fetch,
     webSocketConstructor: transport.webSocketConstructor,
     native: {
-      access: () => invoke("fixture_sdk_access"),
+      access: ({ forceRefreshToken }) => {
+        accessRequests.push(forceRefreshToken);
+        return invoke("fixture_sdk_access");
+      },
       signOut: () => changeNative("sign-out"),
     },
     accessDenied: error => { status = denial(error); },
@@ -36,8 +40,10 @@
   // The harness controls only the offline server and already-decoded deliveries.
   window.p0SdkFixture = {
     evidence: transport.evidence,
+    accessRequests,
     update: transport.update,
     expire: transport.expire,
+    rotate: transport.rotate,
     hold: () => { holding = true; },
     held: kind => queued[kind].length,
     release: kind => queued[kind].shift()(),

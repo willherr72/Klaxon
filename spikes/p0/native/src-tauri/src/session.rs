@@ -42,6 +42,7 @@ async fn fixture_sdk_access(
         .map_err(|_| "unavailable")?;
     match reply.as_str() {
         "p0-inert-access-a" => Ok("p0-inert-access-a"),
+        crate::ROTATED_OWNER_A_ACCESS => Ok(crate::ROTATED_OWNER_A_ACCESS),
         "p0-inert-access-b" => Ok("p0-inert-access-b"),
         "signed-out" => Err("signed-out"),
         "retry-required" => Err("retry-required"),

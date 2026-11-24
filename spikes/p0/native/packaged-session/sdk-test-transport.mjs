@@ -2,20 +2,19 @@
 import { version } from "convex";
 
 export const sdkFixtureUrl = "https://sdk-fixture.invalid";
-// Only the headless comparison imports this simulated native issuer.
-export function fixtureAccess(owner) {
-  if (owner === "A") return "p0-inert-access-a";
-  if (owner === "B") return "p0-inert-access-b";
-  throw new Error("Unknown fixture owner");
-}
 
-// The packaged verifier knows only digests. A valid bearer must arrive from native.
+// The packaged verifier knows only digests and status labels. Native supplies the bearer.
+const grantByDigest = new Map([
+  ["a206ba414bf056a11a8f04667db4f62d498147df76757b9a7f406749fd481c57", { owner: "A", generation: "a1" }],
+  ["9afeac65acb4f5a64c6a917f42c22eefe2766c3054b0e89ba7b5f8a6f0e4c9c8", { owner: "A", generation: "a2" }],
+  ["38ff407969b06bfad555042c30b725d4fa6c1875ca801960ae1743c507a58817", { owner: "B", generation: "b1" }],
+]);
+
 async function identify(access) {
   if (typeof access !== "string") return undefined;
   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(access));
   const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
-  if (digest === "a206ba414bf056a11a8f04667db4f62d498147df76757b9a7f406749fd481c57") return "A";
-  if (digest === "38ff407969b06bfad555042c30b725d4fa6c1875ca801960ae1743c507a58817") return "B";
+  return grantByDigest.get(digest);
 }
 
 export function fixtureRows(owner, revision = 0) {
@@ -38,10 +37,12 @@ export function createSdkTransport() {
   const revisions = new Map([["A", 0], ["B", 0]]);
   const sockets = new Set();
   const evidence = {
-    httpRequests: 0, httpReads: [], socketsOpened: 0, socketsClosed: 0,
-    socketAuth: [], queryAdds: [], queryRemoves: 0,
+    httpRequests: 0, httpReads: [], httpReadGenerations: [], socketsOpened: 0, socketsClosed: 0,
+    socketAuth: [], socketAuthGenerations: [], queryAdds: [], queryAddGenerations: [], queryRemoves: 0,
   };
+  let ownerAGeneration = "a1";
   const rows = owner => fixtureRows(owner, revisions.get(owner));
+  const accepts = grant => grant && (grant.owner === "B" || grant.generation === ownerAGeneration);
 
   async function fetch(url, init) {
     evidence.httpRequests++;
@@ -49,18 +50,19 @@ export function createSdkTransport() {
       return new Response("Unsupported fixture endpoint", { status: 404 });
     }
     const bearer = new Headers(init.headers).get("authorization");
-    const owner = bearer?.startsWith("Bearer ") && await identify(bearer.slice(7));
-    if (!owner) return new Response("signed-out", { status: 401 });
+    const grant = bearer?.startsWith("Bearer ") && await identify(bearer.slice(7));
+    if (!accepts(grant)) return new Response("signed-out", { status: 401 });
     const { path, args, format } = JSON.parse(init.body);
     if (format !== "convex_encoded_json" || !taskQuery(path, args)) {
       return new Response("Unsupported fixture query", { status: 400 });
     }
-    evidence.httpReads.push(owner);
-    return Response.json({ status: "success", value: rows(owner), logLines: [] });
+    evidence.httpReads.push(grant.owner);
+    evidence.httpReadGenerations.push(grant.generation);
+    return Response.json({ status: "success", value: rows(grant.owner), logLines: [] });
   }
 
   class FixtureSocket {
-    owner = undefined;
+    grant = undefined;
     queryIds = new Set();
     tick = 0;
     version = { querySet: 0, identity: 0, ts: timestamp(0) };
@@ -87,8 +89,8 @@ export function createSdkTransport() {
 
     result(queryId) {
       const common = { queryId, logLines: [], journal: null };
-      if (!this.owner) return { ...common, type: "QueryFailed", errorMessage: "signed-out", errorData: "signed-out" };
-      return { ...common, type: "QueryUpdated", value: rows(this.owner) };
+      if (!accepts(this.grant)) return { ...common, type: "QueryFailed", errorMessage: "signed-out", errorData: "signed-out" };
+      return { ...common, type: "QueryUpdated", value: rows(this.grant.owner) };
     }
 
     send(data) {
@@ -107,13 +109,17 @@ export function createSdkTransport() {
       if (!this.connected) throw new Error("Expected fixture socket handshake");
       if (message.type === "Event" && message.eventType === "ClientConnect") return;
       if (message.type === "Authenticate" && message.baseVersion === this.version.identity) {
-        this.owner = message.tokenType === "User" ? await identify(message.value) : undefined;
+        const grant = message.tokenType === "User" ? await identify(message.value) : undefined;
         if (!sockets.has(this)) return;
-        if (!this.owner && message.tokenType !== "None") {
+        this.grant = accepts(grant) ? grant : undefined;
+        if (!this.grant && message.tokenType !== "None") {
           this.emit({ type: "AuthError", error: "signed-out", baseVersion: message.baseVersion, authUpdateAttempted: true });
           return;
         }
-        if (this.owner) evidence.socketAuth.push(this.owner);
+        if (this.grant) {
+          evidence.socketAuth.push(this.grant.owner);
+          evidence.socketAuthGenerations.push(this.grant.generation);
+        }
         this.transition(Array.from(this.queryIds, id => this.result(id)), { identity: message.baseVersion + 1 });
         return;
       }
@@ -127,7 +133,8 @@ export function createSdkTransport() {
           } else if (mod.type === "Add" && !this.queryIds.has(mod.queryId) && !mod.componentPath &&
                      taskQuery(mod.udfPath, mod.args)) {
             this.queryIds.add(mod.queryId);
-            evidence.queryAdds.push(this.owner ?? null);
+            evidence.queryAdds.push(this.grant?.owner ?? null);
+            evidence.queryAddGenerations.push(this.grant?.generation ?? null);
             modifications.push(this.result(mod.queryId));
           } else {
             this.emit({ type: "FatalError", error: "Unsupported fixture query modification" });
@@ -152,7 +159,7 @@ export function createSdkTransport() {
     revisions.set(owner, revisions.get(owner) + 1);
     let recipients = 0;
     for (const socket of sockets) {
-      if (socket.owner === owner && socket.queryIds.size) {
+      if (socket.grant?.owner === owner && accepts(socket.grant) && socket.queryIds.size) {
         socket.transition(Array.from(socket.queryIds, id => socket.result(id)));
         recipients += socket.queryIds.size;
       }
@@ -160,16 +167,22 @@ export function createSdkTransport() {
     return recipients;
   }
 
-  function expire() {
+  function expire(owner) {
     let expired = 0;
     for (const socket of sockets) {
-      if (!socket.owner) continue;
-      socket.owner = undefined;
+      if (!socket.grant || (owner && socket.grant.owner !== owner)) continue;
+      socket.grant = undefined;
       socket.emit({ type: "AuthError", error: "expired", baseVersion: socket.version.identity, authUpdateAttempted: false });
       expired++;
     }
     return expired;
   }
 
-  return { fetch, webSocketConstructor: FixtureSocket, update, expire, evidence };
+  function rotate() {
+    if (ownerAGeneration === "a2") return 0;
+    ownerAGeneration = "a2";
+    return expire("A");
+  }
+
+  return { fetch, webSocketConstructor: FixtureSocket, update, expire: () => expire(), rotate, evidence };
 }

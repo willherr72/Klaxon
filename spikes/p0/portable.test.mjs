@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { containsMarker, containsSdkAccess } from "./native/packaged-session/web-check.mjs";
 
 const pageUrl = pathToFileURL(resolve("dist/index.html")).href;
 const run = promisify(execFile);
@@ -32,7 +33,7 @@ test("the Android SDK panel is confined to offline session assets and excludes n
   const html = await readFile(fixture, "utf8");
   assert.ok(html.includes("fixture_sdk_access") && html.includes("connect-src 'none'"));
   assert.ok(!html.includes("fixture_task_list"), "Windows task transport in Android assets");
-  assert.ok(!/KLAXON-P0-INERT\/|p0-inert-access-[ab]/.test(html), "native fixture material in web assets");
+  assert.ok(!containsMarker(html) && !containsSdkAccess(html), "native fixture material in web assets");
   assert.ok(!(await readFile(new URL(pageUrl), "utf8")).includes("fixture_sdk_access"));
   await assert.rejects(buildForTest(t, "https://synthetic-portable-test.convex.cloud", "--session"), /runs offline/);
 });

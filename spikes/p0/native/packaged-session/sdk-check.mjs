@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { containsMarker, containsSdkAccess } from "./web-check.mjs";
+import { canaryOverlap, containsMarker, containsSdkAccess } from "./web-check.mjs";
 
 const click = (panel, name) => panel.getByRole("button", { name, exact: true }).click();
 const statusIs = (page, status) => page.waitForFunction(status =>
@@ -15,9 +15,9 @@ async function seed(page, panel, button = "Start synthetic session") {
   await nativeDenies(page);
 }
 
-async function expectRow(panel, owner, updated = false) {
+async function expectRow(panel, owner, revision = 0) {
   const rows = taskRows(panel);
-  const title = "Owner " + owner + (updated ? " updated" : " task");
+  const title = "Owner " + owner + (revision ? " updated" : " task") + (revision > 1 ? " " + revision : "");
   await rows.filter({ hasText: title }).waitFor();
   assert.equal(await rows.count(), 1);
   assert.equal(await rows.getAttribute("data-task-id"), "task-" + owner.toLowerCase());
@@ -33,25 +33,60 @@ async function resume(page, panel, owner) {
   await click(panel, "Resume session");
   await statusIs(page, "authenticated");
   await expectRow(panel, owner);
-  const observed = await page.evaluate(owner => ({
-    nativeAccess: window.p0Replies.includes("sdk-owner-" + owner.toLowerCase()),
-    socket: window.p0SdkFixture.evidence.socketAuth.at(-1),
-    subscription: window.p0SdkFixture.evidence.queryAdds.at(-1),
-  }), owner);
-  assert.deepEqual(observed, { nativeAccess: true, socket: owner, subscription: owner });
+  const generation = owner.toLowerCase() + "1";
+  const observed = await page.evaluate(generation => ({
+    nativeAccess: window.p0Replies.includes("sdk-access-" + generation),
+    socket: window.p0SdkFixture.evidence.socketAuthGenerations.at(-1),
+    subscription: window.p0SdkFixture.evidence.queryAddGenerations.at(-1),
+  }), generation);
+  assert.deepEqual(observed, { nativeAccess: true, socket: generation, subscription: generation });
 }
 
-async function readAndPush(page, panel, owner) {
-  const reads = await page.evaluate(() => window.p0SdkFixture.evidence.httpReads.length);
-  const renders = await page.evaluate(() => window.p0SdkFixture.renders());
+async function readAndPush(page, panel, owner, generation = owner.toLowerCase() + "1", revision = 0) {
+  const before = await page.evaluate(() => ({
+    reads: window.p0SdkFixture.evidence.httpReadGenerations.length,
+    renders: window.p0SdkFixture.renders(),
+  }));
   await click(panel, "Read SDK tasks");
-  await page.waitForFunction(() => document.querySelector('[aria-label="SDK operation"]').textContent === "read complete");
-  assert.equal(await page.evaluate(() => window.p0SdkFixture.renders()), renders + 1, "HTTP read must render decoded rows");
-  assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.httpReads.at(-1)), owner);
-  await expectRow(panel, owner);
+  await page.waitForFunction(renders => window.p0SdkFixture.renders() > renders &&
+    document.querySelector('[aria-label="SDK operation"]').textContent === "read complete", before.renders);
+  assert.equal(await page.evaluate(() => window.p0SdkFixture.renders()), before.renders + 1, "HTTP read must render decoded rows");
+  assert.deepEqual(await page.evaluate(start => window.p0SdkFixture.evidence.httpReadGenerations.slice(start), before.reads),
+    [generation], "HTTP read must use the expected access generation");
+  await expectRow(panel, owner, revision);
   assert.equal(await page.evaluate(owner => window.p0SdkFixture.update(owner), owner), 1);
-  await expectRow(panel, owner, true);
-  assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.httpReads.length), reads + 1);
+  await expectRow(panel, owner, revision + 1);
+  assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.httpReadGenerations.length), before.reads + 1);
+}
+
+async function expectAccessCutover(page, panel) {
+  const before = await page.evaluate(() => {
+    const { evidence, accessRequests } = window.p0SdkFixture;
+    return {
+      replies: window.p0Replies.length, accessRequests: accessRequests.length,
+      socket: evidence.socketAuthGenerations.length, subscription: evidence.queryAddGenerations.length,
+      opened: evidence.socketsOpened, closed: evidence.socketsClosed,
+    };
+  });
+  assert.equal(await page.evaluate(() => window.p0SdkFixture.rotate()), 1);
+  await page.waitForFunction(({ replies, subscription }) =>
+    window.p0Replies.slice(replies).includes("sdk-access-a2") &&
+    window.p0SdkFixture.evidence.queryAddGenerations.slice(subscription).includes("a2"), before);
+  const observed = await page.evaluate(before => {
+    const { evidence, accessRequests } = window.p0SdkFixture;
+    return {
+      replies: window.p0Replies.slice(before.replies),
+      accessRequests: accessRequests.slice(before.accessRequests),
+      socket: evidence.socketAuthGenerations.slice(before.socket),
+      subscription: evidence.queryAddGenerations.slice(before.subscription),
+      opened: evidence.socketsOpened - before.opened, closed: evidence.socketsClosed - before.closed,
+    };
+  }, before);
+  assert.deepEqual(observed, {
+    replies: ["sdk-access-a2"], accessRequests: [true], socket: ["a2"], subscription: ["a2"], opened: 1, closed: 1,
+  }, "cutover must force a native refresh and replace the SDK socket and subscription");
+  await statusIs(page, "authenticated");
+  await readAndPush(page, panel, "A", "a2", 1);
 }
 
 async function signOut(page, panel) {
@@ -71,7 +106,7 @@ async function expectRefreshDenial(page, expected) {
   });
   assert.equal(await page.evaluate(([start, expected]) => {
     const replies = window.p0Replies.slice(start);
-    return replies.includes("sdk-denial-" + expected) && !replies.some(value => String(value).startsWith("sdk-owner-"));
+    return replies.includes("sdk-denial-" + expected) && !replies.some(value => String(value).startsWith("sdk-access-"));
   }, [start, expected]), true, "forced refresh should reach native IPC and deny token issuance");
   await nativeDenies(page);
 }
@@ -103,6 +138,14 @@ export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore =
     await resume(page, panel, "A");
     await readAndPush(page, panel, "A");
     await checkPageState();
+    await slot.rotate(true);
+    try {
+      await expectAccessCutover(page, panel);
+      await checkPageState();
+      assert.ok((await slot.read()).equals(sealed), "access cutover changed the protected record");
+    } finally {
+      await slot.rotate(false);
+    }
     await slot.outage(true);
     await expectRefreshDenial(page, "retry-required");
   }]);
@@ -120,6 +163,7 @@ export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore =
   await slot.outage(false);
 
   await launch([async (page, panel, checkPageState) => {
+    await nativeDenies(page);
     await resume(page, panel, "A");
     await page.evaluate(() => window.p0SdkFixture.hold());
     await click(panel, "Read SDK tasks");
@@ -183,10 +227,12 @@ export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore =
 
 export async function exerciseWindowsSdkHandoff(launch, root, record) {
   const outage = join(root, "p0-provider-offline");
+  const rotation = join(root, "p0-provider-rotated");
   await exerciseSdkHandoff(launch, {
     read: () => readFile(record),
     write: bytes => writeFile(record, bytes),
     outage: offline => offline ? writeFile(outage, "", { flag: "wx" }) : rm(outage),
+    rotate: rotated => rotated ? writeFile(rotation, "", { flag: "wx" }) : rm(rotation),
     assertEmpty: () => assert.rejects(access(record), { code: "ENOENT" }),
   });
   await checkProfile(join(root, "webview"));
@@ -210,7 +256,7 @@ async function checkProfile(directory) {
         for (const text of [bytes.toString("latin1"), bytes.toString("utf16le"), bytes.subarray(1).toString("utf16le")]) {
           assert.ok(!containsMarker(text) && !containsSdkAccess(text), "session material in retired WebView profile");
         }
-        tail = bytes.subarray(-256);
+        tail = bytes.subarray(-canaryOverlap);
       }
     }
   }
