@@ -1,6 +1,6 @@
 # Phase 0 platform capabilities
 
-**Decision status, 2026-11-23.** Provider interface review is complete for the operations below. Tenant-specific authorization, Dot execution and physical-device push remain open. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import.
+Provider interface review is complete for the operations below. Tenant-specific authorization, remote MCP execution with a scoped Dot identity and physical-device push remain open. Dot’s scheduled browser fallback passed once with Windows powered off. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import. [Scheduled browser fallback evidence](../dot-playbook.md#scheduled-browser-fallback)
 
 | Provider | Initial interface and boundary | Fallback or unresolved test |
 |---|---|---|
@@ -28,5 +28,7 @@ The Android SDK’s adb devices command returned an empty list on this Windows h
 For each cell, enroll a disposable browser profile on the actual target and send an ordinary server-originated push using a unique synthetic occurrence ID. Record OS/browser versions, notification and power settings, due time, push-service acceptance, service-worker receipt, observed system notification, acknowledgment and duplicate count. For denial or disconnection, inspect permission status and overdue history after reopening. Repeat with an edited and a canceled occurrence. If closed-app delivery misses the owner’s required window, use reconciled native delivery on that platform and repeat the matrix with duplicates checked. Until then, timing and closed-app guarantees remain unverified.
 
 From the repository root, run `node --test spikes/p0/reminder-evidence.test.mjs` to rehearse how to interpret one occurrence on one device. The synthetic traces distinguish service receipts from observed display, reject duplicate or superseded displays, reject display after cancellation, and require a current overdue history entry after reconnect. All device cells above still require physical observations.
+
+For the permission-denied or revoked row, the offline trace rejects a new Web Push display while permission is denied. To count a fallback observation, the same reopening must show both the denied permission status and an overdue history entry for the current occurrence revision. A new opening or permission change requires fresh observations. The trace exercises the evidence check without changing a browser permission or generating a notification.
 
 See the [Dot playbook](../dot-playbook.md) for the owner-account tests and manual planning fallback.
