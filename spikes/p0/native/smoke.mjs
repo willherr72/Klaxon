@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { exerciseSession } from "./packaged-session/check.mjs";
-import { checkSessionPage, containsMarker } from "./packaged-session/web-check.mjs";
+import { checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
+
+import { exerciseSdkHandoff } from "./packaged-session/sdk-check.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -157,7 +159,32 @@ async function windows() {
   }
 }
 
-async function windowsSession() {
+async function exerciseNativeTasks(launch, root, record) {
+  await launch([["Resume session", "signed-out"], ["Start synthetic session", "fixture-ready"],
+    ["Start synthetic session", "unavailable"]]);
+  const sealed = await readFile(record);
+  assert.ok(sealed.length > 0 && !containsMarker(sealed.toString("latin1")) &&
+    !containsMarker(sealed.toString("utf16le")), "expected only a protected record");
+  const corrupt = Buffer.from(sealed);
+  corrupt[corrupt.length - 1] ^= 1;
+  await writeFile(record, corrupt);
+  await launch([["Resume session", "unavailable"]]);
+  assert.ok((await readFile(record)).equals(corrupt), "unreadable record should remain available for recovery");
+  const outage = join(root, "p0-provider-offline");
+  await writeFile(outage, "", { flag: "wx" });
+  await launch([["Resume session", "unavailable"]]);
+  assert.ok((await readFile(record)).equals(corrupt), "provider outage must not hide a storage failure");
+  await writeFile(record, sealed);
+  await launch([["Resume session", "retry-required"], checkTaskDenial]);
+  assert.ok((await readFile(record)).equals(sealed), "provider outage must preserve the valid protected record");
+  await rm(outage);
+  await launch([checkTaskDenial, ["Resume session", "authenticated"], checkTaskSwitch]);
+  assert.deepEqual(await readdir(root), ["webview"], "logout should remove the native slot");
+  await launch([["Resume session", "signed-out"], checkTaskDenial]);
+  assert.deepEqual(await readdir(root), ["webview"], "cold resume recreated a native slot");
+}
+
+async function windowsSession(sdk = false) {
   const exe = join(nativeDir, "src-tauri/target/debug/windows_session.exe");
   await access(exe);
   const html = await readFile(join(nativeDir, ".run/windows-session-frontend/index.html"), "utf8");
@@ -175,46 +202,38 @@ async function windowsSession() {
       assert.ok(!pids.has(pid), "expected a new native Windows host PID");
       pids.add(pid);
       await page.waitForURL("http://tauri.localhost/**");
+      if (sdk) {
+        await page.goto("http://tauri.localhost/#sdk");
+        await page.reload();
+      }
       const policy = page.locator('meta[http-equiv="Content-Security-Policy"]').first();
       assert.equal(await policy.getAttribute("content"), expectedPolicy);
       assert.equal(await page.evaluate(() => window.p0Replies === undefined), true, "expected a fresh WebView");
       webviewVersion = page.context().browser().version();
-      await checkSessionPage(page, actions);
+      await checkSessionPage(page, actions, sdk);
       replies += actions.filter(Array.isArray).length;
     }, capture);
   }
   try {
-    await launch([["Resume session", "signed-out"], ["Start synthetic session", "fixture-ready"],
-      ["Start synthetic session", "unavailable"]]);
-    const sealed = await readFile(record);
-    assert.ok(sealed.length > 0 && !containsMarker(sealed.toString("latin1")) &&
-      !containsMarker(sealed.toString("utf16le")), "expected only a protected record");
-    const corrupt = Buffer.from(sealed);
-    corrupt[corrupt.length - 1] ^= 1;
-    await writeFile(record, corrupt);
-    await launch([["Resume session", "unavailable"]]);
-    assert.ok((await readFile(record)).equals(corrupt), "unreadable record should remain available for recovery");
-    const outage = join(root, "p0-provider-offline");
-    await writeFile(outage, "", { flag: "wx" });
-    await launch([["Resume session", "unavailable"]]);
-    assert.ok((await readFile(record)).equals(corrupt), "provider outage must not hide a storage failure");
-    await writeFile(record, sealed);
-    await launch([["Resume session", "retry-required"], checkTaskDenial]);
-    assert.ok((await readFile(record)).equals(sealed), "provider outage must preserve the valid protected record");
-    await rm(outage);
-    await launch([checkTaskDenial, ["Resume session", "authenticated"], checkTaskSwitch]);
-    assert.deepEqual(await readdir(root), ["webview"], "logout should remove the native slot");
-    await launch([["Resume session", "signed-out"], checkTaskDenial]);
-    assert.deepEqual(await readdir(root), ["webview"], "cold resume recreated a native slot");
+    if (sdk) await exerciseSdkHandoff(launch, root, record);
+    else await exerciseNativeTasks(launch, root, record);
     for (const chunks of [capture.stdout, capture.stderr]) {
       const log = Buffer.concat(chunks);
-      assert.ok(!containsMarker(log.toString("utf8")) && !containsMarker(log.toString("utf16le")), "marker in native host output");
+      for (const encoding of ["utf8", "utf16le"]) {
+        assert.ok(!containsMarker(log.toString(encoding)) && !containsSdkAccess(log.toString(encoding)),
+          "session material in native host output");
+      }
     }
     assert.equal(Buffer.concat(capture.stdout).toString("utf8").split("P0 Windows session fixture ready").length - 1, pids.size);
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
   }
   await assert.rejects(access(root), { code: "ENOENT" });
+  if (sdk) {
+    console.log("PASS packaged Windows DPAPI-to-SDK:", pids.size,
+      "fresh hosts and WebViews; SDK read, subscription, forced refresh and sign-out checked; fixture removed; WebView2", webviewVersion);
+    return;
+  }
   console.log("PASS packaged Windows session:", pids.size, "host PIDs and fresh WebViews,", replies,
     "isolated session replies plus owner-filtered native reads, live channel updates and late delivery across sign-out/owner switch;",
     "native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
@@ -269,6 +288,6 @@ async function android() {
 }
 
 if (platform === "windows") await windows();
-else if (platform === "windows-session") await windowsSession();
+else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
 else if (platform === "android" || platform === "android-session") await android();
-else throw new Error("Choose windows, windows-session, android or android-session. Android requires a disposable emulator serial.");
+else throw new Error("Choose windows, windows-session, windows-sdk, android or android-session. Android requires a disposable emulator serial.");

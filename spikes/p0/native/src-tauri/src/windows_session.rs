@@ -68,6 +68,27 @@ impl Provider {
         self.subscription = None;
     }
 
+    fn sdk_access(&mut self, slot: Option<&Path>) -> Result<&'static str, &'static str> {
+        let active = self.owner.ok_or("signed-out")?;
+        // Recheck even for cached SDK sessions. A changed record requires a new explicit resume.
+        let access = slot
+            .ok_or("unavailable")
+            .and_then(confirmed_owner)
+            .and_then(|owner| {
+                if owner != active {
+                    return Err("unavailable");
+                }
+                Ok(match owner {
+                    Owner::A => "p0-inert-access-a",
+                    Owner::B => "p0-inert-access-b",
+                })
+            });
+        if access.is_err() {
+            self.revoke();
+        }
+        access
+    }
+
     fn rows(&self) -> Result<Rows, &'static str> {
         let owner = self.owner.ok_or("signed-out")?;
         Ok(self
@@ -191,6 +212,27 @@ fn provider<'a>(
     state.lock().map_err(|_| "unavailable")
 }
 
+fn confirmed_owner(slot: &Path) -> Result<Owner, &'static str> {
+    let record = fs::read(slot).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => "signed-out",
+        _ => "unavailable",
+    })?;
+    let marker = dpapi(&record, false).map_err(|_| "unavailable")?;
+    let owner = match marker.as_slice() {
+        MARKER => Owner::A,
+        PEER_MARKER => Owner::B,
+        _ => return Err("unavailable"),
+    };
+    if slot
+        .with_file_name("p0-provider-offline")
+        .try_exists()
+        .map_err(|_| "unavailable")?
+    {
+        return Err("retry-required");
+    }
+    Ok(owner)
+}
+
 #[tauri::command]
 fn fixture_session(
     window: WebviewWindow,
@@ -218,27 +260,13 @@ fn fixture_session(
                 .map(|_| "fixture-ready")
                 .map_err(|_| "unavailable")
         }
-        "resume" => match fs::read(&slot) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok("signed-out"),
-            Ok(record) => {
-                let marker = dpapi(&record, false).map_err(|_| "unavailable")?;
-                // Only the intercepted provider maps a protected marker to a task owner.
-                let owner = match marker.as_slice() {
-                    MARKER => Owner::A,
-                    PEER_MARKER => Owner::B,
-                    _ => return Err("unavailable"),
-                };
-                if slot
-                    .with_file_name("p0-provider-offline")
-                    .try_exists()
-                    .map_err(|_| "unavailable")?
-                {
-                    return Ok("retry-required");
-                }
+        "resume" => match confirmed_owner(&slot) {
+            Ok(owner) => {
                 provider.owner = Some(owner);
                 Ok("authenticated")
             }
-            _ => Err("unavailable"),
+            Err(status @ ("retry-required" | "signed-out")) => Ok(status),
+            Err(error) => Err(error),
         },
         "sign-out" => match fs::remove_file(&slot) {
             Ok(()) => Ok("signed-out"),
@@ -247,6 +275,14 @@ fn fixture_session(
         },
         _ => Err("unavailable"),
     }
+}
+
+#[tauri::command]
+fn fixture_sdk_access(
+    window: WebviewWindow,
+    state: State<'_, Mutex<Provider>>,
+) -> Result<&'static str, &'static str> {
+    provider(&window, &state)?.sdk_access(slot().as_deref())
 }
 
 #[tauri::command]
@@ -287,8 +323,50 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
         .manage(Mutex::new(Provider::new()))
         .invoke_handler(tauri::generate_handler![
             fixture_session,
+            fixture_sdk_access,
             fixture_task_list,
             fixture_task_subscribe,
             fixture_task_publish
         ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sdk_access_rechecks_record_and_revokes_on_failure() {
+        let mut provider = Provider::new();
+        let directory = env::temp_dir().join(format!("klaxon-p0-sdk-test-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let slot = directory.join("packaged.bin");
+        let offline = directory.join("p0-provider-offline");
+        let path = Some(slot.as_path());
+
+        seed(&slot, MARKER).unwrap();
+        assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
+        provider.owner = Some(confirmed_owner(&slot).unwrap());
+        let expected = "p0-inert-access-a";
+        assert!(provider.sdk_access(path).unwrap() == expected);
+
+        fs::write(&offline, []).unwrap();
+        assert_eq!(provider.sdk_access(path).err(), Some("retry-required"));
+        fs::remove_file(&offline).unwrap();
+        assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
+
+        provider.owner = Some(confirmed_owner(&slot).unwrap());
+        fs::remove_file(&slot).unwrap();
+        seed(&slot, PEER_MARKER).unwrap();
+        assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
+        assert!(provider.owner.is_none());
+        provider.owner = Some(confirmed_owner(&slot).unwrap());
+        let expected = "p0-inert-access-b";
+        assert!(provider.sdk_access(path).unwrap() == expected);
+
+        fs::write(&slot, b"damaged").unwrap();
+        assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
+        assert!(provider.owner.is_none());
+        fs::remove_file(&slot).unwrap();
+        fs::remove_dir(&directory).unwrap();
+    }
 }

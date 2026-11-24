@@ -167,6 +167,21 @@ test("a late native access result cannot open an SDK client for the signed-out o
   await page.evaluate(() => run.tasks.signOut());
 });
 
+test("a delayed HTTP snapshot cannot replace a newer subscription update for the same owner", async t => {
+  const page = await openFixture(t);
+  await resume(page, "A");
+  await page.evaluate(() => {
+    run.responseGate = () => new Promise(resolve => { run.releaseHttp = resolve; });
+    run.pendingRead = run.tasks.read();
+  });
+  await page.waitForFunction(() => typeof run.releaseHttp === "function");
+  await page.evaluate(() => run.transport.update("A"));
+  await page.waitForFunction(() => run.rows[0]?.title === "Owner A updated");
+  await page.evaluate(async () => { run.releaseHttp(); await run.pendingRead; });
+  assert.deepEqual(await page.evaluate(() => run.rows), [{ id: "task-a", title: "Owner A updated" }]);
+  await page.evaluate(() => run.tasks.signOut());
+});
+
 test("a delayed HTTP response is decoded by the SDK after B resumes and cannot replace B's tasks", async t => {
   const page = await openFixture(t);
   await resume(page, "A");

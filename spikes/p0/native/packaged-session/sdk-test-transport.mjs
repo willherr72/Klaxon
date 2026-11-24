@@ -1,14 +1,21 @@
-// In-process endpoints for the pinned Convex SDK wire protocol. These two
-// opaque fixture values have no meaning outside this test.
+// In-process endpoints for the pinned Convex SDK wire protocol.
 import { version } from "convex";
 
 export const sdkFixtureUrl = "https://sdk-fixture.invalid";
-const accessByOwner = new Map([["A", "p0-inert-access-a"], ["B", "p0-inert-access-b"]]);
-const ownerByAccess = new Map(Array.from(accessByOwner, ([owner, access]) => [access, owner]));
-
+// Only the headless comparison imports this simulated native issuer.
 export function fixtureAccess(owner) {
-  if (!accessByOwner.has(owner)) throw new Error("Unknown fixture owner");
-  return accessByOwner.get(owner);
+  if (owner === "A") return "p0-inert-access-a";
+  if (owner === "B") return "p0-inert-access-b";
+  throw new Error("Unknown fixture owner");
+}
+
+// The packaged verifier knows only digests. A valid bearer must arrive from native.
+async function identify(access) {
+  if (typeof access !== "string") return undefined;
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(access));
+  const digest = Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("");
+  if (digest === "a206ba414bf056a11a8f04667db4f62d498147df76757b9a7f406749fd481c57") return "A";
+  if (digest === "38ff407969b06bfad555042c30b725d4fa6c1875ca801960ae1743c507a58817") return "B";
 }
 
 export function fixtureRows(owner, revision = 0) {
@@ -42,7 +49,7 @@ export function createSdkTransport() {
       return new Response("Unsupported fixture endpoint", { status: 404 });
     }
     const bearer = new Headers(init.headers).get("authorization");
-    const owner = bearer?.startsWith("Bearer ") && ownerByAccess.get(bearer.slice(7));
+    const owner = bearer?.startsWith("Bearer ") && await identify(bearer.slice(7));
     if (!owner) return new Response("signed-out", { status: 401 });
     const { path, args, format } = JSON.parse(init.body);
     if (format !== "convex_encoded_json" || !taskQuery(path, args)) {
@@ -58,6 +65,7 @@ export function createSdkTransport() {
     tick = 0;
     version = { querySet: 0, identity: 0, ts: timestamp(0) };
     connected = false;
+    incoming = Promise.resolve();
 
     constructor(url) {
       if (url !== `wss://sdk-fixture.invalid/api/${version}/sync`) throw new Error("Unknown fixture socket");
@@ -85,6 +93,13 @@ export function createSdkTransport() {
 
     send(data) {
       const message = JSON.parse(data);
+      // Preserve ordering while the verifier checks the Authenticate message.
+      this.incoming = this.incoming.then(() => {
+        if (sockets.has(this)) return this.receive(message);
+      });
+    }
+
+    async receive(message) {
       if (message.type === "Connect" && !this.connected) {
         this.connected = true;
         return;
@@ -92,7 +107,8 @@ export function createSdkTransport() {
       if (!this.connected) throw new Error("Expected fixture socket handshake");
       if (message.type === "Event" && message.eventType === "ClientConnect") return;
       if (message.type === "Authenticate" && message.baseVersion === this.version.identity) {
-        this.owner = message.tokenType === "User" ? ownerByAccess.get(message.value) : undefined;
+        this.owner = message.tokenType === "User" ? await identify(message.value) : undefined;
+        if (!sockets.has(this)) return;
         if (!this.owner && message.tokenType !== "None") {
           this.emit({ type: "AuthError", error: "signed-out", baseVersion: message.baseVersion, authUpdateAttempted: true });
           return;
@@ -144,5 +160,16 @@ export function createSdkTransport() {
     return recipients;
   }
 
-  return { fetch, webSocketConstructor: FixtureSocket, update, evidence };
+  function expire() {
+    let expired = 0;
+    for (const socket of sockets) {
+      if (!socket.owner) continue;
+      socket.owner = undefined;
+      socket.emit({ type: "AuthError", error: "expired", baseVersion: socket.version.identity, authUpdateAttempted: false });
+      expired++;
+    }
+    return expired;
+  }
+
+  return { fetch, webSocketConstructor: FixtureSocket, update, expire, evidence };
 }

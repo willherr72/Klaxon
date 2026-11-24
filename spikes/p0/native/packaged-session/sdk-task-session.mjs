@@ -3,7 +3,7 @@ import { anyApi as api } from "convex/server";
 
 // Offline comparison only. Native issues access tokens and owns refresh and sign-out.
 export function createSdkTaskSession({
-  origin, native, fetch, webSocketConstructor, render,
+  origin, native, fetch, webSocketConstructor, render, accessDenied = () => {},
   deliver = (_kind, callback) => callback(),
 }) {
   if (origin !== "https://sdk-fixture.invalid" ||
@@ -30,14 +30,14 @@ export function createSdkTaskSession({
     return closing;
   }
 
-  function show(session, kind, rows) {
+  function show(session, kind, rows, updateVersion) {
     deliver(kind, () => {
-      if (current === session) render(rows);
+      if (current === session && session.updateVersion === updateVersion) render(rows);
     });
   }
 
   async function resume() {
-    const session = {};
+    const session = { updateVersion: 0 };
     const closed = replace(session);
     const pendingSignOut = signingOut;
     try {
@@ -56,15 +56,16 @@ export function createSdkTaskSession({
       session.live.setAuth(async ({ forceRefreshToken }) => {
         if (current !== session) return null;
         if (!forceRefreshToken) return session.accessToken;
-        let fresh;
+        let fresh, denial;
         try {
           fresh = await native.access({ forceRefreshToken: true });
-        } catch {
+        } catch (error) {
           // The SDK token fetcher must settle even if the native provider is unavailable.
-          fresh = null;
+          denial = error;
         }
         if (current !== session) return null;
         if (!fresh) {
+          accessDenied(denial);
           await replace(undefined);
           return null;
         }
@@ -74,7 +75,7 @@ export function createSdkTaskSession({
       }, authenticated => {
         if (!authenticated && current === session) void replace(undefined);
       });
-      session.live.onUpdate(api.tasks.list, {}, rows => show(session, "update", rows),
+      session.live.onUpdate(api.tasks.list, {}, rows => show(session, "update", rows, ++session.updateVersion),
         () => { if (current === session) void replace(undefined); });
       return true;
     } catch (error) {
@@ -87,8 +88,10 @@ export function createSdkTaskSession({
   async function read() {
     const session = current;
     if (!session?.accessToken) throw new Error("Signed out");
+    // A subscription update received during this read takes precedence over its snapshot.
+    const updateVersion = session.updateVersion;
     const rows = await session.http.query(api.tasks.list, {});
-    show(session, "read", rows);
+    show(session, "read", rows, updateVersion);
   }
 
   async function signOut() {
@@ -103,5 +106,5 @@ export function createSdkTaskSession({
     }
   }
 
-  return { resume, read, signOut };
+  return { resume, read, signOut, clear: () => replace(undefined) };
 }
