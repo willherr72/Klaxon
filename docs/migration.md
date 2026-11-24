@@ -35,3 +35,7 @@ Confirm v1 convergence across devices or reconcile separate device exports first
 To roll back, freeze v2 writes and reminder delivery, export post-cutover edits, restore the final v1 snapshots with the original identity for each device and reconcile later changes explicitly. Check pairings, tasks and exactly one reminder delivery before reopening writes. Restoring v1 changes the sync epoch. Test recovery on disposable devices before cutover.
 
 Source references: src-tauri/src/db/migrations.rs, migration_016.sql, migration_017.sql, db/reminders.rs, db/task_steps.rs, models.rs and backup/{snapshot,container,restore}.rs.
+
+### Synthetic failure and recovery evidence
+
+`python spikes/migration/probe.py` also seeds a disposable second device database in WAL mode. With an uncommitted step edit pending, a separate read-only connection takes an online SQLite backup. Both the recovered source and snapshot must contain the last committed step title. A truncated derivative must fail SQLite validation, after which rereading the intact snapshot must pass. This exercises source-side snapshots only. Verify import idempotency, reconciliation across divergent device histories, and destination restore when P1 opens.

@@ -60,6 +60,39 @@ def verify_projection(path):
     assert hashlib.sha256(path.read_bytes()).digest() == before
 
 
+def check_snapshot_recovery(directory):
+    """Exercise snapshot reads while a synthetic device has live WAL pages."""
+    source = directory / "active.db"
+    snapshot = directory / "snapshot.db"
+    seed_fixture(source)
+    with closing(sqlite3.connect(source)) as writer:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE task_steps SET title='committed title' WHERE id='s'")
+        writer.commit()
+        writer.execute("UPDATE task_steps SET title='interrupted edit' WHERE id='s'")
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
+            with closing(sqlite3.connect(snapshot)) as target:
+                reader.backup(target)
+        # Closing the writer without committing simulates an interrupted edit.
+    verify_projection(snapshot)
+    for path in (source, snapshot):
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as reader:
+            assert reader.execute("SELECT title FROM task_steps WHERE id='s'").fetchone() == ("committed title",)
+
+    # A partial copy must fail validation, and retry from the intact snapshot
+    # must still succeed. Only truncate a new disposable copy.
+    partial = directory / "partial.db"
+    partial.write_bytes(snapshot.read_bytes()[:512])
+    try:
+        verify_projection(partial)
+    except sqlite3.DatabaseError:
+        pass
+    else:
+        raise AssertionError("Truncated snapshot unexpectedly passed validation")
+    verify_projection(snapshot)
+
+
 if __name__ == "__main__":
     if not __debug__:
         raise SystemExit("Run this probe with Python assertions enabled")
@@ -67,4 +100,5 @@ if __name__ == "__main__":
         fixture = Path(tmp) / "synthetic.db"
         seed_fixture(fixture)
         verify_projection(fixture)
-    print("Schema 17 read-only synthetic projection passed")
+        check_snapshot_recovery(Path(tmp))
+    print("Schema 17 projection, live WAL snapshot, interrupted edit, truncated copy and retry passed")
