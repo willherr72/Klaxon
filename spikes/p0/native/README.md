@@ -49,6 +49,14 @@ The test verifies owner-filtered reads and updates, failed forced refresh during
 
 The Windows and Android SDK smokes also exercise successful access-token replacement. The harness sets a flag in the native fixture directory and tells the in-process provider to expire A’s first access value. The SDK must request a new value through native IPC, authenticate its subscription again and use the replacement for an HTTP read. The companion `node --test sdk-task-session.test.mjs` check presents the old value directly to each intercepted transport after cutover. The provider’s immediate rejection rule is specific to this test. The encrypted refresh record is reused throughout the exchange.
 
+The Windows SDK smoke has a second case for replacement of the refresh record itself. It saves the original DPAPI ciphertext, enables the simulated native exchange and reads the replacement ciphertext as soon as the SDK has an authenticated subscription. Subsequent hosts must deny the original record and accept the replacement when the simulated provider requires the successor. Only the runner handles the encrypted files. The native fixture receives the synthetic provider response in memory.
+
+Run the Windows Rust checks from `spikes/p0` to exercise interruption during the record update. The packaged WebView test above covers the successful handoff and cold resume.
+
+```powershell
+cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --features p0-session --lib
+```
+
 ## Android emulator fixture
 
 ### Packaged Android session
