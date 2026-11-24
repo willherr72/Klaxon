@@ -1,12 +1,15 @@
 package dev.klaxon.p0native
 
 import android.app.Activity
+import android.os.Process
 import app.tauri.annotation.Command
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import dev.klaxon.p0session.FixtureStore
+import dev.klaxon.p0session.FixtureStore.PublishBoundary
 import java.io.File
+import java.io.IOException
 
 // JWT-shaped fixture value for the SDK's refresh state machine, with a fake signature.
 private const val ROTATED_OWNER_A_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
@@ -16,6 +19,11 @@ private const val ROTATED_OWNER_A_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
 /** Available only in the offline x86_64 session fixture. The WebView has no marker API. */
 @TauriPlugin
 class SessionPlugin(private val host: Activity) : Plugin(host) {
+    private enum class RefreshPause(val flag: String, val boundary: PublishBoundary) {
+        BEFORE("refresh-pause-before-publish", PublishBoundary.BEFORE_PUBLISH),
+        AFTER("refresh-pause-after-publish", PublishBoundary.AFTER_PUBLISH),
+    }
+
     private enum class Owner(val id: String, val generation: Int, val access: String) {
         A("p0-fixture-owner-a", 1, "p0-inert-access-a"),
         B("p0-fixture-owner-b", 2, "p0-inert-access-b"),
@@ -121,12 +129,33 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
     }
 
     @Command
-    @Synchronized
     fun sdkAccess(invoke: Invoke) {
+        val pause = RefreshPause.entries.firstOrNull { providerFlag(it.flag) }
+        if (pause == null) {
+            replySdkAccess(invoke)
+        } else {
+            // Tauri dispatches plugin commands on the UI thread. Keep the WebView observable
+            // while the isolated test writer is parked until its process is killed.
+            Thread({ replySdkAccess(invoke, pause) }, "p0-refresh-writer").start()
+        }
+    }
+
+    @Synchronized
+    private fun replySdkAccess(invoke: Invoke, pause: RefreshPause? = null) {
         val owner = activeOwner
         activeOwner = null
         val reply = try {
-            if (owner == null) "signed-out" else authorize(FixtureStore(host), owner)
+            if (owner == null) "signed-out" else {
+                val store = if (pause == null) FixtureStore(host) else FixtureStore(host) { boundary ->
+                    if (boundary == pause.boundary) {
+                        File(host.cacheDir, "p0-${pause.flag}-reached").writeText(Process.myPid().toString())
+                        // Fail closed if the controlling runner disappears before force-stop.
+                        Thread.sleep(60_000)
+                        throw IOException("Fixture checkpoint timed out")
+                    }
+                }
+                authorize(store, owner)
+            }
         } catch (_: Exception) {
             activeOwner = null
             "unavailable"

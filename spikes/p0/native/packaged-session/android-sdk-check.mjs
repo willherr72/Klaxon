@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { exerciseAndroidRefreshProcessDeath } from "./android-refresh-process-death.mjs";
 import { checkSessionPage, containsMarker, containsSdkAccess } from "./web-check.mjs";
 import { exerciseSdkHandoff } from "./sdk-check.mjs";
 import { readFixtureFile } from "./adb-file.mjs";
@@ -6,9 +7,9 @@ import { readFixtureFile } from "./adb-file.mjs";
 export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app) {
   const pids = new Set();
   let webview;
-  async function launch(actions) {
+  async function launch(actions, beforeDetach) {
     adb("shell", "am", "force-stop", app);
-    await withActivity(async (page, pid) => {
+    return await withActivity(async (page, pid) => {
       assert.ok(!pids.has(pid), "expected a fresh Android app process");
       pids.add(pid);
       page.setDefaultTimeout(20000);
@@ -19,6 +20,8 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
       assert.match(await policy.getAttribute("content"), /connect-src 'none'/);
       webview = await page.evaluate(() => navigator.userAgent);
       await checkSessionPage(page, actions, "android");
+      await beforeDetach?.(page, pid);
+      return pid;
     });
   }
 
@@ -27,12 +30,13 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
   const runAs = (...args) => adb("shell", "run-as", app, ...args);
   const write = (path, bytes) => adbBytes(["shell", "-T", "run-as", app, "sh", "-c", "'base64 -d > " + path + "'"],
     bytes.toString("base64"));
+  const readSealed = path => {
+    const bytes = readFixtureFile(adbBytes, app, path);
+    assert.ok(bytes.length > 28, "expected an IV, ciphertext and GCM tag");
+    return bytes;
+  };
   const slot = {
-    read: () => {
-      const bytes = readFixtureFile(adbBytes, app, record);
-      assert.ok(bytes.length > 28, "expected an IV, ciphertext and GCM tag");
-      return bytes;
-    },
+    read: () => readSealed(record),
     write: bytes => write(record, bytes),
     outage: offline => offline ? runAs("touch", outage) : runAs("rm", outage),
     rotate: rotated => runAs(rotated ? "touch" : "rm", "cache/p0-provider-rotated"),
@@ -41,6 +45,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
   };
   await exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore: true });
   await exerciseDurableRefresh(launch, slot, runAs, bytes => write(record + ".new", bytes));
+  await exerciseAndroidRefreshProcessDeath(launch, slot, () => readSealed(record + ".new"), adb, app);
   adb("shell", "am", "force-stop", app);
 
   let logLines = 0;
@@ -68,7 +73,7 @@ async function exerciseDurableRefresh(launch, slot, runAs, stage) {
 
   await launch([async page => assert.equal(await change(page, "seed"), "fixture-ready")]);
   const predecessor = slot.read();
-  // Recreate the files a killed writer leaves before AtomicFile publishes its staging file.
+  // Exercise a short staging record left by a write interrupted before the checkpoint.
   stage(predecessor.subarray(0, 16));
   let successor;
   await launch([async page => {

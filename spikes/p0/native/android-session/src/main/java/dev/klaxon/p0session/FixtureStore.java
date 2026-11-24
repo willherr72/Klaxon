@@ -19,13 +19,26 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 public final class FixtureStore {
+    public enum PublishBoundary { BEFORE_PUBLISH, AFTER_PUBLISH }
+
+    @FunctionalInterface
+    public interface PublishCheckpoint {
+        void reached(PublishBoundary boundary) throws IOException;
+    }
+
     private static final String PROVIDER = "AndroidKeyStore";
     private static final int IV_BYTES = 12;
     private final Context context;
     private final KeyStore store;
+    private final PublishCheckpoint checkpoint;
 
     public FixtureStore(Context context) throws Exception {
+        this(context, boundary -> {});
+    }
+
+    public FixtureStore(Context context, PublishCheckpoint checkpoint) throws Exception {
         this.context = context;
+        this.checkpoint = checkpoint;
         store = KeyStore.getInstance(PROVIDER);
         store.load(null);
     }
@@ -68,6 +81,7 @@ public final class FixtureStore {
             if (new File(context.getCacheDir(), "p0-discard-synced-stage").isFile()) {
                 Files.delete(slot(owner).toPath().resolveSibling(slot(owner).getName() + ".new"));
             }
+            checkpoint.reached(PublishBoundary.BEFORE_PUBLISH);
         } catch (IOException e) {
             file.failWrite(out);
             throw e;
@@ -75,6 +89,7 @@ public final class FixtureStore {
         file.finishWrite(out);
         // AtomicFile logs publish failures. Require the new ciphertext to be visible before returning.
         if (!Arrays.equals(file.readFully(), record)) throw new IOException("Protected record was not published");
+        checkpoint.reached(PublishBoundary.AFTER_PUBLISH);
     }
 
     public void seed(String owner) throws Exception {
