@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
+import { exerciseSession } from "./packaged-session/check.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -110,11 +111,13 @@ async function android() {
   const deviceAdb = (...args) => execFileSync(process.env.ADB ?? "adb", ["-s", serial, ...args],
     { encoding: "utf8", timeout: 30000 }).trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
+  const session = platform === "android-session";
+  if (session) assert.match(deviceAdb("emu", "avd", "name").split(/\r?\n/)[0].trim(), /^KlaxonSessionP0_[A-Za-z0-9]+$/);
   assert.equal(deviceAdb("shell", "getprop", "sys.boot_completed"), "1");
   assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
   assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:\s*none/i);
   assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "", "Use an AVD without a previous probe installation");
-  const apk = join(nativeDir, ".run/klaxon-p0-x86_64-fixture.apk");
+  const apk = join(nativeDir, session ? ".run/klaxon-p0-x86_64-session.apk" : ".run/klaxon-p0-x86_64-fixture.apk");
   deviceAdb("install", apk);
   try {
     async function withActivity(action) {
@@ -135,20 +138,22 @@ async function android() {
         browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
           { noDefaults: true, timeout: 15000 });
         const context = browser.contexts()[0];
-        return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }));
+        return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), pid);
       } finally {
         try { await browser?.close(); }
         finally { deviceAdb("forward", "--remove", "tcp:" + port); }
       }
     }
+    if (session) return await exerciseSession(withActivity, deviceAdb, appId);
     const saved = await withActivity(exercise);
     deviceAdb("shell", "am", "force-stop", appId);
     await withActivity(page => verifyRestart(page, saved, apk));
   } finally {
     deviceAdb("uninstall", appId);
+    assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "");
   }
 }
 
 if (platform === "windows") await windows();
-else if (platform === "android") await android();
+else if (platform === "android" || platform === "android-session") await android();
 else throw new Error("Run node smoke.mjs windows or node smoke.mjs android emulator-PORT");
