@@ -29,7 +29,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | ID | Planned PR scope | Status | PR / verification |
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
-| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Hosted Free team pending. |
+| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Hosted endpoint reachable. Team plan, deployment type and CLI access pending. |
 | P0-03 | Auth/realtime spike | Edge, WebView2 and Android Chrome emulator passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
@@ -103,3 +103,5 @@ Correctness/security and regression reviewers found that an initially empty clie
 Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and Android API 36 emulator Chrome 133.0.6943.137 rendered it. Android refreshed its session and renamed the task. Edge rendered the new title. WebView2 157.0.4341.60 passed the same auth and realtime checks in separate Windows hosts. The backend ran on Windows. The next hosted run must keep the record readable and editable on Android after Windows is shut down. Capture actual native auth persistence, physical notification outcomes and Dot access before closing P0.
 
 The Windows Edge and Android emulator Chrome probe passed twice. The final run exited successfully and removed all test ADB mappings. The disposable emulator and local Convex backend were stopped.
+
+Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. Public reachability establishes neither the team billing plan nor write access. The hosted desktop-off gate remains open.
