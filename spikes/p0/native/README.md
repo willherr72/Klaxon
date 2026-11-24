@@ -36,7 +36,7 @@ node native/smoke.mjs android-session emulator-5576
 
 The packager stages the native plugin and shared Keystore helper only while compiling this offline variant. The separate output is `native/.run/klaxon-p0-x86_64-session.apk`. The Svelte controls call a Tauri command in the main local WebView. The Android plugin owns a single fixture alias and encrypted record under the test app UID. Native code accepts a fixed synthetic marker during explicit resume. Only allowlisted status strings cross back to JavaScript, including on error.
 
-The harness requires a clean fixture install, taps the packaged controls, force-stops the app between launches, checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the exact artifact and observations.
+The harness requires a clean fixture install. After seeding one record, it places an empty `cache/p0-provider-offline` file under the debug app UID. Two fresh app processes attempt the same WebView resume. Each must return only `retry-required` and leave the encrypted record byte-for-byte intact. The harness removes the flag and retries in another fresh process without reseeding. Resume must return `authenticated`. Sign-out must clear the alias and record and survive relaunch. The harness checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the artifacts and observations.
 
 ### Android Keystore lifecycle
 

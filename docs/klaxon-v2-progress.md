@@ -26,7 +26,22 @@ The harness observed three distinct app PIDs and all six raw Tauri callbacks, in
 
 During harness development Android WebView rejected a browser-wide cookie query. The final test queried cookies for the packaged origin using the page's DevTools session. The standard portable build retained its recorded HTML digest and passed all 11 browser regressions. The standalone Android fixture compiled after sharing its storage code. Its earlier 22-process run is recorded separately below.
 
-Keystore operations, IPC, app restarts and cleanup ran on the emulator. The provider decision ran locally with a fixed synthetic marker. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. For the **next offline P0-03 test**, simulate an unavailable refresh at packaged resume, verify the WebView grants no access and the record survives, then retry through the same bridge. P1 remains queued.
+Keystore operations, IPC, app restarts and cleanup ran on the emulator. The provider decision ran locally with a fixed synthetic marker.
+
+#### Cold resume during a simulated provider outage
+
+On November 24, 2026, the new outage assertion failed on the previous APK at the first cold attempt (expected `retry-required`). With tested source `bdaffc45cd63e815acb230e601e3fc687ee42d9a`, both commands above exited 0 on API 36 x86_64, WebView 133.0.6943.137, in airplane mode with no default network. The rebuilt APK SHA-256 was `a76dfd2c9c5fb6b471198efa4e99d7bf6766011f1372e5331842b77fd2907026`.
+
+| Fresh app process | Result through the packaged WebView |
+|---|---|
+| 1 | Confirmed signed out, seeded one native record, then confirmed a duplicate seed was rejected. The harness saved the ciphertext for comparison and enabled the native outage fixture. |
+| 2 and 3 | Both cold resumes returned only `retry-required`. Neither granted an authenticated session. After each attempt the encrypted record was byte-identical to the original. |
+| 4 | After the harness removed the outage flag, the same Resume action returned `authenticated` without another seed. Sign-out removed the test alias and record. |
+| 5 | Cold resume returned `signed-out` and the no-backup directory was empty. |
+
+All eight raw Tauri callbacks matched their expected scalar status. Across five distinct app PIDs, the eight actions triggered zero Web Storage writes. The checked stores and origin cookies were empty after each action. The harness detected no marker in the inspected DOM, WebView console/errors or 482 app log lines. The fixture was uninstalled, its debug forwards were absent and the emulator stopped.
+
+**Next offline P0-03 test:** simulate definitive provider expiry on packaged cold resume, verify the native slot and alias are cleared, then restore provider availability and confirm another process still requires sign-in. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. P1 remains queued.
 
 ### Android Keystore emulator evidence
 
