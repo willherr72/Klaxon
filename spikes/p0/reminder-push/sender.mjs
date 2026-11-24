@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 
-const targets = ["windows-edge", "android-chrome"];
+const defaultTargets = ["windows-edge", "android-chrome"];
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function mockInput() {
   const subscriptions = {};
-  for (const target of targets) {
+  for (const target of defaultTargets) {
     subscriptions[target] = { endpoint: "https://" + target + ".invalid/test",
       keys: { p256dh: "fixture-key-public", auth: "fixture-key-auth" } };
   }
@@ -20,9 +20,13 @@ function preflight(input, rehearsal) {
   if (typeof input?.occurrenceId !== "string" || !uuidV4.test(input.occurrenceId)) {
     throw Error("Expected a new lowercase UUID v4 occurrence");
   }
-  const { subscriptions, vapidDetails } = input;
-  if (Object.keys(subscriptions ?? {}).length !== targets.length || !targets.every(target => Object.hasOwn(subscriptions, target))) {
-    throw Error("Expected exactly the two target subscriptions");
+  const { subscriptions, vapidDetails, targetMode = "both" } = input;
+  const windowsOnly = targetMode === "windows-only";
+  if (!windowsOnly && targetMode !== "both") throw Error("Unsupported target mode");
+  const targets = windowsOnly ? ["windows-edge"] : defaultTargets;
+  if (!subscriptions || typeof subscriptions !== "object" || Reflect.ownKeys(subscriptions).length !== targets.length ||
+      !targets.every(target => Object.hasOwn(subscriptions, target))) {
+    throw Error(windowsOnly ? "Expected exactly the Windows Edge subscription" : "Expected exactly the two target subscriptions");
   }
   const endpoints = new Set();
   for (const target of targets) {
@@ -42,10 +46,11 @@ function preflight(input, rehearsal) {
       typeof vapidDetails.subject !== "string" || !/^mailto:[^\s@]+@[^\s@]+$/.test(vapidDetails.subject)) {
     throw Error("Expected VAPID details and a mailto contact");
   }
+  return targets;
 }
 
 export async function dispatchOnce({ input, runDirectory, sendNotification, prepareNotification, rehearsal = false }) {
-  preflight(input, rehearsal);
+  const targets = preflight(input, rehearsal);
   const { occurrenceId, subscriptions, vapidDetails } = input;
   const options = { TTL: 300, timeout: 15000, vapidDetails };
   const requests = targets.map(target => ({
@@ -58,10 +63,10 @@ export async function dispatchOnce({ input, runDirectory, sendNotification, prep
       // web-push builds encrypted HTTP request details locally. Discard the resulting private headers/body.
       for (const { subscription, payload } of requests) await prepareNotification(subscription, payload, options);
     } catch {
-      throw Error("Cannot prepare both selected subscription requests");
+      throw Error(targets.length === 1 ? "Cannot prepare the selected subscription request" : "Cannot prepare both selected subscription requests");
     }
   }
-  // Claim both attempts before any transport call. A crash must leave the run spent.
+  // Claim the selected attempts before any transport call. A crash must leave the run spent.
   let ledger;
   try {
     ledger = await open(join(runDirectory, "attempted.json"), "wx", 0o600);
