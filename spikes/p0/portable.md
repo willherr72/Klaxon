@@ -37,6 +37,8 @@ Copy `dist/account/index.html` to the test devices before shutdown. Static files
 
 ## Physical desktop-off acceptance
 
+Will reports that the one-task desktop-off smoke passed on physical Android and Windows. The [P0 register](../../docs/klaxon-v2-progress.md#remaining-p0-tests) records exactly what he observed. The extended procedure below can collect timing, IDs and interruption evidence on a future run.
+
 Use a physical Android phone, the Windows PC and preferably a second independent device to witness live changes while Windows is off. ADB forwarding, USB tethering, a Windows-hosted page and an emulator cannot establish independence from the PC.
 
 1. With Windows on, open the account copy independently on Windows and Android. Sign into the same enrolled synthetic account on both. Wait for **Subscription connected** and the first read time. From Windows create a uniquely named synthetic task. On Android record its ID, title and UTC read time.
@@ -45,4 +47,4 @@ Use a physical Android phone, the Windows PC and preferably a second independent
 4. Disconnect Android's network with the rows on screen. Confirm the UI labels them as last available, displays the earlier read time and disables writes. Reconnect, wait for the subscription, then select **Read tasks**. After an unconfirmed write, read before retrying to avoid creating a duplicate.
 5. Restart Windows, reopen the local account copy, sign in and verify both IDs and titles. Sign out on each device. Record device/OS/browser versions, how each copy was served, network paths, Windows shutdown/start times, UTC read times and observed results. Exclude credentials and tokens from evidence.
 
-Account rows and access/refresh tokens live in memory. A cold launch requires login. An explicit refresh rotates the session and confirms authentication. **Read tasks** makes a fresh owner-scoped query. Subscription updates use the same list automatically. Only confirmed cloud writes satisfy the hosted gate. Persistent native auth, physical shutdown and physical cross-device synchronization require actual device observations.
+Account rows and access/refresh tokens live in memory. A cold launch requires login. An explicit refresh rotates the session and confirms authentication. **Read tasks** makes a fresh owner-scoped query. Subscription updates use the same list automatically. Only confirmed cloud writes satisfy the hosted gate. The fresh sign-in after cold launch leaves secure native session restoration open.

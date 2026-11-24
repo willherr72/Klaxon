@@ -8,6 +8,8 @@ OpenAI documents a cloud computer for Dot, ongoing work and owner-selected app a
 
 ## Acceptance run
 
+Will reports that he edited the hosted task while Windows was off in his [physical desktop-off smoke](klaxon-v2-progress.md#remaining-p0-tests). The actor for every check below must be the owner's Dot. If the owner has no supported connector or authorized browser session, record which route was unavailable and retain manual planning.
+
 Use a disposable workspace and one synthetic task named Dot fixture. Record UTC times, pseudonymous actor, client, tool or UI action, revision and outcome. Omit access tokens, account identifiers and authorization URLs.
 
 | Check | Evidence required | State |

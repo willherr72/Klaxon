@@ -57,7 +57,7 @@ $developmentOrigin = Read-Host 'Confirmed public Development deployment HTTPS or
 node native/package.mjs --target aarch64 --origin $developmentOrigin
 ```
 
-This writes `native/.run/klaxon-p0-arm64-development.apk`. The public origin selects the compiled client endpoint and limits both CSPs to that exact HTTPS origin and its WSS counterpart. Sign in at runtime with a previously enrolled synthetic identity. Install only when the device owner chooses to perform the physical-device check. The [physical desktop-off procedure](../portable.md#physical-desktop-off-acceptance) describes the evidence still required.
+This writes `native/.run/klaxon-p0-arm64-development.apk`. The public origin selects the compiled client endpoint and limits both CSPs to that exact HTTPS origin and its WSS counterpart. Sign in at runtime with a previously enrolled synthetic identity. Install only when the device owner chooses to perform the physical-device check. The [physical desktop-off procedure](../portable.md#physical-desktop-off-acceptance) includes the owner-reported sync result and the optional extended checks.
 
 ## Rebuilds
 
@@ -65,7 +65,7 @@ Run `native/package.mjs` for each target. It rebuilds `native/.frontend/index.ht
 
 ## Local verification, November 23, 2026
 
-Windows ran the debug x64 executable with WebView2 157.0.4341.60. The disposable Android 16/API 36 Google Play x86_64 AVD used emulator 36.3.10.0 and System WebView 133.0.6943.137. Both loaded the embedded client at `http://tauri.localhost/`, matched its script and style hashes, rendered its stylesheet, created and renamed a synthetic task, and retained the title and stable ID across page reload and process restart. Android reported airplane mode enabled and no active default network. The arm64 APK received static package/signature verification. Native Convex sessions, physical Android and desktop-off cross-device synchronization remain open.
+Windows ran the debug x64 executable with WebView2 157.0.4341.60. The disposable Android 16/API 36 Google Play x86_64 AVD used emulator 36.3.10.0 and System WebView 133.0.6943.137. Both loaded the embedded client at `http://tauri.localhost/`, matched its script and style hashes, rendered its stylesheet, created and renamed a synthetic task, and retained the title and stable ID across page reload and process restart. Android reported airplane mode enabled and no active default network. The arm64 APK received static package/signature verification. These package checks cover offline fixture storage. The [owner-reported desktop-off smoke](../../../docs/klaxon-v2-progress.md#remaining-p0-tests) used a fresh sign-in. Packaged arm64 execution and secure native session restoration still need evidence.
 
 The commands above used Node 24.12.0, Rust 1.97.1, Tauri CLI 2.11.0, JDK 21.0.8 and Gradle 8.14.3. Starting Cargo before generating the portable assets failed at compile time. The packager now builds the HTML first. The first Android WebView attachment stalled, and attaching before the page existed timed out. The smoke now waits for the Tauri page in the selected app process’s DevTools target list and connects without desktop browser defaults. A second simultaneous package command failed before changing the frontend. Fresh APK output eliminates unused ZIP space retained by Gradle during incremental packaging.
 

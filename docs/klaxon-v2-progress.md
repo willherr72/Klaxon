@@ -1,6 +1,30 @@
 # Klaxon 2.0 progress
 
-Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. P1 depends on the desktop-off acceptance gate below. [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. Will reports that physical Android synced with Windows powered off. P1 remains queued while the native session, reminder and owner Dot decisions are open. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+
+## Remaining P0 tests
+
+**P0-03 desktop-off smoke passed, owner-reported November 24, 2026.** Will signed in on both clients and created a synthetic task. He reported fully shutting down and unplugging Windows, reopening the client and signing in on Android over an independent network, renaming the task and confirming the save. After restarting Windows, he saw the renamed task there. His report covers one task. The record contains no independent observation, exact timing, task ID, browser/build version or extended disconnect/reconnect evidence. The [extended device procedure](../spikes/p0/portable.md#physical-desktop-off-acceptance) remains available if those details become necessary.
+
+| Gate | Evidence already available | Next test and stop condition |
+|---|---|---|
+| P0-03 native session | Browser refresh/revocation and intercepted recovery tests pass. Packaged fixtures retain a local row across restart. The account client requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
+| P0-06 ordinary reminders | The physical sync smoke exercised task editing. Windows and Android notification delivery remain unmeasured. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
+| P0-04 owner Dot | The offline fixture can be exercised independently. Actual owner Dot access and scheduled execution are unverified. | Use the owner's authorized Dot session and a supported scoped connector, or its authorized cloud-browser fallback. Verify read/create/update, reconnect and an attributed scheduled change while Windows is off. If neither route is available, record the limitation and retain manual planning. See the [Dot playbook](dot-playbook.md#acceptance-run). |
+
+### Local synthetic verification
+
+The November 24 replay used local synthetic data. Baseline source was `25caf30aa406ff2ed9d5882ef443db020fa19ca2`. The added browser regression is in `7caddeb3e4d153ed2aad7966ca0fe18d65a86c96`. The owner report does not identify the artifact revision used on the phone.
+
+| Working directory | Commands | Observed result |
+|---|---|---|
+| Repository root | `npm run verify -- --frontend` | Version alignment passed, 23 tooling and 65 UI tests passed, zero Svelte diagnostics, Vite build passed. |
+| Repository root | `python spikes/migration/probe.py` and `python -m unittest discover -s scripts/tests -v` | Synthetic schema-17 projection, interrupted write, WAL snapshot, truncated backup rejection and intact retry passed. All four Android harness tests passed. |
+| `spikes/p0` | With `P0_PUBLIC_DEV_ORIGIN` unset, `npm run build` then `npm run test:portable` | Baseline 10/10, then 11/11 with the new regression. In an isolated browser with intercepted transport, a successful sign-in and task read left local storage, session storage and cookies empty. Reload returned to sign-in with the prior row absent. |
+| `spikes/p0` | With Cargo on PATH and `CARGO_NET_OFFLINE=true`, `node native/package.mjs --target windows` then `node native/smoke.mjs windows` | Unsigned fixture built. Windows WebView2 preserved the synthetic ID and renamed title across reload and process restart. Rebuilt EXE SHA-256 was `d62fef96b5a6e2887f86980b296c2a25d72ed4a81808a6ac62adb7e7125aa296`. Embedded HTML matched the prior digest. |
+| `spikes/p0/native/.run` | For each retained fixture APK, `aapt dump badging <apk>`, `apksigner verify --verbose <apk>` and `Get-FileHash -Algorithm SHA256 <apk>` | Both package IDs and single ABIs matched, both v2 signatures verified and both hashes matched the [recorded artifacts](../spikes/p0/native/README.md#local-verification-november-23-2026). Static checks only. |
+
+An independent reviewer reran the new regression with `node --test --test-name-pattern "reloading after an authenticated read" account-session.test.mjs` from `spikes/p0` (1/1 passed), verified 42 local documentation links and anchors, and confirmed `git diff --check 25caf30` passed. The review clarified attribution in the Dot playbook.
 
 ## Delivery sequence
 
@@ -22,7 +46,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 - P0-01. Baseline architecture and regression evidence belong in [testing](testing.md) and [migration](migration.md).
 - P0-02/03. Branch created from the production baseline. Hosted isolation, authenticated web/native sessions and desktop-off synchronization require separate evidence. See [spike](../spikes/p0/README.md).
 - P0-04/05/06. Track provider support, actual identity/device observations and fallbacks in the [platform investigation](adr/platform-capabilities.md) and [Dot playbook](dot-playbook.md).
-- P0-07. [Architecture ADR](adr/p0-architecture.md), [cost](deployment.md), [security](security.md), [API boundary](api/README.md). Account plan, native session persistence and delivery guarantees remain open until observed.
+- P0-07. [Architecture ADR](adr/p0-architecture.md), [cost](deployment.md), [security](security.md), [API boundary](api/README.md). The owner confirmed Free for the spike. Native session persistence and notification delivery still need evidence.
 
 ## Backlog register
 
@@ -30,7 +54,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
-| P0-03 | Auth/realtime spike | Local and hosted browser tests passed | [Probe results](../spikes/p0/README.md). Standalone HTML and packaged fixture evidence is tracked below. Hosted native auth, persistent sessions and physical Android with Windows shut down remain open. |
+| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. Secure native session persistence is open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |
@@ -100,13 +124,13 @@ Platform reviewer identified ambiguous authorization on receipt replay, inconsis
 
 Correctness/security and regression reviewers found that an initially empty client list could let the cross-owner read assertion pass before the server replied. The revised probe awaits the authenticated query and checks same-owner updates in the rendered Svelte DOM. Independent rerun passed in Edge 158.0.4370.33. The schema-17 projection also passed on rerun.
 
-Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and Android API 36 emulator Chrome 133.0.6943.137 rendered it. Android refreshed its session and renamed the task. Edge rendered the new title. WebView2 157.0.4341.60 passed the same auth and realtime checks in separate Windows hosts. The backend ran on Windows. The next hosted run must keep the record readable and editable on Android after Windows is shut down. Capture actual native auth persistence, physical notification outcomes and Dot access before closing P0.
+Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and Android API 36 emulator Chrome 133.0.6943.137 rendered it. Android refreshed its session and renamed the task. Edge rendered the new title. WebView2 157.0.4341.60 passed the same auth and realtime checks in separate Windows hosts. The backend ran on Windows. At that stage a hosted physical desktop-off run was still needed. Capture actual native auth persistence, physical notification outcomes and Dot access before closing P0.
 
 The Windows Edge and Android emulator Chrome probe passed twice. The final run exited successfully and removed all test ADB mappings. The disposable emulator and local Convex backend were stopped.
 
-Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner confirmed the Free plan and corrected the deployment classification to Development. This initial preflight used read-only reachability checks. The hosted desktop-off gate remains open.
+Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner confirmed the Free plan and corrected the deployment classification to Development. This initial preflight used read-only reachability checks. The preflight established reachability only.
 
-Hosted P0-02/03 on 2026-11-23 (Chicago). The scoped CLI identified Development on the owner-confirmed Free team. Preflight found no tables or functions. Deployed only the spike and enrolled two synthetic identities. Verified enrollment is internal, the transient enrollment table is empty, and public signup is denied. Windows Edge, WinForms WebView2 and Android API 36 emulator Chrome verified authenticated task access over HTTPS. Android renamed a shared task with Edge offline and Edge rendered the change after reconnect. All successful runs checked cross-owner denial, logout and revoked refresh. The Android test page was served from Windows. An independently loaded client on physical hardware with Windows powered off remains the P0 gate.
+Hosted P0-02/03 on 2026-11-23 (Chicago). The scoped CLI identified Development on the owner-confirmed Free team. Preflight found no tables or functions. Deployed only the spike and enrolled two synthetic identities. Verified enrollment is internal, the transient enrollment table is empty, and public signup is denied. Windows Edge, WinForms WebView2 and Android API 36 emulator Chrome verified authenticated task access over HTTPS. Android renamed a shared task with Edge offline and Edge rendered the change after reconnect. All successful runs checked cross-owner denial, logout and revoked refresh. The Android test page was served from Windows. Will subsequently ran the physical smoke described in the [owner report](#remaining-p0-tests).
 
 Independent review found the oldest-first 20-row subscription would hide new tasks on later runs. The probe now subscribes to the latest 20, rejects conflicting platform selections and attempts logout after failures. Initial hosted retries exposed a sign-in failure and a reconnect timeout. The harness now honors the provider’s rate-limit interval and coalesces refresh requests when the live client requests a fresh token. The subsequent Android/Edge run passed. V1 and its release pipeline were outside the change.
 
@@ -125,7 +149,7 @@ Regression check: the default anonymous loopback Edge run also passed local sign
 
 The local root `npm run verify -- --frontend` passed 23 tooling tests and 65 UI tests, zero Svelte diagnostics and a successful build. For independent testing on another computer, use [Dot's fixture exercise](dot-playbook.md#independent-portable-client-exercise-for-dot). The [physical test procedure](../spikes/p0/portable.md#physical-desktop-off-acceptance) requires an independently available enrolled-account client, a real Android device with its own internet connection, and the Windows PC powered off. The fixture artifact has device-local storage and can be exercised without an account.
 
-P1 remains queued. Will's participation is needed for a physical Android run and power-down window, actual notification/permission observations, and the owner-authorized Dot account acceptance run. Independent fixture testing on Dot's cloud computer can proceed now. Production cutover and employer connections remain outside P0.
+P1 remains queued. The [remaining tests](#remaining-p0-tests) cover device notifications, native sessions and owner-authorized Dot acceptance. Independent fixture testing on Dot's cloud computer can proceed now. Production cutover and employer connections remain outside P0.
 
 ### Native packages and follow-up checks
 
