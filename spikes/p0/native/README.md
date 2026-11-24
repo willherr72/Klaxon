@@ -62,3 +62,9 @@ This writes `native/.run/klaxon-p0-arm64-development.apk`. The public origin sel
 ## Rebuilds
 
 Run `native/package.mjs` for each target. It rebuilds `native/.frontend/index.html` with the same builder as `dist/index.html`, then embeds it. A per-worktree exclusive `native/.run/package.lock` guards asset generation, native configuration, Rust compilation and APK copying. A second packager fails immediately. If a build is killed, inspect the PID in the lock and verify its build and Cargo/Gradle children have stopped before deleting only that lock file. Gradle scaffolding, caches, debug signing material, profiles and binaries stay outside version control.
+
+## Local verification, November 23, 2026
+
+Windows ran the debug x64 executable with WebView2 157.0.4341.60. The disposable Android 16/API 36 Google Play x86_64 AVD used emulator 36.3.10.0 and System WebView 133.0.6943.137. Both loaded the embedded client at `http://tauri.localhost/`, matched its script and style hashes, rendered its stylesheet, created and renamed a synthetic task, and retained the title and stable ID across page reload and process restart. Android reported airplane mode enabled and no active default network. The arm64 APK received static package/signature verification. Native Convex sessions, physical Android and desktop-off cross-device synchronization remain open.
+
+The commands above used Node 24.12.0, Rust 1.97.1, Tauri CLI 2.11.0, JDK 21.0.8 and Gradle 8.14.3. Starting Cargo before generating the portable assets failed at compile time. The packager now builds the HTML first. The first Android WebView attachment stalled, and attaching before the page existed timed out. The smoke now waits for the Tauri page in the selected app process’s DevTools target list and connects without desktop browser defaults. A second simultaneous package command failed before changing the frontend. Fresh APK output eliminates unused ZIP space retained by Gradle during incremental packaging.
