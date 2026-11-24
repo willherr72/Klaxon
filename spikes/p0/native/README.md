@@ -1,6 +1,6 @@
 # P0 native packaging and offline fixture
 
-The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The Rust host registers no application commands or production plugins. The default build stores synthetic rows in this app’s WebView profile. Both the portable HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
+The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The default Rust host registers no application commands. The optional offline x86_64 session build registers one status-only fixture command. The default build stores synthetic rows in this app’s WebView profile. Both the portable HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
 
 ## Windows fixture
 
@@ -24,6 +24,19 @@ node native/smoke.mjs windows
 The executable is `native/src-tauri/target/debug/klaxon-p0-native.exe`. Use the default Cargo target directory when running this smoke. It starts only this executable, uses a new temporary WebView2 user-data folder, and attaches over loopback. It creates and renames a row through the UI, reads it after a reload, terminates the native process and verifies the same ID and title after relaunch. It removes the temporary profile on exit.
 
 ## Android emulator fixture
+
+### Packaged Android session
+
+Use the Android SDK, JDK, NDK, pinned Tauri CLI and environment variables in the packaged offline client instructions below. With the disposable `KlaxonSessionP0_` emulator in airplane mode and Wi-Fi disabled, run these commands from `spikes/p0`. Substitute its serial.
+
+```powershell
+node native/package.mjs --target x86_64 --session
+node native/smoke.mjs android-session emulator-5576
+```
+
+The packager stages the native plugin and shared Keystore helper only while compiling this offline variant. The separate output is `native/.run/klaxon-p0-x86_64-session.apk`. The Svelte controls call a Tauri command in the main local WebView. The Android plugin owns a single fixture alias and encrypted record under the test app UID. Native code accepts a fixed synthetic marker during explicit resume. Only allowlisted status strings cross back to JavaScript, including on error.
+
+The harness requires a clean fixture install, taps the packaged controls, force-stops the app between launches, checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the exact artifact and observations.
 
 ### Android Keystore lifecycle
 
