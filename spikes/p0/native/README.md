@@ -1,6 +1,6 @@
 # P0 native packaging and offline fixture
 
-The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The default Rust host registers no application commands. The optional offline x86_64 session build registers one status-only fixture command. The default build stores synthetic rows in this app’s WebView profile. Both the portable HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
+The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The default Rust host registers no application commands. The optional offline session builds for Windows and Android x86_64 register one status-only fixture command. The default build stores synthetic rows in this app’s WebView profile. Both the portable HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
 
 ## Windows fixture
 
@@ -11,6 +11,17 @@ From the repository root on Windows with Node 24 and Windows PowerShell 5.1, run
 The simulated provider decides whether a marker can restore a session. A temporary transport failure or unreadable record denies access and preserves the ciphertext. Provider expiry requires a new sign-in. Local logout clears the selected slot across relaunch. Both fixture owners share one Windows profile. DPAPI does not prevent other code running as that Windows user from unprotecting data with the same context. Hosted revocation and the Tauri-to-provider flow remain open. Android has a separate [emulator probe](#android-keystore-lifecycle). See the [candidate and assumptions](../../../docs/adr/p0-architecture.md#p0-03-native-session-candidate).
 
 ### Packaged offline client
+
+For the Windows session probe, use the Windows prerequisites below and run both commands from `spikes/p0`.
+
+```powershell
+node native/package.mjs --target windows --session
+node native/smoke.mjs windows-session
+```
+
+The build stages a separate offline HTML bundle and emits `native/src-tauri/target/debug/windows_session.exe`. The main local WebView submits only an operation name. Native code uses current-user DPAPI, fixed app and owner context, and a simulated provider that accepts one inert marker. The harness creates a temporary run directory containing a single native slot and a separate WebView2 profile. Each restart reuses that directory and requires a new host PID, a new loopback DevTools endpoint and a fresh page.
+
+After seeding the slot, the harness tampers with its ciphertext. Cold resume must deny access and preserve those bytes. Restoring the original record must allow cold resume. Sign-out must delete the record and survive another restart. The harness checks raw bridge callbacks, DOM, WebView console/errors, host stdout/stderr, Web Storage writes, cookies, IndexedDB and Cache Storage. It removes its temporary directory and checks that it is gone. This exercises completed operations in one Windows user profile. Hosted refresh and revocation require separate evidence.
 
 Use Node from the repository’s `.node-version`, MSVC C++ build tools, the repository’s pinned Rust toolchain and the Microsoft WebView2 runtime. In PowerShell from `spikes/p0`:
 

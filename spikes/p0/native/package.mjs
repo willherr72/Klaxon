@@ -10,8 +10,8 @@ const { values } = parseArgs({ options: {
   origin: { type: "string" },
   session: { type: "boolean" },
 } });
-if (values.session && (values.origin !== undefined || values.target !== "x86_64")) {
-  throw new Error("The packaged session fixture requires offline x86_64");
+if (values.session && (values.origin !== undefined || !["windows", "x86_64"].includes(values.target))) {
+  throw new Error("The packaged session fixture requires offline Windows or Android x86_64");
 }
 if (!["windows", "x86_64", "aarch64"].includes(values.target)) throw new Error("Choose windows, x86_64 or aarch64");
 if (values.origin !== undefined && !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(values.origin)) {
@@ -28,15 +28,19 @@ const execute = (command, args, cwd) => execFileSync(command, args, { cwd, env, 
 
 async function build() {
   // The public origin drives both the portable client's CSP and the native response header.
-  execute(process.execPath, ["build-portable.mjs", "--outdir", "native/.frontend", ...(values.session ? ["--session"] : [])], spike);
+  const windowsSession = values.target === "windows" && values.session;
+  const frontend = windowsSession ? ".run/windows-session-frontend" : ".frontend";
+  execute(process.execPath, ["build-portable.mjs", "--outdir", "native/" + frontend, ...(values.session ? ["--session"] : [])], spike);
   const connections = values.origin ? values.origin + " " + values.origin.replace(/^https:/, "wss:") : "'none'";
-  const overlay = JSON.stringify({ app: { withGlobalTauri: !!values.session, security: {
+  const overlay = JSON.stringify({ ...(windowsSession && { build: { frontendDist: "../" + frontend } }), app: { withGlobalTauri: !!values.session, security: {
     csp: "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; connect-src " + connections,
   } } });
   await writeFile(config, overlay);
   if (values.target === "windows") {
     env.TAURI_CONFIG = overlay;
-    execute("cargo", ["build", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--features", "custom-protocol"], native);
+    const args = windowsSession ? ["--bin", "windows_session", "--features", "custom-protocol,p0-session"] :
+      ["--features", "custom-protocol"];
+    execute("cargo", ["build", "--locked", "--manifest-path", "src-tauri/Cargo.toml", ...args], native);
     return;
   }
   await mkdir(androidHome, { recursive: true });

@@ -3,6 +3,7 @@ name = "klaxon-p0-native"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "klaxon-p0-native"
 
 [lib]
 name = "klaxon_p0_native_lib"
@@ -14,9 +15,16 @@ tauri-build = { version = "=2.6.0", features = [] }
 [dependencies]
 tauri = { version = "=2.11.0", features = [] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
+
 [features]
-p0-session = []
+p0-session = ["dep:windows-sys"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "windows_session"
+required-features = ["p0-session", "custom-protocol"]
 
 # Preserve debuggable WebViews while keeping the APK practical to transfer to a device.
 [profile.dev.package.klaxon-p0-native]

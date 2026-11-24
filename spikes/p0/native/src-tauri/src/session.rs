@@ -9,15 +9,7 @@ async fn fixture_session(
     plugin: State<'_, FixturePlugin>,
     operation: String,
 ) -> Result<&'static str, &'static str> {
-    if window.label() != "main"
-        || window
-            .url()
-            .map(|u| u.origin().ascii_serialization())
-            .ok()
-            .as_deref()
-            != Some("http://tauri.localhost")
-        || !matches!(operation.as_str(), "seed" | "resume" | "sign-out")
-    {
+    if !crate::allows_fixture(&window, &operation) {
         return Err("unavailable");
     }
     let reply: String = plugin

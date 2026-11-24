@@ -90,3 +90,9 @@ jobs:
       - name: Run the fixture in the Windows executable
         working-directory: spikes/p0
         run: node native/smoke.mjs windows
+      - name: Build the offline Windows session fixture
+        working-directory: spikes/p0
+        run: node native/package.mjs --target windows --session
+      - name: Check packaged DPAPI resume and sign-out in WebView2
+        working-directory: spikes/p0
+        run: node native/smoke.mjs windows-session
