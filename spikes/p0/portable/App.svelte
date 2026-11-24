@@ -10,6 +10,7 @@
   let connected = $state(false);
   let authenticated = $state(false);
   let rows = $state([]);
+  let rowsVersion = 0;
   let receivedAt = $state("");
   let busy = $state(false);
   let error = $state("");
@@ -22,6 +23,7 @@
   let canWrite = $derived(!busy && !!receivedAt && (!origin || (online && authenticated && connected)));
 
   function receive(tasks) {
+    rowsVersion++;
     rows = tasks;
     receivedAt = new Date().toISOString();
   }
@@ -99,9 +101,11 @@
   async function read() {
     if (origin) {
       const active = session;
+      const version = rowsVersion;
       const result = await active.read();
       if (active !== session) return;
-      receive(result);
+      // Keep any subscription rows received while the HTTP read was pending.
+      if (version === rowsVersion) receive(result);
       notice = "Read from the server.";
     } else {
       loadFixture();

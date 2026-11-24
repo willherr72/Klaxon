@@ -26,7 +26,7 @@ after(async () => {
 });
 
 // The page runs the bundled Convex SDK. Only the cloud transport is replaced.
-async function client(t, respond) {
+async function client(t, respond, onSocketMessage) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => context.close());
   const authenticating = Promise.withResolvers();
@@ -41,6 +41,7 @@ async function client(t, respond) {
       if (message.type === "Authenticate") authenticating.resolve(() => socket.send(JSON.stringify({
         type: "AuthError", baseVersion: message.baseVersion, authUpdateAttempted: true, error: "TEST_EXPIRED",
       })));
+      onSocketMessage?.(message, socket);
     });
   });
   await context.route(/^https?:/i, async route => {
@@ -123,6 +124,67 @@ test("a read finishing after expiry cannot expose the previous account's rows", 
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.getByText("Previous synthetic account").count(), 0);
   await page.getByText("Waiting for tasks.").waitFor();
+});
+
+test("a manual read cannot replace rows delivered by the subscription while it was pending", { timeout: 20000 }, async t => {
+  const oldRow = { _id: "test-row", title: "Original task title" };
+  const newRow = { ...oldRow, title: "Updated task title" };
+  const readStarted = Promise.withResolvers();
+  const finishRead = Promise.withResolvers();
+  const subscribed = Promise.withResolvers();
+  t.after(() => finishRead.resolve());
+
+  // Convex sync timestamps are base64-encoded little-endian uint64s.
+  function timestamp(tick) {
+    const bytes = Buffer.alloc(8);
+    bytes.writeBigUInt64LE(BigInt(tick));
+    return bytes.toString("base64");
+  }
+  let tick = 0;
+  let version = { querySet: 0, identity: 0, ts: timestamp(tick) };
+  function transition(socket, changes, modifications = []) {
+    const startVersion = version;
+    version = { ...version, ...changes, ts: timestamp(++tick) };
+    socket.send(JSON.stringify({ type: "Transition", startVersion, endVersion: version, modifications }));
+  }
+
+  const { page, login, errors } = await client(t, async (path, route, success) => {
+    if (path === "auth:refreshSession") {
+      // The SDK checks for a fresh token immediately after confirming the cached token.
+      return success({ kind: "rotated", tokens: { accessToken: "access-1", refreshToken: "rotated-refresh" } });
+    }
+    assert.equal(path, "tasks:list");
+    assert.equal(route.request().headers().authorization, "Bearer access-1");
+    readStarted.resolve();
+    await finishRead.promise;
+    await success([oldRow]);
+  }, (message, socket) => {
+    if (message.type === "Authenticate") {
+      transition(socket, { identity: message.baseVersion + 1 });
+    }
+    if (message.type === "ModifyQuerySet") {
+      const query = message.modifications.find(mod => mod.type === "Add" && mod.udfPath === "tasks:list");
+      assert.ok(query, "expected the task subscription");
+      const result = row => [{ type: "QueryUpdated", queryId: query.queryId, value: [row], logLines: [], journal: null }];
+      transition(socket, { querySet: message.newVersion }, result(oldRow));
+      subscribed.resolve(row => transition(socket, {}, result(row)));
+    }
+  });
+
+  await login("synthetic-a");
+  await page.getByText("Subscription connected", { exact: true }).waitFor();
+  const tasks = page.getByRole("list", { name: "Synthetic tasks" });
+  await tasks.getByText(oldRow.title, { exact: true }).waitFor();
+  const read = page.getByRole("button", { name: "Read tasks" });
+  await read.click();
+  await readStarted.promise;
+  (await subscribed.promise)(newRow);
+  await tasks.getByText(newRow.title, { exact: true }).waitFor();
+
+  finishRead.resolve();
+  await page.getByRole("status").getByText("Read from the server.").waitFor();
+  assert.equal(await tasks.locator("strong").textContent(), newRow.title);
+  assert.deepEqual(errors, []);
 });
 
 test("a negative auth check after explicit token rotation ends the session", async t => {
