@@ -90,6 +90,18 @@ export async function exerciseSession(withActivity, adb, app) {
   } finally {
     adb("shell", "run-as", app, "rm", "-f", outage);
   }
+  await launch([["Resume session", "authenticated"]]);
+  const expiry = "cache/p0-provider-expired";
+  adb("shell", "run-as", app, "touch", expiry);
+  try {
+    await launch([["Resume session", "signed-out"]]);
+    assert.equal(adb("shell", "run-as", app, "ls", "-A", "no_backup"), "",
+      "definitive expiry must remove the protected record");
+  } finally {
+    adb("shell", "run-as", app, "rm", "-f", expiry);
+  }
+  // A new seed refuses to overwrite either a stale Keystore alias or a stale file.
+  await launch([["Resume session", "signed-out"], ["Start synthetic session", "fixture-ready"]]);
   await launch([["Resume session", "authenticated"], ["Sign out", "signed-out"]]);
   await launch([["Resume session", "signed-out"]]);
   assert.equal(adb("shell", "run-as", app, "ls", "-A", "no_backup"), "");
@@ -101,5 +113,5 @@ export async function exerciseSession(withActivity, adb, app) {
     logLines += count;
   }
   console.log("PASS packaged session:", pids.size, "app PIDs,", replies,
-    "status-only replies,", logLines, "app log lines; two denied cold resumes preserved identical ciphertext, recovered on retry, signed out and relaunched cleanly");
+    "status-only replies,", logLines, "app log lines; outage preserved ciphertext, expiry cleared the native slot, only a fresh seed restored access, sign-out survived relaunch");
 }

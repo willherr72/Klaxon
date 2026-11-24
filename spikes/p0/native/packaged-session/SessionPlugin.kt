@@ -13,6 +13,11 @@ import java.io.File
 class SessionPlugin(private val host: Activity) : Plugin(host) {
     private val owner = "packaged"
 
+    private fun clearSession(store: FixtureStore): String {
+        store.forget(owner)
+        return if (store.inventory(owner) == "no-key/no-file") "signed-out" else "unavailable"
+    }
+
     @Command
     @Synchronized
     fun change(invoke: Invoke) {
@@ -26,15 +31,14 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
                 "resume" -> when {
                     store.inventory(owner) == "no-key/no-file" -> "signed-out"
                     // Simulated provider accepts only the native fixture's known generation.
-                    store.hasRecord(owner) && store.marker(owner, 1).contentEquals(store.read(owner)) -> {
-                        if (File(host.cacheDir, "p0-provider-offline").isFile) "retry-required" else "authenticated"
+                    store.hasRecord(owner) && store.marker(owner, 1).contentEquals(store.read(owner)) -> when {
+                        File(host.cacheDir, "p0-provider-offline").isFile -> "retry-required"
+                        File(host.cacheDir, "p0-provider-expired").isFile -> clearSession(store)
+                        else -> "authenticated"
                     }
                     else -> "unavailable"
                 }
-                "sign-out" -> {
-                    store.forget(owner)
-                    if (store.inventory(owner) == "no-key/no-file") "signed-out" else "unavailable"
-                }
+                "sign-out" -> clearSession(store)
                 else -> "unavailable"
             }
         } catch (_: Exception) {
