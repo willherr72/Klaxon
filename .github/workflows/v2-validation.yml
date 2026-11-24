@@ -1,0 +1,51 @@
+name: V2 validation
+
+on:
+  pull_request:
+    branches: [v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Frontend and migration rehearsal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Verify shared frontend and repository tooling
+        run: |
+          npm ci
+          npm run verify -- --frontend
+      - name: Test Android verification harness
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Rehearse migration with synthetic data
+        run: python3 spikes/migration/probe.py
+      - name: Build portable fixture
+        working-directory: spikes/p0
+        run: |
+          npm ci
+          npm run build
+      - name: Exercise the built fixture in headless Chromium
+        working-directory: spikes/p0
+        run: |
+          npx --no-install playwright-core install --with-deps --only-shell chromium
+          npm run test:portable
+      - name: Attach tested portable fixture
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: klaxon-p0-portable-fixture-${{ github.run_attempt }}
+          path: spikes/p0/dist/index.html
+          if-no-files-found: error
+          retention-days: 1

@@ -2,6 +2,10 @@
   "name": "klaxon-p0-convex-spike",
   "private": true,
   "type": "module",
+  "scripts": {
+    "build": "node build-portable.mjs",
+    "test:portable": "node --test portable.test.mjs"
+  },
   "dependencies": {
     "@convex-dev/auth": "2.1.0",
     "convex": "1.51.0"
