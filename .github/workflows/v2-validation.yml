@@ -34,6 +34,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -v
       - name: Rehearse migration with synthetic data
         run: python3 spikes/migration/probe.py
+      - name: Check synthetic reminder evidence
+        run: node --test spikes/p0/reminder-evidence.test.mjs
       - name: Build portable fixture
         working-directory: spikes/p0
         run: |
@@ -75,6 +77,8 @@ jobs:
           merge-multiple: true
       - name: Verify the Evergreen WebView2 Runtime
         run: ./spikes/p0/ci/webview2-runtime.ps1
+      - name: Exercise the current-user DPAPI session fixture
+        run: node --test spikes/p0/native/session.test.mjs
       - name: Build isolated Tauri executable
         working-directory: spikes/p0
         run: cargo build --locked --manifest-path native/src-tauri/Cargo.toml --features custom-protocol
