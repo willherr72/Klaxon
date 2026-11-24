@@ -64,6 +64,10 @@ public final class FixtureStore {
         try {
             out.write(record);
             out.getFD().sync();
+            // Only the disposable fixture can set this flag. Exercise AtomicFile's logged-only rename failure.
+            if (new File(context.getCacheDir(), "p0-discard-synced-stage").isFile()) {
+                Files.delete(slot(owner).toPath().resolveSibling(slot(owner).getName() + ".new"));
+            }
         } catch (IOException e) {
             file.failWrite(out);
             throw e;

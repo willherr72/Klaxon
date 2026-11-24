@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { canaryOverlap, containsMarker, containsSdkAccess } from "./web-check.mjs";
+import { checkProfileBytes, containsMarker, containsSdkAccess } from "./web-check.mjs";
 
 const click = (panel, name) => panel.getByRole("button", { name, exact: true }).click();
 const statusIs = (page, status) => page.waitForFunction(status =>
@@ -284,7 +284,6 @@ async function exerciseWindowsRefreshRecord(launch, root, record) {
 }
 
 // Inspect only regular files in the retired, harness-owned WebView profile.
-// Carry enough bytes across chunks for either canary in its longest encoded form.
 async function checkProfile(directory) {
   let files = 0;
   const pending = [directory];
@@ -295,14 +294,7 @@ async function checkProfile(directory) {
       if (entry.isDirectory() && !entry.isSymbolicLink()) pending.push(child);
       if (!entry.isFile()) continue;
       files++;
-      let tail = Buffer.alloc(0);
-      for await (const chunk of createReadStream(child)) {
-        const bytes = Buffer.concat([tail, chunk]);
-        for (const text of [bytes.toString("latin1"), bytes.toString("utf16le"), bytes.subarray(1).toString("utf16le")]) {
-          assert.ok(!containsMarker(text) && !containsSdkAccess(text), "session material in retired WebView profile");
-        }
-        tail = bytes.subarray(-canaryOverlap);
-      }
+      await checkProfileBytes(createReadStream(child));
     }
   }
   assert.ok(files > 0, "expected a populated WebView profile");

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { checkSessionPage, containsMarker, containsSdkAccess } from "./web-check.mjs";
 import { exerciseSdkHandoff } from "./sdk-check.mjs";
+import { readFixtureFile } from "./adb-file.mjs";
 
 export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app) {
   const pids = new Set();
@@ -28,7 +29,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     bytes.toString("base64"));
   const slot = {
     read: () => {
-      const bytes = adbBytes(["shell", "-T", "run-as", app, "cat", record]);
+      const bytes = readFixtureFile(adbBytes, app, record);
       assert.ok(bytes.length > 28, "expected an IV, ciphertext and GCM tag");
       return bytes;
     },
@@ -100,6 +101,19 @@ async function exerciseDurableRefresh(launch, slot, runAs, stage) {
     assert.ok(slot.read().equals(predecessor), "failed write changed the active record");
     runAs("rm", blocker + "/blocker");
     runAs("rmdir", blocker);
+    flag("provider-refresh", false);
+    assert.equal(await change(page, "resume"), "authenticated");
+    flag("provider-refresh", true);
+
+    // Removing the synced stage makes AtomicFile.finishWrite fail its rename after the write succeeded.
+    flag("discard-synced-stage", true);
+    try {
+      await access(page, "unavailable");
+      await access(page, "signed-out");
+      assert.ok(slot.read().equals(predecessor), "failed publication changed the active record");
+    } finally {
+      flag("discard-synced-stage", false);
+    }
     flag("provider-refresh", false);
     assert.equal(await change(page, "resume"), "authenticated");
     flag("provider-refresh", true);

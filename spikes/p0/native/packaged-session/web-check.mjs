@@ -16,7 +16,21 @@ const accessForms = ["p0-inert-access-a", rotatedAccess, "p0-inert-access-b"].fl
   [access, Buffer.from(access).toString("base64"), Buffer.from(access).toString("hex")]);
 export const containsSdkAccess = value => accessForms.some(form => value.includes(form));
 // The longest form may be stored as UTF-16LE and split at any byte.
-export const canaryOverlap = 2 * Math.max(...[...representations, ...accessForms].map(form => form.length)) - 1;
+const canaryOverlap = 2 * Math.max(...[...representations, ...accessForms].map(form => form.length)) - 1;
+
+export async function checkProfileBytes(chunks) {
+  let tail = Buffer.alloc(0);
+  let total = 0;
+  for await (const chunk of chunks) {
+    total += chunk.length;
+    const bytes = Buffer.concat([tail, chunk]);
+    for (const text of [bytes.toString("latin1"), bytes.toString("utf16le"), bytes.subarray(1).toString("utf16le")]) {
+      assert.ok(!containsMarker(text) && !containsSdkAccess(text), "session material in retired WebView profile");
+    }
+    tail = bytes.subarray(-canaryOverlap);
+  }
+  return total;
+}
 
 export async function checkSessionPage(page, actions, sdkPlatform) {
   const sdk = sdkPlatform !== undefined;

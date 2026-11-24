@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { exerciseSession } from "./packaged-session/check.mjs";
-import { checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
+import { checkProfileBytes, checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
 import { exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
 import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
+import { readFixtureFile } from "./packaged-session/adb-file.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -340,7 +341,7 @@ async function android() {
   const sdk = platform === "android-sdk";
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(sdk ? ["-H", "127.0.0.1"] : []), "-s", serial, ...args,
-  ], { input, timeout: 30000 });
+  ], { input, timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
   const deviceAdb = (...args) => deviceAdbBytes(args).toString("utf8").trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
   const session = platform === "android-session" || sdk;
@@ -387,7 +388,25 @@ async function android() {
         finally { deviceAdb("forward", "--remove", "tcp:" + port); }
       }
     }
-    if (sdk) return await exerciseAndroidSdkHandoff(withActivity, deviceAdb, deviceAdbBytes, appId);
+    if (sdk) {
+      const control = "cache/p0-binary-control";
+      deviceAdb("shell", "run-as", appId, "sh", "-c", "'printf \"\\000\\012\\015\\377\" > " + control + "'");
+      assert.deepEqual(readFixtureFile(deviceAdbBytes, appId, control), Buffer.from([0, 10, 13, 255]));
+      deviceAdb("shell", "run-as", appId, "rm", control);
+      await exerciseAndroidSdkHandoff(withActivity, deviceAdb, deviceAdbBytes, appId);
+      deviceAdb("shell", "am", "force-stop", appId);
+      // Android WebView can keep its HTTP cache outside the profile. Inspect each regular file separately.
+      const paths = deviceAdb("shell", "run-as", appId, "find", "app_webview", "cache", "-type", "f", "-print0")
+        .split("\0").filter(Boolean);
+      assert.ok(paths.some(path => path.startsWith("app_webview/")), "expected a populated Android WebView profile");
+      let bytes = 0;
+      for (const path of paths) {
+        assert.match(path, /^(app_webview|cache)\//);
+        bytes += await checkProfileBytes([readFixtureFile(deviceAdbBytes, appId, path)]);
+      }
+      console.log("Inspected", bytes, "bytes from", paths.length, "retired Android WebView profile and app cache files");
+      return;
+    }
     if (session) return await exerciseSession(withActivity, deviceAdb, appId);
     const saved = await withActivity(exercise);
     deviceAdb("shell", "am", "force-stop", appId);
