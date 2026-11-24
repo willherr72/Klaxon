@@ -38,7 +38,7 @@ The executable is `native/src-tauri/target/debug/klaxon-p0-native.exe`. Use the 
 
 ### Packaged Windows SDK handoff
 
-From `spikes/p0`, build the isolated Windows session target and run the SDK smoke. The smoke selects the SDK panel in the packaged WebView, seeds its own DPAPI slot, and opens a fresh process for each cold resume. The compiled provider fixture accepts only the two inert access values by digest. Both the HTTP and realtime transports stay in process.
+From `spikes/p0`, build the isolated Windows session target and run the SDK smoke. The smoke selects the SDK panel in the packaged WebView, seeds its own DPAPI slot, and opens a fresh process for each cold resume. The simulated provider verifies each native access value by its digest. Both the HTTP and realtime transports stay in process.
 
 ```powershell
 node native/package.mjs --target windows --session
@@ -46,6 +46,8 @@ node native/smoke.mjs windows-sdk
 ```
 
 The test verifies owner-filtered reads and updates, failed forced refresh during an outage, recovery, peer switching and sign-out. It checks that native refresh markers stay behind the bridge and that access values stay out of inspected DOM, storage and logs. The runner removes the slot and WebView profile. [Results and limits](../../../docs/klaxon-v2-progress.md#packaged-windows-dpapi-to-sdk-handoff)
+
+The Windows and Android SDK smokes also exercise successful access-token replacement. The harness sets a flag in the native fixture directory and tells the in-process provider to expire A’s first access value. The SDK must request a new value through native IPC, authenticate its subscription again and use the replacement for an HTTP read. The companion `node --test sdk-task-session.test.mjs` check presents the old value directly to each intercepted transport after cutover. The provider’s immediate rejection rule is specific to this test. The encrypted refresh record is reused throughout the exchange.
 
 ## Android emulator fixture
 
