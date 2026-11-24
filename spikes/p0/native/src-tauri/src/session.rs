@@ -1,7 +1,38 @@
+use jni::{
+    objects::{JObject, JObjectArray, JString},
+    sys::jobjectArray,
+    JNIEnv,
+};
 use std::collections::BTreeMap;
 use tauri::{plugin::PluginHandle, Builder, Manager, State, WebviewWindow, Wry};
 
 struct FixturePlugin(PluginHandle<Wry>);
+
+// Called only by the native fixture plugin. Null is invalid, an empty array is definitive noSession.
+#[no_mangle]
+pub extern "system" fn Java_dev_klaxon_p0native_SessionPlugin_decodeRefresh(
+    mut env: JNIEnv<'_>,
+    _plugin: JObject<'_>,
+    body: JString<'_>,
+) -> jobjectArray {
+    let reply = (|| {
+        let body: String = env.get_string(&body).ok()?.into();
+        let grant = crate::refresh_response::decode(body.as_bytes()).ok()?;
+        let fields: &[&str] = match grant.as_ref() {
+            Some(grant) => &[&grant.access_token, &grant.refresh_token, &grant.user_id],
+            None => &[],
+        };
+        let array = env
+            .new_object_array(fields.len() as i32, "java/lang/String", JObject::null())
+            .ok()?;
+        for (index, field) in fields.iter().enumerate() {
+            env.set_object_array_element(&array, index as i32, env.new_string(field).ok()?)
+                .ok()?;
+        }
+        Some(array)
+    })();
+    reply.map_or(std::ptr::null_mut(), JObjectArray::into_raw)
+}
 
 #[tauri::command]
 async fn fixture_session(

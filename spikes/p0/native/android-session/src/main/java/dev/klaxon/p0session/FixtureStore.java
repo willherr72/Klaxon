@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
+import java.util.Arrays;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -49,23 +50,27 @@ public final class FixtureStore {
         Files.deleteIfExists(file.toPath().resolveSibling(file.getName() + ".bak"));
     }
 
-    private void save(String owner, SecretKey key, int generation) throws Exception {
+    private void save(String owner, SecretKey key, byte[] plaintext) throws Exception {
         if (key.getEncoded() != null) throw new IllegalStateException("Expected a non-exportable key");
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key);
         byte[] iv = cipher.getIV();
         if (iv.length != IV_BYTES) throw new GeneralSecurityException("Unexpected IV length");
-        byte[] sealed = cipher.doFinal(marker(owner, generation));
+        byte[] sealed = cipher.doFinal(plaintext);
+        byte[] record = Arrays.copyOf(iv, iv.length + sealed.length);
+        System.arraycopy(sealed, 0, record, iv.length, sealed.length);
         AtomicFile file = new AtomicFile(slot(owner));
         FileOutputStream out = file.startWrite();
         try {
-            out.write(iv);
-            out.write(sealed);
-            file.finishWrite(out);
+            out.write(record);
+            out.getFD().sync();
         } catch (IOException e) {
             file.failWrite(out);
             throw e;
         }
+        file.finishWrite(out);
+        // AtomicFile logs publish failures. Require the new ciphertext to be visible before returning.
+        if (!Arrays.equals(file.readFully(), record)) throw new IOException("Protected record was not published");
     }
 
     public void seed(String owner) throws Exception {
@@ -82,18 +87,24 @@ public final class FixtureStore {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256).build());
-        save(owner, generator.generateKey(), generation);
+        save(owner, generator.generateKey(), marker(owner, generation));
     }
 
     public void rotate(String owner, int generation) throws Exception {
-        save(owner, (SecretKey) store.getKey(alias(owner), null), generation);
+        rotate(owner, marker(owner, generation));
+    }
+
+    public void rotate(String owner, byte[] successor) throws Exception {
+        SecretKey key = (SecretKey) store.getKey(alias(owner), null);
+        if (key == null) throw new GeneralSecurityException("Missing fixture key");
+        save(owner, key, successor);
     }
 
     /** Null means the protected marker could not be read. Callers decide session status. */
     public byte[] read(String owner) throws Exception {
         SecretKey key = (SecretKey) store.getKey(alias(owner), null);
         if (key == null) return null;
-        byte[] record = Files.readAllBytes(slot(owner).toPath());
+        byte[] record = new AtomicFile(slot(owner)).readFully();
         if (record.length < IV_BYTES + 16) return null;
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
