@@ -1,8 +1,12 @@
 # Dot planning playbook
 
-## Phase 0 evidence, 2026-11-23
+## Scheduled browser fallback
 
-The owner’s Dot has no verified connection to a disposable Klaxon v2 workspace in this session. Codex can see T3 and Klaxon tool descriptions. Those belong to this client and do not establish the Dot’s identity, account permissions, ability to approve writes or behavior when Windows is off. An owner Dot session and a remotely reachable authenticated v2 test deployment are needed to run the following checks. No live tasks or employer accounts were accessed.
+**Passed on November 24, 2026.** Will confirmed Windows was off before the one-time scheduled run. Dot used its independent cloud browser. The prior tab and managed preview were gone, so Dot restored the same verified portable account client in a new managed preview and signed in to the disposable Development account. The client required no external hosting.
+
+Dot saw a connected subscription and renamed exactly one pre-staged synthetic task. At **2026-11-24 16:31:38 UTC**, a fresh server read returned the same task ID and the new title. Will independently reported seeing the result on Android and Windows. The timestamp belongs to the server read. Windows shutdown was owner-confirmed, and no independent boot time was observed.
+
+The scheduled browser read/write check is complete. Future authorized runs must allow for restoring the preview and signing in again. No repeat smoke is needed.
 
 OpenAI documents a cloud computer for Dot, ongoing work and owner-selected app access. ChatGPT’s custom MCP documentation also describes workspace controls and write actions. The owner must verify that their Dot can actually select this connection under their account’s settings. Use only the existing authorized plan. [Dot guide](https://help.openai.com/en/articles/20001530-getting-started-with-your-dot) · [Custom MCP connections](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
 
@@ -17,8 +21,8 @@ Use a disposable workspace and one synthetic task named Dot fixture. Record UTC 
 | Connect and read | From Dot, complete remote HTTPS MCP authorization, select the workspace and read the fixture. Verify a second workspace is inaccessible. | Pending |
 | Create and update | Create one task, update its title with the returned revision, retry the create with the same idempotency key. Independently confirm one row, new revision and actor in audit history. | Pending |
 | Reconnect | Allow expiry, reconnect, read again, then revoke access and verify the next operation fails. | Pending |
-| Desktop off | Give Dot explicit permission for a single future run. Shut down Windows before the due time. On another device, verify the scheduled mutation and audit timestamp precede Windows restart. | Pending |
-| Browser fallback | If the connector cannot write, repeat the read, create, update and desktop-off checks in Dot’s cloud browser with its own scoped session. Record any approval or interactive sign-in requirement. | Pending |
+| Scheduled browser fallback with Windows off | Restore the client if needed, sign in, update the pre-staged task and read it back from the server. | Passed once. See the [recorded run](#scheduled-browser-fallback). |
+| Scoped identity and audit | Verify a scoped agent identity and an audit event attributing the scheduled mutation to that identity. | Pending |
 
 ## Planning instructions
 
@@ -34,4 +38,4 @@ Use the fixture-mode artifact from a successful unsigned validation run on draft
 2. Disconnect networking for the test browser, reload the file and check the stored task. Rename it again and reopen it in the same profile. Check the new title. Record any browser restriction on file-origin storage.
 3. Open a separate fresh profile or computer. Expect independent fixture data. Never infer a cloud write from seeing a successful local change.
 
-Report pass/fail per operation, the observed failure message and whether retry preserved earlier data. This exercise covers portability and recovery on Dot's computer. Owner-authorized hosted read/write, refresh, scheduling and execution with Windows powered off require the separate account acceptance run above.
+Report pass/fail per operation, the observed failure message and whether retry preserved earlier data. This exercise covers portability and recovery on Dot's computer. The [scheduled browser run](#scheduled-browser-fallback) supplies the hosted read/write evidence. Session expiry, revocation and remote MCP remain open.
