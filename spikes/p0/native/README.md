@@ -1,6 +1,6 @@
 # P0 native packaging and offline fixture
 
-The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The default Rust host registers no application commands. Both optional offline session builds expose a status-only session command. The Windows session build also exposes an owner-filtered synthetic task read and push channel. The default build stores synthetic rows in this app’s WebView profile. Both the offline HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
+The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The default Rust host registers no application commands. Both optional offline session builds expose a status-only session command and a separate SDK access command in the local WebView. The Windows session build also exposes an owner-filtered synthetic task read and push channel. The default build stores synthetic rows in this app’s WebView profile. Both the offline HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
 
 ## Windows fixture
 
@@ -58,11 +58,22 @@ node native/package.mjs --target x86_64 --session
 node native/smoke.mjs android-session emulator-5576
 ```
 
-The packager stages the native plugin and shared Keystore helper only while compiling this offline variant. The separate output is `native/.run/klaxon-p0-x86_64-session.apk`. The Svelte controls call a Tauri command in the main local WebView. The Android plugin owns a single fixture alias and encrypted record under the test app UID. Native code accepts a fixed synthetic marker during explicit resume. Only allowlisted status strings cross back to JavaScript, including on error.
+The packager stages the native plugin and shared Keystore helper only while compiling this offline variant. The separate output is `native/.run/klaxon-p0-x86_64-session.apk`. The Svelte controls call a Tauri command in the main local WebView. The Android plugin owns a single fixture alias and encrypted record under the test app UID. Native code accepts a fixed synthetic marker during explicit resume. The status-only panel receives allowlisted status strings, including on error. A separate SDK panel in the same offline build exercises the native access grant.
 
 The harness requires a clean fixture install. After seeding one record, it places an empty `cache/p0-provider-offline` file under the debug app UID. Two fresh app processes attempt the same WebView resume. Each must return only `retry-required` and leave the encrypted record byte-for-byte intact. The harness removes the flag and retries in another fresh process without reseeding. Resume must return `authenticated`.
 
 The harness then sets `cache/p0-provider-expired` to simulate definitive expiry. Cold resume must clear the scoped Keystore alias and encrypted record before returning `signed-out`. The harness checks the private record directory, removes the expiry flag, and starts another process. Resume must still require sign-in. An explicit fresh seed must succeed (seeding refuses an existing alias or file) and restore access on cold resume. Sign-out must survive the final relaunch. The harness checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the artifacts and observations.
+
+### Packaged Android SDK handoff
+
+Use the same offline x86_64 session APK on a booted, disposable API 36 emulator named `KlaxonSessionP0_` followed by letters or digits. Before installation the runner requires airplane mode, Wi-Fi off, no default network, no existing spike install and no ADB mappings on that emulator. From `spikes/p0`, substitute its verified serial.
+
+```powershell
+node native/package.mjs --target x86_64 --session
+node native/smoke.mjs android-sdk emulator-5576
+```
+
+The SDK panel selects its owner only after the plugin reopens the Keystore-protected record. The runner checks real SDK reads and subscriptions with an intercepted provider. It exercises corruption, refresh denial during an outage, cold recovery, owner switching, definitive expiry, and sign-out. It observes the Android IPC command and matching callback, checks the visible rows and browser stores, and scans logcat for the fixture process IDs. It verifies scoped alias and file cleanup, uninstalls the APK and removes its own ADB mappings. Shut down the test emulator after the run. [Test evidence and limits](../../../docs/klaxon-v2-progress.md#packaged-android-keystore-to-sdk-handoff)
 
 ### Android Keystore lifecycle
 
