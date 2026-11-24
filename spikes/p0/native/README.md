@@ -1,0 +1,64 @@
+# P0 native packaging and offline fixture
+
+The Windows executable and Android APK embed the portable Svelte client in Tauri 2.11.0 using the separate identifier `dev.klaxon.p0native`. The Rust host registers no application commands or production plugins. The default build stores synthetic rows in this app’s WebView profile. Both the portable HTML and the native response policy set `connect-src 'none'`. The asset URL works without a frontend server, backend, ADB reverse or account. The [portable client](../portable.md) describes the separate Convex account mode.
+
+## Windows fixture
+
+Use Node from the repository’s `.node-version`, MSVC C++ build tools, the repository’s pinned Rust toolchain and the Microsoft WebView2 runtime. In PowerShell from `spikes/p0`:
+
+```powershell
+npm ci
+$env:Path = "$env:USERPROFILE/.cargo/bin;$env:Path"
+node native/package.mjs --target windows
+node native/smoke.mjs windows
+```
+
+The executable is `native/src-tauri/target/debug/klaxon-p0-native.exe`. Use the default Cargo target directory when running this smoke. It starts only this executable, uses a new temporary WebView2 user-data folder, and attaches over loopback. It creates and renames a row through the UI, reads it after a reload, terminates the native process and verifies the same ID and title after relaunch. It removes the temporary profile on exit.
+
+## Android emulator fixture
+
+Use JDK 21, Android platform 36, Build Tools 36.0.0, NDK 27.1.12297006 and the pinned Tauri CLI. Windows must permit the symlinks Tauri creates for Android native libraries. Run from `spikes/p0` after `npm ci`. Set the JDK and SDK paths for this machine.
+
+```powershell
+$env:Path = "$env:USERPROFILE/.cargo/bin;$env:Path"
+$env:JAVA_HOME = 'C:/Program Files/Android/Android Studio/jbr'
+$env:ANDROID_HOME = "$env:LOCALAPPDATA/Android/Sdk"
+$env:NDK_HOME = "$env:ANDROID_HOME/ndk/27.1.12297006"
+$env:ADB = "$env:ANDROID_HOME/platform-tools/adb.exe"
+$env:Path = "$env:JAVA_HOME/bin;$env:Path"
+rustup target add x86_64-linux-android
+# If cargo tauri --version does not report 2.11.0:
+# cargo install tauri-cli --version 2.11.0 --locked
+node native/package.mjs --target x86_64
+```
+
+Create a fresh Android Studio virtual device using a Google Play API 36 x86_64 image. Boot it fully and enable airplane mode. Keep it as the sole attached ADB device for the smoke. Replace `emulator-5588` below with its actual serial.
+
+```powershell
+& $env:ADB devices
+node native/smoke.mjs android emulator-5588
+```
+
+The harness checks the serial, QEMU and boot properties, verifies the spike package is absent, and installs `native/.run/klaxon-p0-x86_64-fixture.apk`. It drives the app’s WebView, force-stops and relaunches the Android activity to check fixture persistence, then uninstalls the spike. Debug signing uses the spike's own Android user home at `native/.run/android-user`.
+
+## Arm64 handoff
+
+The same packager produces a debug APK for an arm64 device. The repository’s release signing and updater workflows are separate. To generate the offline fixture:
+
+```powershell
+rustup target add aarch64-linux-android
+node native/package.mjs --target aarch64
+```
+
+The output is `native/.run/klaxon-p0-arm64-fixture.apk`. For a later authorized physical desktop-off test, run the following command with the public HTTPS origin copied from the intended disposable **Development** deployment. The deployment administrator must confirm its environment; the URL alone identifies a hostname. Keep the device’s own internet connection active for this account-mode test.
+
+```powershell
+$developmentOrigin = Read-Host 'Confirmed public Development deployment HTTPS origin'
+node native/package.mjs --target aarch64 --origin $developmentOrigin
+```
+
+This writes `native/.run/klaxon-p0-arm64-development.apk`. The public origin selects the compiled client endpoint and limits both CSPs to that exact HTTPS origin and its WSS counterpart. Sign in at runtime with a previously enrolled synthetic identity. Install only when the device owner chooses to perform the physical-device check. The [physical desktop-off procedure](../portable.md#physical-desktop-off-acceptance) describes the evidence still required.
+
+## Rebuilds
+
+Run `native/package.mjs` for each target. It rebuilds `native/.frontend/index.html` with the same builder as `dist/index.html`, then embeds it. A per-worktree exclusive `native/.run/package.lock` guards asset generation, native configuration, Rust compilation and APK copying. A second packager fails immediately. If a build is killed, inspect the PID in the lock and verify its build and Cargo/Gradle children have stopped before deleting only that lock file. Gradle scaffolding, caches, debug signing material, profiles and binaries stay outside version control.
