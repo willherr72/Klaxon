@@ -1,6 +1,6 @@
 # One-time reminder check on Windows and Android
 
-**Receiver provisioned, November 24, 2026.** The operator verified the temporary HTTPS link and supplied it directly to Will. The receiver uses a Cloudflare Quick Tunnel to a loopback server on the Windows test host. Keep the host awake and both processes running through cleanup. Restarting the tunnel changes the origin and makes the old link unusable. The owner-confirmed Free Convex Development deployment remains separate. [Provisioning record](klaxon-v2-progress.md#one-time-reminder-sender-and-receiver-rehearsal) · [Quick Tunnel lifetime](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+**Focused test passed on both devices, owner-reported November 24, 2026.** The operator verified the temporary HTTPS link and supplied it directly to Will. The receiver uses a Cloudflare Quick Tunnel to a loopback server on the Windows test host. Keep the host awake and both processes running through cleanup. Restarting the tunnel changes the origin and makes the old link unusable. The owner-confirmed Free Convex Development deployment remains separate. [Provisioning record](klaxon-v2-progress.md#one-time-reminder-sender-and-receiver-rehearsal) · [Quick Tunnel lifetime](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 
 ## Before inviting Will
 
@@ -23,7 +23,7 @@ At the agreed due time run `node spikes/p0/reminder-push/send-once.mjs <private-
 
 | Target | Due / attempted UTC | Push service status | Worker receipt UTC or missing | First seen UTC, ID and copies | Owner acknowledgment |
 |---|---|---|---|---|---|
-| Windows Edge, focused | | | | | |
-| Android Chrome, focused | | | | | |
+| Windows Edge, focused | Sent 20:19:05 UTC, Nov 24 | HTTP 201 | Unreported | One visible copy; first-seen time unreported | Will confirmed |
+| Android Chrome, focused | Sent 20:19:05 UTC, Nov 24 | HTTP 201 | Unreported | One visible copy; first-seen time unreported | Will confirmed |
 
 Provider acceptance records transport. A worker receipt records browser processing. Count visible delivery only when Will sees the matching system notification. One matching copy per target passes the two focused cells. All other states remain pending. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)

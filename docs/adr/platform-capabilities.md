@@ -1,6 +1,6 @@
 # Phase 0 platform capabilities
 
-Provider interface review is complete for the operations below. Tenant-specific authorization, remote MCP execution with a scoped Dot identity and physical-device push remain open. Dot’s scheduled browser fallback passed once with Windows powered off. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import. [Scheduled browser fallback evidence](../dot-playbook.md#scheduled-browser-fallback)
+Provider interface review is complete for the operations below. Tenant-specific authorization, remote MCP execution with a scoped Dot identity and background or closed-app push remain open. Dot’s scheduled browser fallback passed once with Windows powered off. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import. [Scheduled browser fallback evidence](../dot-playbook.md#scheduled-browser-fallback)
 
 | Provider | Initial interface and boundary | Fallback or unresolved test |
 |---|---|---|
@@ -14,11 +14,11 @@ Provider interface review is complete for the operations below. Tenant-specific 
 
 Adopt Web Push as best effort and retain native scheduling as a fallback candidate until device evidence supports removing it. The server owns occurrences. Allocate one delivery route per device and occurrence, invalidate stale revisions, and provide overdue history and visible permission state. A push service accepting a request does not establish that the user saw a notification. [Edge Web Push implementation](https://learn.microsoft.com/en-us/microsoft-edge/progressive-web-apps/how-to/push)
 
-The repository has native notification support and an isolated P0 Web Push rehearsal. The physical matrix still needs a provisioned HTTPS receiver, two disposable subscriptions and operator sends. Use the [one-time owner runbook](../p0-reminder-owner-test.md) to measure the focused cell on each platform.
+The repository has native notification support and an isolated P0 Web Push rehearsal. For the one-time focused run on November 24, 2026, both push services returned HTTP 201 and Will reported one visible OS notification on each device. Worker receipt and first-seen times were not separately reported. [One-time owner runbook](../p0-reminder-owner-test.md)
 
 | State | Windows Edge / installed PWA | Android Chrome / installed PWA |
 |---|---|---|
-| App focused | Pending | Pending |
+| App focused | Pass, one visible copy (owner report, Edge tab) | Pass, one visible copy (owner report, Chrome tab) |
 | Background, screen locked | Pending | Pending |
 | App window closed, browser permitted in background | Pending | Pending |
 | Browser explicitly quit or force-stopped | Pending | Pending |
@@ -27,7 +27,7 @@ The repository has native notification support and an isolated P0 Web Push rehea
 
 For each cell, enroll a disposable browser profile on the actual target and send an ordinary server-originated push using a unique synthetic occurrence ID. Record OS/browser versions, notification and power settings, due time, push-service acceptance, service-worker receipt, observed system notification, acknowledgment and duplicate count. For denial or disconnection, inspect permission status and overdue history after reopening. Repeat with an edited and a canceled occurrence. If closed-app delivery misses the owner’s required window, use reconciled native delivery on that platform and repeat the matrix with duplicates checked. Until then, timing and closed-app guarantees remain unverified.
 
-From the repository root, run `node --test spikes/p0/reminder-evidence.test.mjs` to rehearse how to interpret one occurrence on one device. The synthetic traces distinguish service receipts from observed display, reject duplicate or superseded displays, reject display after cancellation, and require a current overdue history entry after reconnect. All device cells above still require physical observations.
+From the repository root, run `node --test spikes/p0/reminder-evidence.test.mjs` to rehearse how to interpret one occurrence on one device. The synthetic traces distinguish service receipts from observed display, reject duplicate or superseded displays, reject display after cancellation, and require a current overdue history entry after reconnect. The remaining device cells still require physical observations.
 
 For the permission-denied or revoked row, the offline trace rejects a new Web Push display while permission is denied. To count a fallback observation, the same reopening must show both the denied permission status and an overdue history entry for the current occurrence revision. A new opening or permission change requires fresh observations. The trace exercises the evidence check without changing a browser permission or generating a notification.
 
