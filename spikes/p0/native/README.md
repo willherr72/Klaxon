@@ -8,7 +8,7 @@ The Windows executable and Android APK embed the portable Svelte client in Tauri
 
 From the repository root on Windows with Node 24 and Windows PowerShell 5.1, run `node --test spikes/p0/native/session.test.mjs`. The test starts a new PowerShell process for every operation. It uses current-user DPAPI with the application and fixture owner as context. Only the encrypted synthetic refresh markers cross the process boundary in a temporary directory. The runner checks worker output and stored files for plaintext markers and removes the directory afterward.
 
-The simulated provider decides whether a marker can restore a session. A temporary transport failure or unreadable record denies access and preserves the ciphertext. Provider expiry requires a new sign-in. Local logout clears the selected slot across relaunch. Both fixture owners share one Windows profile. DPAPI does not prevent other code running as that Windows user from unprotecting data with the same context. Hosted revocation, Android Keystore and the Tauri-to-provider flow remain open. See the [candidate and assumptions](../../../docs/adr/p0-architecture.md#p0-03-native-session-candidate).
+The simulated provider decides whether a marker can restore a session. A temporary transport failure or unreadable record denies access and preserves the ciphertext. Provider expiry requires a new sign-in. Local logout clears the selected slot across relaunch. Both fixture owners share one Windows profile. DPAPI does not prevent other code running as that Windows user from unprotecting data with the same context. Hosted revocation and the Tauri-to-provider flow remain open. Android has a separate [emulator probe](#android-keystore-lifecycle). See the [candidate and assumptions](../../../docs/adr/p0-architecture.md#p0-03-native-session-candidate).
 
 ### Packaged offline client
 
@@ -24,6 +24,25 @@ node native/smoke.mjs windows
 The executable is `native/src-tauri/target/debug/klaxon-p0-native.exe`. Use the default Cargo target directory when running this smoke. It starts only this executable, uses a new temporary WebView2 user-data folder, and attaches over loopback. It creates and renames a row through the UI, reads it after a reload, terminates the native process and verifies the same ID and title after relaunch. It removes the temporary profile on exit.
 
 ## Android emulator fixture
+
+### Android Keystore lifecycle
+
+The standalone test-only APK `dev.klaxon.p0session` requests no permissions. Two synthetic app users each have a distinct AES-GCM key in the app's Android Keystore namespace and an encrypted marker in its private no-backup directory. A successful restore requires the simulated provider to accept the expected marker generation. The probe uses the platform key generator with randomized encryption and checks that the key object's encoded bytes are unavailable. [Android key generation parameters](https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec)
+
+Use the project's JDK 21, Android SDK platform 36 and cached Android Gradle plugin 8.11.0. From the repository root in PowerShell, use the native spike's isolated Android debug-signing directory. Start a fresh disposable API 36 x86_64 AVD named `KlaxonSessionP0_` followed by letters or digits. Set the serial below to that AVD, confirm its name with `adb -s SERIAL emu avd name`, and enable airplane mode with Wi-Fi off on that emulator.
+
+```powershell
+$env:JAVA_HOME = 'C:/Program Files/Android/Android Studio/jbr'
+$env:ANDROID_HOME = "$env:LOCALAPPDATA/Android/Sdk"
+$env:ANDROID_USER_HOME = Join-Path (Get-Location) 'spikes/p0/native/.run/android-user'
+$env:ADB = "$env:ANDROID_HOME/platform-tools/adb.exe"
+./src-tauri/gen/android/gradlew.bat --offline --console=plain -p spikes/p0/native/android-session assembleDebug
+node spikes/p0/native/android-session/check.mjs emulator-5576
+```
+
+The runner checks the AVD name, QEMU status, completed boot, disconnected network and absence of the test package before installing. It force-stops the app between operations and requires distinct process IDs. After sign-out it checks both test aliases and record files from a fresh app process, then uninstalls the APK. Shut down the disposable AVD after the check. The [P0 register](../../../docs/klaxon-v2-progress.md#android-keystore-emulator-evidence) records the observed results and remaining integration work.
+
+### Packaged offline client
 
 Use JDK 21, Android platform 36, Build Tools 36.0.0, NDK 27.1.12297006 and the pinned Tauri CLI. Windows must permit the symlinks Tauri creates for Android native libraries. Run from `spikes/p0` after `npm ci`. Set the JDK and SDK paths for this machine.
 

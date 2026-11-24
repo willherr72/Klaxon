@@ -8,9 +8,25 @@ Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in
 
 | Gate | Evidence already available | Next test and stop condition |
 |---|---|---|
-| P0-03 native session | Windows current-user DPAPI restored inert markers across fresh processes with simulated provider confirmation. Browser refresh/revocation and intercepted recovery tests also passed. The packaged account client still requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
+| P0-03 native session | Windows current-user DPAPI and Android Keystore on a disposable emulator restored inert markers across fresh processes with simulated provider confirmation. Browser refresh/revocation and intercepted recovery tests also passed. The packaged account client still requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
 | P0-06 ordinary reminders | The offline reminder evidence fixture passed four synthetic replay cases. Windows and Android notification delivery remain unmeasured. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
 | P0-04 owner Dot | Scheduled browser fallback passed once with Windows off (owner-confirmed). Dot restored the verified client after the prior tab and preview were lost, signed in, saw a connected subscription and renamed exactly one pre-staged synthetic task. A fresh server read at 2026-11-24 16:31:38 UTC confirmed the same ID and new title. Will independently reported seeing the result on Android and Windows. | Remote MCP, scoped agent identity, audit attribution, idempotency receipts and expiry/revocation remain unverified. The browser smoke needs no repeat. See the [Dot playbook](dot-playbook.md#scheduled-browser-fallback) for the managed-preview caveat and evidence limits. |
+
+### Android Keystore emulator evidence
+
+Tested source `73eb3724be64aa70cc4e3eb44f0be1639de0cec5` on November 24, 2026. Android Emulator 36.3.10.0 ran a fresh Android 16/API 36 x86_64 AVD in airplane mode with no default network. From the repository root, `./src-tauri/gen/android/gradlew.bat --offline --console=plain -p spikes/p0/native/android-session assembleDebug` built the test-only APK. `aapt dump permissions` reported no requested permissions. APK SHA-256 was `7d3d26ae6ee4b4202baf19acc34a22a541c21947efacd55f4a6145f0aa7dce3f`. See the [Android setup and commands](../spikes/p0/native/README.md#android-keystore-lifecycle).
+
+`node spikes/p0/native/android-session/check.mjs emulator-5576` exited 0. Each of 22 instrumentation launches ran under a distinct app process ID. Keystore key creation, AES-GCM encryption/decryption, app-private file I/O, key deletion and cold-process relaunch ran on Android. Refresh and expiry decisions used inert markers and a simulated provider.
+
+| Check | Observed result |
+|---|---|
+| Cold restart and refresh | An empty slot required sign-in. A simulated outage denied access and preserved identical ciphertext. Retry rotated the marker and a fresh process accepted its new generation. Restoring the earlier ciphertext triggered rejection and removal of that owner's slot and alias. |
+| App-user isolation | The second fixture user could not decrypt a copied record using its own key. The bytes were preserved and the first user could still resume. Both users shared one app UID. |
+| Sign-out, expiry and cleanup | Signing out the second user removed only its alias and file. The first user resumed. After a new sign-in for the second user, expiry of the first user's marker left the second able to resume. Final sign-out required sign-in on relaunch. A fresh process confirmed both aliases and files absent, and the runner verified an empty record directory and uninstalled the APK. |
+
+An initial offline build failed during resource linking because the standalone project omitted the repository declaration for cached AAPT2. The corrected build used the local cache. The emulator was stopped after package removal. Automatic command review blocked recursive deletion of its temporary host directory, which remains outside the worktree.
+
+**Next P0-03 task.** Exercise synthetic resume and sign-out through the Android Tauri/WebView client boundary, returning only session status to the web layer, then verify cold relaunch in that packaged client. This run establishes Keystore feasibility under the test APK's UID. Hosted refresh/revocation, physical hardware protection and real-device reminders remain unverified.
 
 ### Windows native session and reminder evidence
 
@@ -24,7 +40,7 @@ Tested source `d3b90b345fe3dbec5e102344047d12f010b00917` on November 24, 2026, u
 
 Independent review found that a failed DPAPI read could discard a recoverable record. The revised worker preserves unreadable ciphertext and returns no session. The reviewer reran the corrected three Windows cases and the four reminder cases. The storage probe exercised local logout only. Packaged Tauri integration and server revocation of a restored native session remain open.
 
-**Next offline P0 check.** Run the same synthetic lifecycle on a disposable Android emulator, using the test app's Android Keystore key across process restart, then remove the key and uninstall the fixture. Android Keystore is currently a candidate with no runtime evidence from this spike. P1 remains queued.
+The subsequent [Android Keystore run](#android-keystore-emulator-evidence) exercised the Android candidate. P1 remains queued.
 
 On `94481b40e14ecb2cd06ed6d07162e7c13524c366`, Linux validation passed. All three Windows cases timed out starting their first Windows PowerShell worker, including the empty-slot read. CI skipped the later WebView2 build and smoke steps. The log did not identify the operation that stalled inside the worker. The revised CI command selects the job's PowerShell 7 executable and closes worker stdin. The 15-second per-operation limit and all DPAPI assertions remain active. Locally, `node --test spikes/p0/native/session.test.mjs` passed 3/3 on each host with zero skips. An independent reviewer also ran the PowerShell 7 workflow command. [Failed Windows job](https://github.com/willherr72/Klaxon/actions/runs/45445259790/job/138627783353)
 
@@ -70,7 +86,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
-| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. The standalone Windows storage candidate passed. Packaged session persistence on both platforms remains open. |
+| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. The standalone Windows and Android emulator storage probes passed. Restoring an authenticated session through the packaged account client remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |
