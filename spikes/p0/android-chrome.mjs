@@ -20,6 +20,7 @@ export async function androidChrome(serverPort, mappings) {
   const endpoint = "http://127.0.0.1:" + port;
   for (let attempt = 0; attempt < 60; attempt++) {
     const ready = await fetch(endpoint + "/json/version", { signal: AbortSignal.timeout(1000) }).catch(() => null);
+    await ready?.body?.cancel();
     if (ready?.ok) return chromium.connectOverCDP(endpoint, { timeout: 20000 });
     await delay(500);
   }

@@ -31,3 +31,17 @@ The browser probe opens three isolated headless Edge contexts. The host probe st
 Each run verifies signup and separate login for the same account, explicit refresh token rotation and continued authenticated access. A second account receives an empty authenticated task list and cannot rename the first account's task. After the first client creates a task, the second renders its stable ID and title. The second renames it and the first renders the new title without reloading. For each session, logout invalidates the signed-in check and subsequent refresh.
 
 The package lock fixes Convex 1.51.0, Convex Auth 2.1.0 and Svelte 5.59.1. This flow uses framework-independent Convex APIs with Svelte rendering. Access-token expiry, automatic refresh, persisted sessions, OS secure storage, Tauri packaging and managed HTTPS deployment need their own verification. The Windows host result covers the rendering engine on this PC. It does not exercise the shipping Tauri shell or its origin and CSP configuration.
+
+## Android emulator and Windows Edge
+
+Use a fresh API 36 Google Play x86_64 AVD, boot it fully and open Chrome once. Choose **Use without an account** in Chrome’s first-run screen. Run the local deployment described above. From the spike directory, point the adapter to the disposable device. Substitute its actual serial from `adb devices`.
+
+```powershell
+$env:ADB = "$env:LOCALAPPDATA/Android/Sdk/platform-tools/adb.exe"
+$env:KLAXON_PROBE_AVD = "emulator-5584"
+node probe.mjs --android-chrome
+```
+
+The adapter checks the emulator property, forwards its Chrome debugging socket and reverses two loopback ports for the page and backend. Existing reverse routes cause a setup failure. The probe removes its mappings on exit. Close the disposable AVD after testing.
+
+On November 23, 2026, Windows Edge 158.0.4370.33 created a synthetic task and Android Chrome 133.0.6943.137 rendered it. Android explicitly refreshed its session and renamed the task, and Edge rendered the change. The second account could neither list nor rename that task. Each session logged out and its refresh token was rejected. This exercised the API 36 emulator browser with the Windows host running the backend. Physical Android, Tauri integration and hosted operation with the desktop off need separate runs.

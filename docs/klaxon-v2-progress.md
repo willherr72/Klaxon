@@ -30,10 +30,10 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Hosted Free team pending. |
-| P0-03 | Auth/realtime spike | Edge and WebView2 passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
+| P0-03 | Auth/realtime spike | Edge, WebView2 and Android Chrome emulator passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
-| P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). ADB found no attached Android device. |
+| P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |
 | P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
 | P1-02 | Schema | Queued | — |
@@ -99,3 +99,5 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 Platform reviewer identified ambiguous authorization on receipt replay, inconsistent wording for desktop-off acceptance and missing quota accounting periods. Updated the API/security decisions to reauthorize before replay, aligned the test with physical desktop shutdown and clarified team-wide quota budgeting. Existing CI filters target main. A PR into v2 needs explicit local evidence until its own verification workflow lands.
 
 Correctness/security and regression reviewers found that an initially empty client list could let the cross-owner read assertion pass before the server replied. The revised probe awaits the authenticated query and checks same-owner updates in the rendered Svelte DOM. Independent rerun passed in Edge 158.0.4370.33. The schema-17 projection also passed on rerun.
+
+Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and Android API 36 emulator Chrome 133.0.6943.137 rendered it. Android refreshed its session and renamed the task. Edge rendered the new title. WebView2 157.0.4341.60 passed the same auth and realtime checks in separate Windows hosts. The backend ran on Windows. The next hosted run must keep the record readable and editable on Android after Windows is shut down. Capture actual native auth persistence, physical notification outcomes and Dot access before closing P0.

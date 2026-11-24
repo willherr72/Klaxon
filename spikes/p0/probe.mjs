@@ -103,6 +103,7 @@ try {
 } finally {
   clearTimeout(timer);
   server.close();
+  server.closeAllConnections();
   const results = await Promise.allSettled([browser?.close(), androidBrowser?.close(), ...hosts.map(async ({ host, exited, userData, connection }) => {
     try {
       await connection?.close();
@@ -112,7 +113,7 @@ try {
       await rm(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
     }
   })]);
-  for (const remove of mappings.reverse()) remove();
+  results.push(...await Promise.allSettled(mappings.reverse().map(async remove => remove())));
   for (const result of results) {
     if (result.status === "rejected") throw result.reason;
   }
