@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, open, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -40,10 +40,12 @@ async function build() {
   if (!existsSync(join(gradle, "settings.gradle"))) {
     execute("cargo", ["tauri", "android", "init", "--ci", "--skip-targets-install"], native);
   }
-  execute("cargo", ["tauri", "android", "build", "--ci", "--debug", "--target", values.target,
-    "--split-per-abi", "--apk", "--config", config], native);
   const flavor = values.target === "aarch64" ? "arm64" : "x86_64";
   const apk = join(gradle, "app/build/outputs/apk", flavor, "debug", "app-" + flavor + "-debug.apk");
+  // Gradle can leave removed ZIP entries as unused space in incrementally rebuilt debug APKs.
+  await rm(apk, { force: true });
+  execute("cargo", ["tauri", "android", "build", "--ci", "--debug", "--target", values.target,
+    "--split-per-abi", "--apk", "--config", config], native);
   const out = join(run, "klaxon-p0-" + flavor + (values.origin ? "-development" : "-fixture") + ".apk");
   await copyFile(apk, out);
   console.log(out);
