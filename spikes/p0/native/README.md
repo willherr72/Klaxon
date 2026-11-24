@@ -36,6 +36,17 @@ node native/smoke.mjs windows
 
 The executable is `native/src-tauri/target/debug/klaxon-p0-native.exe`. Use the default Cargo target directory when running this smoke. It starts only this executable, uses a new temporary WebView2 user-data folder, and attaches over loopback. It creates and renames a row through the UI, reads it after a reload, terminates the native process and verifies the same ID and title after relaunch. It removes the temporary profile on exit.
 
+### Packaged Windows SDK handoff
+
+From `spikes/p0`, build the isolated Windows session target and run the SDK smoke. The smoke selects the SDK panel in the packaged WebView, seeds its own DPAPI slot, and opens a fresh process for each cold resume. The compiled provider fixture accepts only the two inert access values by digest. Both the HTTP and realtime transports stay in process.
+
+```powershell
+node native/package.mjs --target windows --session
+node native/smoke.mjs windows-sdk
+```
+
+The test verifies owner-filtered reads and updates, failed forced refresh during an outage, recovery, peer switching and sign-out. It checks that native refresh markers stay behind the bridge and that access values stay out of inspected DOM, storage and logs. The runner removes the slot and WebView profile. [Results and limits](../../../docs/klaxon-v2-progress.md#packaged-windows-dpapi-to-sdk-handoff)
+
 ## Android emulator fixture
 
 ### Packaged Android session
