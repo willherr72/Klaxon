@@ -14,7 +14,7 @@ Provider interface review is complete for the operations below. Tenant-specific 
 
 Adopt Web Push as best effort and retain native scheduling as a fallback candidate until device evidence supports removing it. The server owns occurrences. Allocate one delivery route per device and occurrence, invalidate stale revisions, and provide overdue history and visible permission state. A push service accepting a request does not establish that the user saw a notification. [Edge Web Push implementation](https://learn.microsoft.com/en-us/microsoft-edge/progressive-web-apps/how-to/push)
 
-The repository has native notification support and an isolated P0 Web Push rehearsal. For the one-time focused run on November 24, 2026, both push services returned HTTP 201 and Will reported one visible OS notification on each device. Worker receipt and first-seen times were not separately reported. [One-time owner runbook](../p0-reminder-owner-test.md)
+For the one-time focused run on November 24, 2026, both push services returned HTTP 201. Will confirmed the matching worker receipt and one visible OS notification on each device, then reported removing both test subscriptions. Worker receipt and first-seen timestamps remain unrecorded. [One-time owner runbook](../p0-reminder-owner-test.md)
 
 | State | Windows Edge / installed PWA | Android Chrome / installed PWA |
 |---|---|---|

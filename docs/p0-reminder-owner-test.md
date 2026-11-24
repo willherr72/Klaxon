@@ -1,6 +1,6 @@
 # One-time reminder check on Windows and Android
 
-**Focused test passed on both devices, owner-reported November 24, 2026.** The operator verified the temporary HTTPS link and supplied it directly to Will. The receiver uses a Cloudflare Quick Tunnel to a loopback server on the Windows test host. Keep the host awake and both processes running through cleanup. Restarting the tunnel changes the origin and makes the old link unusable. The owner-confirmed Free Convex Development deployment remains separate. [Provisioning record](klaxon-v2-progress.md#one-time-reminder-sender-and-receiver-rehearsal) · [Quick Tunnel lifetime](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
+**Focused test passed on both devices, owner-reported November 24, 2026.** Will confirmed removal of both subscriptions. The operator stopped the Cloudflare Quick Tunnel and loopback server and verified that the listener, operator run directory, test key files and both matching exports in Windows Downloads were absent. Deletion of the original export in Android Downloads remains unconfirmed. The temporary receiver is retired. [Provisioning record](klaxon-v2-progress.md#one-time-reminder-sender-and-receiver-rehearsal) · [Quick Tunnel lifetime](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 
 ## Before inviting Will
 
@@ -21,9 +21,9 @@ In a new private directory outside the checkout, create `input.json` with a fres
 
 At the agreed due time run `node spikes/p0/reminder-push/send-once.mjs <private-run-dir>` from the repository root. Record each transport result. Preserve `attempted.json` and stop after these attempts, including an uncertain result. The 300-second TTL bounds requested push-service retention. The five-minute observation window measures what Will sees.
 
-| Target | Due / attempted UTC | Push service status | Worker receipt UTC or missing | First seen UTC, ID and copies | Owner acknowledgment |
+| Target | Sender attempt | Push service status | Worker receipt | Visible OS notification | Subscription removal |
 |---|---|---|---|---|---|
-| Windows Edge, focused | Sent 20:19:05 UTC, Nov 24 | HTTP 201 | Unreported | One visible copy; first-seen time unreported | Will confirmed |
-| Android Chrome, focused | Sent 20:19:05 UTC, Nov 24 | HTTP 201 | Unreported | One visible copy; first-seen time unreported | Will confirmed |
+| Windows Edge, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
+| Android Chrome, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
 
-Provider acceptance records transport. A worker receipt records browser processing. Count visible delivery only when Will sees the matching system notification. One matching copy per target passes the two focused cells. All other states remain pending. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
+The sender recorded both provider responses. Will verified the worker receipts on the test pages and visible delivery on the devices. Worker receipt and first-seen timestamps remain unrecorded. These two focused cells are complete. The other ten device cells remain pending. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
