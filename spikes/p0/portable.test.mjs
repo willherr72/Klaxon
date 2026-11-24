@@ -160,6 +160,8 @@ test("when device storage is full the draft can be retried without losing the sa
   await second.goto(pageUrl);
   await second.getByRole("list", { name: "Synthetic tasks" }).getByText("A", { exact: true }).waitFor();
   await second.evaluate(() => localStorage.removeItem("quota-test"));
+  // The second tab can finish removing the key before the first tab sees the freed space.
+  await page.waitForFunction(() => localStorage.getItem("quota-test") === null);
   await row.getByRole("button", { name: "Save title" }).click();
   await row.getByText(draft, { exact: true }).waitFor();
   await page.reload();
