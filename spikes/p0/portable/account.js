@@ -26,14 +26,16 @@ export async function signIn(origin, username, password, events) {
   const http = new ConvexHttpClient(origin, options);
   http.setAuth(tokens.accessToken);
   const live = new ConvexClient(origin, { logger: false });
-  const transport = live.subscribeToConnectionState(state => events.connected(state.isWebSocketConnected));
+  const transport = live.subscribeToConnectionState(state => {
+    if (!disposed) events.connected(state.isWebSocketConnected);
+  });
   events.connected(live.connectionState().isWebSocketConnected);
 
   async function rotate() {
     const rotated = await sessionClient.mutation(api.auth.refreshSession, { refreshToken: tokens.refreshToken });
+    if (disposed) return null;
     if (rotated.kind !== "rotated") {
-      dispose();
-      events.expired();
+      expire();
       return null;
     }
     tokens = rotated.tokens;
@@ -53,10 +55,25 @@ export async function signIn(origin, username, password, events) {
     tokens = undefined;
     void live.close();
   }
+  function expire(message = "Session expired. Sign in again.") {
+    if (disposed) return;
+    dispose();
+    events.expired(message);
+  }
   live.setAuth(async ({ forceRefreshToken }) => {
     if (closing) return null;
-    return forceRefreshToken ? refresh() : tokens.accessToken;
-  }, authenticated => { if (!disposed) events.authenticated(authenticated); });
+    if (!forceRefreshToken) return tokens.accessToken;
+    try { return await refresh(); }
+    catch {
+      // Convex pauses the socket while awaiting this callback. Always settle it.
+      expire("Session refresh could not be confirmed. Reconnect and sign in again.");
+      return null;
+    }
+  }, authenticated => {
+    if (disposed) return;
+    if (!authenticated) expire();
+    else events.authenticated(true);
+  });
   live.onUpdate(api.tasks.list, {}, rows => { if (!disposed) events.rows(rows); },
     () => { if (!disposed) events.error("Task subscription failed. Read tasks to retry."); });
 
@@ -65,9 +82,8 @@ export async function signIn(origin, username, password, events) {
     create: title => http.mutation(api.tasks.create, { title }),
     rename: (id, title) => http.mutation(api.tasks.rename, { id, title }),
     async refresh() {
-      if (!await refresh() || !await http.query(api.auth.isAuthenticated, {})) {
-        throw new Error("Session expired. Sign in again.");
-      }
+      if (!await refresh()) return;
+      if (!await http.query(api.auth.isAuthenticated, {})) expire();
     },
     async signOut() {
       closing = true;

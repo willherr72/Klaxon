@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node build-portable.mjs",
-    "test:portable": "node --test portable.test.mjs"
+    "test:portable": "node --test portable.test.mjs account-session.test.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "2.1.0",

@@ -6,6 +6,7 @@
   const origin = P0_PORTABLE_ORIGIN;
   let online = $state(navigator.onLine);
   let session = $state.raw(null);
+  let generation = 0;
   let connected = $state(false);
   let authenticated = $state(false);
   let rows = $state([]);
@@ -18,7 +19,7 @@
   let title = $state("");
   let editing = $state(null);
   let renamed = $state("");
-  let canWrite = $derived(!busy && (!origin || (online && authenticated && connected && !!receivedAt)));
+  let canWrite = $derived(!busy && !!receivedAt && (!origin || (online && authenticated && connected)));
 
   function receive(tasks) {
     rows = tasks;
@@ -26,20 +27,27 @@
   }
   function loadFixture() {
     try { receive(readFixture()); }
-    catch { error = "Could not read device storage. Reopen the same file or app with storage enabled."; }
+    catch {
+      receivedAt = "";
+      error = "Could not read device storage. Check the saved fixture and storage access, then read tasks again.";
+    }
   }
   onMount(() => { if (!origin) loadFixture(); });
 
   async function perform(action) {
     if (busy) return;
+    const started = generation;
     busy = true;
     error = "";
     notice = "";
     try { await action(); }
-    catch (err) { error = err.message; }
-    finally { busy = false; }
+    catch (err) { if (generation === started) error = err.message; }
+    finally { if (generation === started) busy = false; }
   }
   function endSession() {
+    generation++;
+    busy = false;
+    notice = "";
     session = null;
     connected = false;
     authenticated = false;
@@ -53,29 +61,33 @@
     if (!P0_PORTABLE_ORIGIN) return;
     const credentials = password;
     password = "";
-    session = await signIn(origin, username.trim(), credentials, {
+    const started = generation;
+    const opened = await signIn(origin, username.trim(), credentials, {
       connected: value => { connected = value; },
       authenticated: value => { authenticated = value; },
       rows: receive,
       error: message => { error = message; },
-      expired: () => { endSession(); error = "Session expired. Sign in again."; },
+      expired: message => { endSession(); error = message; },
     });
+    if (started !== generation) return;
+    session = opened;
     notice = "Signed in.";
   }
   async function save(id, draft) {
     const value = draft.trim();
     if (!value) return;
     if (origin) {
+      const active = session;
       try {
-        if (id) await session.rename(id, value);
-        else await session.create(value);
+        if (id) await active.rename(id, value);
+        else await active.create(value);
       } catch {
         throw new Error("Server write unconfirmed. Read tasks after reconnecting before retrying.");
       }
+      if (active !== session) return;
     } else {
       try {
-        saveFixture(id ?? crypto.randomUUID(), value);
-        receive(readFixture());
+        receive(saveFixture(id ?? crypto.randomUUID(), value));
       } catch {
         throw new Error("Could not save to device storage. Check available space and retry.");
       }
@@ -86,12 +98,27 @@
   }
   async function read() {
     if (origin) {
-      receive(await session.read());
+      const active = session;
+      const result = await active.read();
+      if (active !== session) return;
+      receive(result);
       notice = "Read from the server.";
     } else {
       loadFixture();
       if (!error) notice = "Read from device storage.";
     }
+  }
+  async function refreshSession() {
+    const active = session;
+    await active.refresh();
+    if (active === session) notice = "Session refreshed.";
+  }
+  async function signOut() {
+    const active = session;
+    await active.signOut();
+    if (active !== session) return;
+    endSession();
+    notice = "Signed out.";
   }
   function submit(event, action) { event.preventDefault(); void perform(action); }
 </script>
@@ -120,8 +147,8 @@
 {:else}
   {#if session}
     <div class="actions">
-      <button class="secondary" disabled={busy || !online} onclick={() => perform(async () => { await session.refresh(); notice = "Session refreshed."; })}>Refresh session</button>
-      <button class="secondary" disabled={busy || !online} onclick={() => perform(async () => { await session.signOut(); endSession(); notice = "Signed out."; })}>Sign out</button>
+      <button class="secondary" disabled={busy || !online} onclick={() => perform(refreshSession)}>Refresh session</button>
+      <button class="secondary" disabled={busy || !online} onclick={() => perform(signOut)}>Sign out</button>
     </div>
   {/if}
   <form onsubmit={e => submit(e, () => save(null, title))}>

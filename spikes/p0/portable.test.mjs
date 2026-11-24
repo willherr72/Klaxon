@@ -154,3 +154,29 @@ test("when device storage is full the draft can be retried without losing the sa
   await page.reload();
   await row.getByText(draft, { exact: true }).waitFor();
 });
+
+test("a corrupt sibling prevents a hidden create and repair permits a single retry", async t => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.goto(pageUrl);
+  const draft = page.getByLabel("Task title");
+  const create = page.getByRole("button", { name: "Create task" });
+  const key = "klaxon.p0.fixture.v1.broken";
+  await draft.fill("Recovered synthetic task");
+  await page.evaluate(key => localStorage.setItem(key, "{"), key);
+  await create.click();
+  await page.getByRole("alert").waitFor();
+  assert.equal(await draft.inputValue(), "Recovered synthetic task");
+  assert.equal(await page.evaluate(() => localStorage.length), 1);
+  const other = await context.newPage();
+  await other.goto(pageUrl);
+  await other.getByRole("alert").waitFor();
+  await other.getByLabel("Task title").fill("Blocked while unreadable");
+  assert.equal(await other.getByRole("button", { name: "Create task" }).isDisabled(), true);
+  await other.evaluate(key => localStorage.removeItem(key), key);
+  await create.click();
+  const row = page.getByRole("listitem");
+  await row.getByText("Recovered synthetic task").waitFor();
+  assert.equal(await page.evaluate(() => localStorage.length), 1);
+});
