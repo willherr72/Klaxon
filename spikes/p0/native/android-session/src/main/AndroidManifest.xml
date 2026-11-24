@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="Klaxon P0 session probe" android:allowBackup="false" android:testOnly="true" />
+    <instrumentation android:name=".SessionProbe" android:targetPackage="dev.klaxon.p0session" />
+</manifest>
