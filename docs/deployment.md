@@ -7,3 +7,4 @@ The published Convex allowances include 1M function calls, 20 GB-hours of action
 Pages Free allows 500 builds per month, one concurrent build, 20 minutes per build and 25 MiB per asset. Keep native installers in GitHub releases. [Pages limits](https://developers.cloudflare.com/pages/platform/limits/)
 
 A tested portable export/restore belongs to P1-07. Before release restore a checksum-verified archive into a different disposable workspace and compare domain records and relationships. Reissue credentials separately.
+Budget monthly calls, compute, I/O and egress across the team, including development projects. Database and file storage measure retained GB. Confirm remaining shared capacity in the dashboard before load tests.

@@ -7,3 +7,5 @@ Convex owns online state. An owner-indexed subscription to a bounded task list i
 Keep deterministic integration reconciliation and reminder scheduling in the backend. Give agents scoped, versioned HTTP/MCP access to the same validated domain functions. Select native vs web notification delivery from actual background and closed-app evidence. A provider acknowledgement alone cannot establish that a person received a reminder.
 
 Keep v1 authoritative during rehearsal. Use synthetic archives and a disposable workspace. Cross-device reconciliation, restore and explicit owner acceptance precede a change of authority. Running both schedulers on real data would make delivery results ambiguous.
+
+The loopback probe permits synthetic password registration and keeps tokens in memory. Before a hosted test, restrict enrollment to disposable test identities, use HTTPS and confirm the team is Free. The P1 auth decision depends on reload, expiry, concurrent refresh and revocation in actual clients. Keeping the same UI code does not make browser storage or native callbacks equivalent.

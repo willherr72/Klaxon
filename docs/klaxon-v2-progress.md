@@ -1,6 +1,6 @@
 # Klaxon 2.0 progress
 
-Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. P1 depends on the desktop-off acceptance gate below. PR log is empty.
+Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. P1 depends on the desktop-off acceptance gate below. [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
 
 ## Delivery sequence
 
@@ -8,7 +8,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 
 | Backlog | Sequence within phase | Acceptance |
 |---|---|---|
-| P0-01 through P0-07 | Baseline and isolation first. Auth/realtime owns shared identity. Investigate providers, Dot and delivery independently. Consolidate evidence in ADRs last. | Two intended devices share a synthetic task with desktop service off. Record login lifecycle, delivery matrix and Dot results or limitation. |
+| P0-01 through P0-07 | Baseline and isolation first. Auth/realtime owns shared identity. Investigate providers, Dot and delivery independently. Consolidate evidence in ADRs last. | Two intended devices share a synthetic task with Windows desktop powered off. Record login lifecycle, delivery matrix and Dot results or limitation. |
 | P1-01 through P1-09 | Foundation → schema → auth → domain → receipts → subscriptions. Export precedes legacy import. Finish observability before gate. | A03, A04, A17, A19, A20. Reconcile divergent device fixtures. |
 | P2-01 through P2-11 | Design primitives before editing/capture and Today. Organization and calendar feed planning. Prove reminder occurrences before delivery. Activity and PWA close phase. | A05–A11, A22, A24. Keyboard and touch walkthrough on target clients. |
 | P3-01 through P3-09 | Versioned API and credentials before MCP. Planning context before atomic apply and autonomy. Verify Dot playbook and daily lifecycle against safety suite. | A02–A04, A07, A17, A18, A22–A24. |
@@ -28,13 +28,13 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 
 | ID | Planned PR scope | Status | PR / verification |
 |---|---|---|---|
-| P0-01 | Baseline | In progress | — |
-| P0-02 | Isolation | In progress | — |
-| P0-03 | Auth/realtime spike | In progress | — |
-| P0-04 | Dot spike | In progress | — |
-| P0-05 | Integrations | In progress | — |
-| P0-06 | Reminders | In progress | — |
-| P0-07 | ADRs | In progress | — |
+| P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
+| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Hosted Free team pending. |
+| P0-03 | Auth/realtime spike | Browser passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Native and hosted gate open. |
+| P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
+| P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
+| P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). ADB found no attached Android device. |
+| P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
 | P1-02 | Schema | Queued | — |
 | P1-03 | Auth | Queued | — |
@@ -93,3 +93,9 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | P7-06 | Cutover | Queued | — |
 | P7-07 | Release/docs | Queued | — |
 | P7-08 | Iroh retirement | Queued | — |
+
+## Independent review
+
+Platform reviewer identified ambiguous authorization on receipt replay, inconsistent wording for desktop-off acceptance and missing quota accounting periods. Updated the API/security decisions to reauthorize before replay, aligned the test with physical desktop shutdown and clarified team-wide quota budgeting. Existing CI filters target main. A PR into v2 needs explicit local evidence until its own verification workflow lands.
+
+Correctness/security and regression reviewers found that an initially empty client list could let the cross-owner read assertion pass before the server replied. The revised probe awaits the authenticated query and checks same-owner updates in the rendered Svelte DOM. Independent rerun passed in Edge 158.0.4370.33. The schema-17 projection also passed on rerun.
