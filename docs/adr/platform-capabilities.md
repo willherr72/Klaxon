@@ -14,7 +14,7 @@ Provider interface review is complete for the operations below. Tenant-specific 
 
 Adopt Web Push as best effort and retain native scheduling as a fallback candidate until device evidence supports removing it. The server owns occurrences. Allocate one delivery route per device and occurrence, invalidate stale revisions, and provide overdue history and visible permission state. A push service accepting a request does not establish that the user saw a notification. [Edge Web Push implementation](https://learn.microsoft.com/en-us/microsoft-edge/progressive-web-apps/how-to/push)
 
-The Android SDK’s adb devices command returned an empty list on this Windows host. The repository has native notification support, but no verified disposable Web Push subscription was supplied. Neither platform has measured delivery results for this run.
+The repository has native notification support and an isolated P0 Web Push rehearsal. The physical matrix still needs a provisioned HTTPS receiver, two disposable subscriptions and operator sends. Use the [one-time owner runbook](../p0-reminder-owner-test.md) to measure the focused cell on each platform.
 
 | State | Windows Edge / installed PWA | Android Chrome / installed PWA |
 |---|---|---|
