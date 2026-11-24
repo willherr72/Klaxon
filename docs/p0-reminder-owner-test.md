@@ -26,6 +26,8 @@ The owner approved one new synthetic reminder on Windows Edge. Android is outsid
 
 For this run, the operator must set `targetMode` to `windows-only` in the private sender input and include only `subscriptions["windows-edge"]`. The sender rejects any extra subscription before claiming the run. Use the same private run directory throughout so the one-shot ledger covers every attempt.
 
+**November 24 attempt.** Will reported Windows locked before the send. The sender attempted delivery at 23:49:00.400 UTC and recorded HTTP 201 at 23:49:00.660 UTC. Score lock-screen visibility through 23:54:00.400 UTC, with the agreed unlock at or after 23:55 UTC. The single attempt is spent. The operator removed the matching export, sender input and test key file. The receiver remains available for step 4.
+
 ## Two-device background procedure (requires separate approval)
 
 **Pending on both devices.** This is a new one-time run. The focused run’s origin, subscriptions and key were retired. Before provisioning, agree with Will on a five-minute observation window and approval for the fresh receiver, two enrollments, one send per device and cleanup. The existing fixture supports this row without code changes.

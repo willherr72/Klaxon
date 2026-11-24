@@ -19,7 +19,7 @@ For the one-time focused run on November 24, 2026, both push services returned H
 | State | Windows Edge / installed PWA | Android Chrome / installed PWA |
 |---|---|---|
 | App focused | Pass, one visible copy (owner report, Edge tab) | Pass, one visible copy (owner report, Chrome tab) |
-| Background, screen locked | Pending | Pending |
+| Background, screen locked | One attempt accepted (HTTP 201), owner observation pending | Pending |
 | App window closed, browser permitted in background | Pending | Pending |
 | Browser explicitly quit or force-stopped | Pending | Pending |
 | Permission denied or revoked | Pending | Pending |
