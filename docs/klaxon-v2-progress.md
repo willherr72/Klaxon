@@ -8,7 +8,7 @@ Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in
 
 | Gate | Evidence already available | Next test and stop condition |
 |---|---|---|
-| P0-03 native session | Windows current-user DPAPI and Android Keystore restored inert markers across fresh processes. The packaged Android fixture preserved its record through a simulated outage, cleared its alias and record on definitive expiry, and required a fresh synthetic sign-in after provider recovery. Browser refresh/revocation and intercepted recovery tests also passed. | Exercise the Windows DPAPI candidate through the packaged WebView2 boundary. Hosted authenticated resume, refresh and revocation through OS-protected storage remain open on both platforms. The portable account client still requires sign-in after reload. |
+| P0-03 native session | Both packaged fixtures resumed inert sessions across fresh processes and remained signed out after logout. Windows WebView2 rejected corrupted DPAPI ciphertext and accepted the restored original. Android preserved its Keystore record through a simulated outage and cleared it on definitive expiry. | Hosted authenticated resume, refresh and revocation through OS-protected storage remain open on both platforms. The portable account client still requires sign-in after reload. |
 | P0-06 ordinary reminders | Five synthetic replay cases passed, including a denied or revoked Web Push permission. The same reopening must show denied status and overdue history for the current occurrence revision. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
 | P0-04 owner Dot | Scheduled browser fallback passed once with Windows off (owner-confirmed). Dot restored the verified client after the prior tab and preview were lost, signed in, saw a connected subscription and renamed exactly one pre-staged synthetic task. A fresh server read at 2026-11-24 16:31:38 UTC confirmed the same ID and new title. Will independently reported seeing the result on Android and Windows. | Remote MCP, scoped agent identity, audit attribution, idempotency receipts and expiry/revocation remain unverified. The browser smoke needs no repeat. See the [Dot playbook](dot-playbook.md#scheduled-browser-fallback) for the managed-preview caveat and evidence limits. |
 
@@ -54,7 +54,26 @@ On November 24, 2026 the previous APK failed the new assertion at the first cold
 
 Eight distinct app PIDs produced twelve status-only Tauri replies and zero Web Storage writes. The checked stores and origin cookies were empty. The harness found no marker in the inspected DOM, WebView console/errors or 760 app log lines. It uninstalled the fixture and removed the debug forwards. The emulator was stopped. Independent review checked the alias/file assertions and status-only bridge. The provider decision was simulated throughout.
 
-For integration, `npm run build` and `npm run test:portable` from `spikes/p0` built the ordinary offline client and passed 11/11 regressions with zero skips. **Next offline P0-03 test:** exercise inert Windows DPAPI session resume and sign-out through the packaged WebView2 client after a process restart. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. P1 remains queued.
+For integration, `npm run build` and `npm run test:portable` from `spikes/p0` built the ordinary offline client and passed 11/11 regressions with zero skips. Hosted refresh/revocation, physical hardware protection and real-device reminders remain open. P1 remains queued.
+
+### Packaged Windows DPAPI session evidence
+
+Tested source `d3fad4fa7dfac0c02fd9144880544910d1f8b52d` on November 24, 2026. From `spikes/p0`, `node native/package.mjs --target windows --session` built the isolated debug executable. `node native/smoke.mjs windows-session` passed on WebView2 158.0.4370.33, including three consecutive final runs. The executable SHA-256 was `754812e84f6c2b8f9f65fd3ff2dc656bad005934b5e6a27513a856d5ccbb45f5`. [Reproduction](../spikes/p0/native/README.md#packaged-offline-client)
+
+| Fresh Windows host and WebView | Result |
+|---|---|
+| 1 | Empty slot returned `signed-out`. Seed wrote one current-user DPAPI record. A duplicate seed returned `unavailable`. |
+| 2 | After the harness altered one ciphertext byte, cold resume returned `unavailable` and left the damaged bytes intact. |
+| 3 | Restoring the original bytes allowed a cold resume. The simulated provider accepted the fixed marker. Sign-out deleted the slot. |
+| 4 | Cold resume returned `signed-out`. The slot remained absent and the harness removed the entire test directory, including its WebView2 profile. |
+
+Each run checked seven raw Tauri replies, all exact scalar statuses. During the session actions there were zero Web Storage writes and the inspected local/session storage, origin cookies, IndexedDB and Cache Storage were empty. No fixture marker was detected in the ciphertext, inspected DOM, WebView console/errors during the actions, or native stdout/stderr captured from launch through close. This covers completed operations within one Windows user profile. The provider acceptance decision used a local fixture.
+
+The no-handler build failed the first resume assertion. An initial Cargo example failed to start, and a repeated smoke exposed a WebView2 endpoint that could outlive its host. The final fixture uses a dedicated binary and waits for endpoint retirement. It requires a distinct native PID, debugger endpoint and fresh page at every restart.
+
+The unsigned Windows PR job now builds and exercises the session fixture after its ordinary client test. Local integration checks from `spikes/p0` passed: `node native/package.mjs --target windows`, `node native/smoke.mjs windows`, `npm run build` and `npm run test:portable` (11/11). The PowerShell 7 standalone DPAPI suite `node --test spikes/p0/native/session.test.mjs` passed 3/3 from the repository root. The Android x86_64 session APK cross-built with `node native/package.mjs --target x86_64 --session`; no Android runtime was exercised in this change.
+
+The independent P0-06 review found that all remaining matrix rows need a working sender, a disposable subscription and observations on actual Windows and Android targets. The five existing synthetic traces already cover the interpretation of receipts, duplicates, revisions, cancellation, reconnect and denied permission. [Device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
 
 ### Android Keystore emulator evidence
 
@@ -132,7 +151,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
-| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. The standalone storage probes and packaged Android synthetic resume/sign-out passed. Restoring an authenticated session through the packaged account client remains open. |
+| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). The [Windows](#packaged-windows-dpapi-session-evidence) and [Android](#packaged-android-session-evidence) packaged synthetic resume/sign-out tests passed. Restoring a hosted account session through either packaged client remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix and synthetic permission evidence](adr/platform-capabilities.md#ordinary-reminder-delivery). Actual Windows and Android delivery remain unmeasured. |
