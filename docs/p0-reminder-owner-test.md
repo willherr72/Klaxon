@@ -1,6 +1,6 @@
 # One-time reminder check on Windows and Android
 
-**Awaiting provisioning, November 24, 2026.** The owner-confirmed Free Convex Development deployment has demonstrated task sync. This test uses a separate HTTPS receiver and an operator-run sender. Will can start when the operator supplies the test URL. [Deployment record](klaxon-v2-progress.md#backlog-register) · [Free-tier gate](deployment.md)
+**Receiver provisioned, November 24, 2026.** The operator verified the temporary HTTPS link and supplied it directly to Will. The receiver uses a Cloudflare Quick Tunnel to a loopback server on the Windows test host. Keep the host awake and both processes running through cleanup. Restarting the tunnel changes the origin and makes the old link unusable. The owner-confirmed Free Convex Development deployment remains separate. [Provisioning record](klaxon-v2-progress.md#one-time-reminder-sender-and-receiver-rehearsal) · [Quick Tunnel lifetime](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)
 
 ## Before inviting Will
 
