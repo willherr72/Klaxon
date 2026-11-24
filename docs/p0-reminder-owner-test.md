@@ -15,7 +15,18 @@
 3. Keep both tabs focused, screens unlocked and devices online. Tell the operator to send. Watch for **Klaxon P0 test** for five minutes, including Windows Notification Center and the Android notification shade. Record the target and ID from each OS notification, first-seen UTC time and copy count. Record “none seen” at cutoff and any later sighting separately.
 4. Select **Read worker receipt**. Record the matching worker time or “none recorded.” Select **Remove test subscription** and delete the downloads. The operator deletes the private inputs and retires the test key and origin. Reset only the test site’s permission if approved.
 
-## Next physical check: background tabs, screens locked
+## Current physical run: Windows Edge, screen locked
+
+The owner approved one new synthetic reminder on Windows Edge. Android is outside this run. The operator staged a Windows-only receiver on a fresh disposable HTTPS origin, verified its five public resources and restricted file serving, and gave the setup link to the owner. The live URL and private exports stay outside the repository.
+
+1. **Enroll.** Open the supplied link in regular Windows Edge. Click **Enable test reminders**, allow notifications for this site, then click **Save private subscription**. Leave `windows-edge-locked-test-subscription.json` in Downloads. Tell the operator enrollment is complete and keep the PC unlocked until a time is agreed.
+2. **Agree on the window.** The operator privately validates the Windows export and sends the synthetic occurrence ID, proposed lock time, send time and earliest unlock time. Confirm the times before the operator arms the single attempt. Choose a window compatible with the PC’s existing sleep settings. Leave Edge running, minimize the window and lock Windows before the send time.
+3. **Observe.** During the five-minute window, note the first-seen time and number of Windows lock-screen notifications matching **Klaxon P0 test**, `windows-edge` and the agreed occurrence ID. Record a hidden preview as uncertain. Record a first sighting after unlock separately.
+4. **Read and clean up.** After unlocking, return to the same page and select **Read worker receipt**. Record the matching occurrence, worker timestamp, display-request result and any duplicate rows before clicking **Remove test subscription**. Confirm removal. The operator records the actual attempt and result, removes the scoped export and disposable private files, then retires the receiver. An uncertain send consumes the single attempt.
+
+For this run, the operator must set `targetMode` to `windows-only` in the private sender input and include only `subscriptions["windows-edge"]`. The sender rejects any extra subscription before claiming the run. Use the same private run directory throughout so the one-shot ledger covers every attempt.
+
+## Two-device background procedure (requires separate approval)
 
 **Pending on both devices.** This is a new one-time run. The focused run’s origin, subscriptions and key were retired. Before provisioning, agree with Will on a five-minute observation window and approval for the fresh receiver, two enrollments, one send per device and cleanup. The existing fixture supports this row without code changes.
 
