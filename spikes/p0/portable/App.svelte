@@ -101,11 +101,21 @@
   async function read() {
     if (origin) {
       const active = session;
-      const version = rowsVersion;
-      const result = await active.read();
+      let version = rowsVersion;
+      let result = await active.read();
       if (active !== session) return;
-      // Keep any subscription rows received while the HTTP read was pending.
-      if (version === rowsVersion) receive(result);
+      // The two transports expose no common revision. A read started after the push
+      // can reconcile either arrival order without guessing which title is newer.
+      if (version !== rowsVersion) {
+        version = rowsVersion;
+        result = await active.read();
+        if (active !== session) return;
+        if (version !== rowsVersion) {
+          notice = "Tasks changed during both reads. Showing subscription updates.";
+          return;
+        }
+      }
+      receive(result);
       notice = "Read from the server.";
     } else {
       loadFixture();

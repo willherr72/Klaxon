@@ -126,13 +126,23 @@ test("a read finishing after expiry cannot expose the previous account's rows", 
   await page.getByText("Waiting for tasks.").waitFor();
 });
 
-test("a manual read cannot replace rows delivered by the subscription while it was pending", { timeout: 20000 }, async t => {
+for (const source of ["subscription", "HTTP", "continuously changing subscription"]) {
+  test("a manual read overlapping a subscription reconciles the latest " + source + " rows",
+    { timeout: 20000 }, t => checkOverlappingRead(t, source));
+}
+
+async function checkOverlappingRead(t, source) {
   const oldRow = { _id: "test-row", title: "Original task title" };
   const newRow = { ...oldRow, title: "Updated task title" };
+  const latest = source === "subscription" ? newRow : { ...oldRow, title: "Latest HTTP title" };
+  let reads = 0;
   const readStarted = Promise.withResolvers();
   const finishRead = Promise.withResolvers();
+  const followupStarted = Promise.withResolvers();
+  const finishFollowup = Promise.withResolvers();
   const subscribed = Promise.withResolvers();
   t.after(() => finishRead.resolve());
+  t.after(() => finishFollowup.resolve());
 
   // Convex sync timestamps are base64-encoded little-endian uint64s.
   function timestamp(tick) {
@@ -155,9 +165,14 @@ test("a manual read cannot replace rows delivered by the subscription while it w
     }
     assert.equal(path, "tasks:list");
     assert.equal(route.request().headers().authorization, "Bearer access-1");
+    if (++reads === 2) {
+      followupStarted.resolve();
+      if (source === "continuously changing subscription") await finishFollowup.promise;
+      return success([source === "continuously changing subscription" ? newRow : latest]);
+    }
     readStarted.resolve();
     await finishRead.promise;
-    await success([oldRow]);
+    await success([source === "subscription" ? oldRow : latest]);
   }, (message, socket) => {
     if (message.type === "Authenticate") {
       transition(socket, { identity: message.baseVersion + 1 });
@@ -182,10 +197,19 @@ test("a manual read cannot replace rows delivered by the subscription while it w
   await tasks.getByText(newRow.title, { exact: true }).waitFor();
 
   finishRead.resolve();
-  await page.getByRole("status").getByText("Read from the server.").waitFor();
-  assert.equal(await tasks.locator("strong").textContent(), newRow.title);
+  let notice = "Read from the server.";
+  if (source === "continuously changing subscription") {
+    await followupStarted.promise;
+    (await subscribed.promise)(latest);
+    await tasks.getByText(latest.title, { exact: true }).waitFor();
+    finishFollowup.resolve();
+    notice = "Tasks changed during both reads. Showing subscription updates.";
+  }
+  await page.getByRole("status").getByText(notice).waitFor();
+  assert.equal(await tasks.locator("strong").textContent(), latest.title);
+  assert.equal(reads, 2);
   assert.deepEqual(errors, []);
-});
+}
 
 test("a negative auth check after explicit token rotation ends the session", async t => {
   const { page, login } = await client(t, async (path, route, success) => {
