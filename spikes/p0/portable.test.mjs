@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -18,14 +18,24 @@ before(async () => {
 });
 after(async () => { await browser?.close(); });
 
-async function buildForTest(t, origin) {
+async function buildForTest(t, origin, ...options) {
   const outdir = await mkdtemp(join(tmpdir(), "klaxon-portable-"));
   t.after(() => rm(outdir, { recursive: true, force: true }));
-  await run(process.execPath, ["build-portable.mjs", "--outdir", outdir], {
+  await run(process.execPath, ["build-portable.mjs", "--outdir", outdir, ...options], {
     env: { ...process.env, P0_PUBLIC_DEV_ORIGIN: origin },
   });
   return pathToFileURL(join(outdir, "index.html")).href;
 }
+
+test("the Android SDK panel is confined to offline session assets and excludes native issuer values", async t => {
+  const fixture = new URL(await buildForTest(t, "", "--session"));
+  const html = await readFile(fixture, "utf8");
+  assert.ok(html.includes("fixture_sdk_access") && html.includes("connect-src 'none'"));
+  assert.ok(!html.includes("fixture_task_list"), "Windows task transport in Android assets");
+  assert.ok(!/KLAXON-P0-INERT\/|p0-inert-access-[ab]/.test(html), "native fixture material in web assets");
+  assert.ok(!(await readFile(new URL(pageUrl), "utf8")).includes("fixture_sdk_access"));
+  await assert.rejects(buildForTest(t, "https://synthetic-portable-test.convex.cloud", "--session"), /runs offline/);
+});
 
 test("the build rejects local, insecure and credential-bearing account destinations", async t => {
   for (const invalid of ["http://127.0.0.1:3210", "http://unsafe.convex.cloud",

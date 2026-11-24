@@ -14,7 +14,9 @@ const accessForms = ["a", "b"].flatMap(owner => {
 });
 export const containsSdkAccess = value => accessForms.some(form => value.includes(form));
 
-export async function checkSessionPage(page, actions, sdk = false) {
+export async function checkSessionPage(page, actions, sdkPlatform) {
+  const sdk = sdkPlatform !== undefined;
+  if (sdk) assert.ok(["android", "windows"].includes(sdkPlatform), "unknown SDK fixture platform");
   assert.equal(new URL(page.url()).origin, "http://tauri.localhost");
   await page.getByText("Local fixture", { exact: true }).waitFor();
   const panel = page.getByRole("region", { name: sdk ? "SDK session fixture" : "Native session fixture" });
@@ -53,25 +55,16 @@ export async function checkSessionPage(page, actions, sdk = false) {
   page.on("pageerror", error => { if (leaks(error.message)) pageErrorLeak = true; });
 
   // Observe the actual Tauri callbacks before the Svelte component handles them.
-  await page.evaluate(sdk => {
+  await page.evaluate(({ sdk, android }) => {
     const callbacks = window.__TAURI_INTERNALS__.callbacks;
     window.p0Replies = [];
-    // Attribute each access reply to the successful SDK IPC call. Tauri on
-    // Windows can use either a custom-protocol POST or WebView2 postMessage.
+    // Attribute a reply to the actual SDK command before recording its owner.
     const accessCallbacks = new Set();
     const accessErrors = new Set();
     if (sdk) {
-      const originalFetch = window.fetch;
-      window.fetch = function (input, init) {
-        if (String(input) === "http://ipc.localhost/fixture_sdk_access") {
-          accessCallbacks.add(Number(init.headers.get("Tauri-Callback")));
-          accessErrors.add(Number(init.headers.get("Tauri-Error")));
-        }
-        return originalFetch.call(this, input, init);
-      };
-      const webview = window.chrome.webview;
-      const postMessage = webview.postMessage.bind(webview);
-      webview.postMessage = function (data) {
+      const bridge = android ? window.ipc : window.chrome.webview;
+      const nativePost = bridge.postMessage.bind(bridge);
+      const postMessage = function (data) {
         if (typeof data === "string") {
           const frame = JSON.parse(data);
           if (frame.cmd === "fixture_sdk_access") {
@@ -79,8 +72,23 @@ export async function checkSessionPage(page, actions, sdk = false) {
             accessErrors.add(frame.error);
           }
         }
-        return postMessage(data);
+        return nativePost(data);
       };
+      if (android) {
+        // Wry's JavaScript interface can expose a read-only method on Android.
+        window.ipc = { postMessage };
+        if (window.ipc.postMessage !== postMessage) throw new Error("Could not observe Android IPC");
+      } else {
+        bridge.postMessage = postMessage;
+        const originalFetch = window.fetch;
+        window.fetch = function (input, init) {
+          if (String(input) === "http://ipc.localhost/fixture_sdk_access") {
+            accessCallbacks.add(Number(init.headers.get("Tauri-Callback")));
+            accessErrors.add(Number(init.headers.get("Tauri-Error")));
+          }
+          return originalFetch.call(this, input, init);
+        };
+      }
     }
     callbacks.set = function (id, callback) {
       return Map.prototype.set.call(this, id, data => {
@@ -90,7 +98,7 @@ export async function checkSessionPage(page, actions, sdk = false) {
         return callback(data);
       });
     };
-  }, sdk);
+  }, { sdk, android: sdkPlatform === "android" });
   async function checkPageState() {
     const store = await page.evaluate(async () => ({
       local: localStorage.length, session: sessionStorage.length, hasCookie: document.cookie !== "",

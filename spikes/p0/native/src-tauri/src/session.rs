@@ -27,6 +27,28 @@ async fn fixture_session(
     }
 }
 
+#[tauri::command]
+async fn fixture_sdk_access(
+    window: WebviewWindow,
+    plugin: State<'_, FixturePlugin>,
+) -> Result<&'static str, &'static str> {
+    if !crate::is_fixture_window(&window) {
+        return Err("unavailable");
+    }
+    let reply: String = plugin
+        .0
+        .run_mobile_plugin_async("sdkAccess", ())
+        .await
+        .map_err(|_| "unavailable")?;
+    match reply.as_str() {
+        "p0-inert-access-a" => Ok("p0-inert-access-a"),
+        "p0-inert-access-b" => Ok("p0-inert-access-b"),
+        "signed-out" => Err("signed-out"),
+        "retry-required" => Err("retry-required"),
+        _ => Err("unavailable"),
+    }
+}
+
 pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
     builder
         .plugin(
@@ -39,5 +61,8 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![fixture_session])
+        .invoke_handler(tauri::generate_handler![
+            fixture_session,
+            fixture_sdk_access
+        ])
 }

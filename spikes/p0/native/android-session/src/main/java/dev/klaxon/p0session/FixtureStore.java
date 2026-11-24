@@ -43,7 +43,10 @@ public final class FixtureStore {
 
     public void forget(String owner) throws GeneralSecurityException, IOException {
         store.deleteEntry(alias(owner));
-        Files.deleteIfExists(slot(owner).toPath());
+        File file = slot(owner);
+        Files.deleteIfExists(file.toPath());
+        Files.deleteIfExists(file.toPath().resolveSibling(file.getName() + ".new"));
+        Files.deleteIfExists(file.toPath().resolveSibling(file.getName() + ".bak"));
     }
 
     private void save(String owner, SecretKey key, int generation) throws Exception {
@@ -66,6 +69,10 @@ public final class FixtureStore {
     }
 
     public void seed(String owner) throws Exception {
+        seed(owner, 1);
+    }
+
+    public void seed(String owner, int generation) throws Exception {
         if (store.containsAlias(alias(owner)) || slot(owner).exists()) {
             throw new IllegalStateException("Clear the previous fixture before signing in");
         }
@@ -75,7 +82,7 @@ public final class FixtureStore {
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256).build());
-        save(owner, generator.generateKey(), 1);
+        save(owner, generator.generateKey(), generation);
     }
 
     public void rotate(String owner, int generation) throws Exception {

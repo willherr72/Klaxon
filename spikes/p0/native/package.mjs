@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { constants, existsSync } from "node:fs";
+import { constants, existsSync, lstatSync } from "node:fs";
 import { copyFile, mkdir, open, rm, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -21,12 +21,29 @@ const native = fileURLToPath(new URL(".", import.meta.url));
 const spike = fileURLToPath(new URL("../", import.meta.url));
 const run = join(native, ".run");
 const androidHome = join(run, "android-user");
+const gradle = join(native, "src-tauri/gen/android");
+const androidSessionSources = [
+  ["packaged-session/SessionPlugin.kt", "dev/klaxon/p0native"],
+  ["android-session/src/main/java/dev/klaxon/p0session/FixtureStore.java", "dev/klaxon/p0session"],
+].map(([source, pkg]) => ({
+  source: join(native, source),
+  destination: join(gradle, "app/src/debug/java", pkg, basename(source)),
+}));
 const config = join(run, "native-csp.json");
 await mkdir(run, { recursive: true });
 const env = { ...process.env, ANDROID_USER_HOME: androidHome, P0_PUBLIC_DEV_ORIGIN: values.origin ?? "" };
 const execute = (command, args, cwd) => execFileSync(command, args, { cwd, env, stdio: "inherit" });
 
 async function build() {
+  if (values.target !== "windows") {
+    // Gradle compiles these paths in every debug APK, even without p0-session.
+    for (const { destination } of androidSessionSources) {
+      if (lstatSync(destination, { throwIfNoEntry: false })) {
+        throw new Error("Found staged Android fixture source at " + destination +
+          ". Verify any interrupted build has stopped, then move this file out of the generated Android source tree before retrying.");
+      }
+    }
+  }
   // The public origin drives both the portable client's CSP and the native response header.
   const windowsSession = values.target === "windows" && values.session;
   const frontend = windowsSession ? ".run/windows-session-frontend" : ".frontend";
@@ -45,7 +62,6 @@ async function build() {
     return;
   }
   await mkdir(androidHome, { recursive: true });
-  const gradle = join(native, "src-tauri/gen/android");
   if (!existsSync(join(gradle, "settings.gradle"))) {
     execute("cargo", ["tauri", "android", "init", "--ci", "--skip-targets-install"], native);
   }
@@ -56,16 +72,10 @@ async function build() {
   const staged = [];
   try {
     if (values.session) {
-      const src = join(gradle, "app/src/debug/java");
-      for (const [source, pkg] of [
-        ["packaged-session/SessionPlugin.kt", "dev/klaxon/p0native"],
-        ["android-session/src/main/java/dev/klaxon/p0session/FixtureStore.java", "dev/klaxon/p0session"],
-      ]) {
-        const dir = join(src, pkg);
-        await mkdir(dir, { recursive: true });
-        const dest = join(dir, basename(source));
-        await copyFile(join(native, source), dest, constants.COPYFILE_EXCL);
-        staged.push(dest);
+      for (const { source, destination } of androidSessionSources) {
+        await mkdir(dirname(destination), { recursive: true });
+        await copyFile(source, destination, constants.COPYFILE_EXCL);
+        staged.push(destination);
       }
     }
     execute("cargo", ["tauri", "android", "build", "--ci", "--debug", "--target", values.target,

@@ -10,8 +10,8 @@ import { chromium } from "playwright-core";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
-
-import { exerciseSdkHandoff } from "./packaged-session/sdk-check.mjs";
+import { exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
+import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -210,12 +210,12 @@ async function windowsSession(sdk = false) {
       assert.equal(await policy.getAttribute("content"), expectedPolicy);
       assert.equal(await page.evaluate(() => window.p0Replies === undefined), true, "expected a fresh WebView");
       webviewVersion = page.context().browser().version();
-      await checkSessionPage(page, actions, sdk);
+      await checkSessionPage(page, actions, sdk ? "windows" : undefined);
       replies += actions.filter(Array.isArray).length;
     }, capture);
   }
   try {
-    if (sdk) await exerciseSdkHandoff(launch, root, record);
+    if (sdk) await exerciseWindowsSdkHandoff(launch, root, record);
     else await exerciseNativeTasks(launch, root, record);
     for (const chunks of [capture.stdout, capture.stderr]) {
       const log = Buffer.concat(chunks);
@@ -241,17 +241,31 @@ async function windowsSession(sdk = false) {
 
 async function android() {
   assert.match(serial ?? "", /^emulator-\d+$/, "Pass a disposable AVD serial");
-  const deviceAdb = (...args) => execFileSync(process.env.ADB ?? "adb", ["-s", serial, ...args],
-    { encoding: "utf8", timeout: 30000 }).trim();
+  const sdk = platform === "android-sdk";
+  const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
+    ...(sdk ? ["-H", "127.0.0.1"] : []), "-s", serial, ...args,
+  ], { input, timeout: 30000 });
+  const deviceAdb = (...args) => deviceAdbBytes(args).toString("utf8").trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
-  const session = platform === "android-session";
+  const session = platform === "android-session" || sdk;
   if (session) assert.match(deviceAdb("emu", "avd", "name").split(/\r?\n/)[0].trim(), /^KlaxonSessionP0_[A-Za-z0-9]+$/);
   assert.equal(deviceAdb("shell", "getprop", "sys.boot_completed"), "1");
   assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
   assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:\s*none/i);
   assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "", "Use an AVD without a previous probe installation");
+  function assertNoMappings() {
+    assert.ok(!deviceAdb("forward", "--list").split(/\r?\n/).some(line => line.split(/\s+/)[0] === serial),
+      "Require an AVD without ADB forwards");
+    assert.equal(deviceAdb("reverse", "--list"), "", "Require an AVD without ADB reverse routes");
+  }
+  if (sdk) {
+    assert.equal(deviceAdb("shell", "getprop", "ro.product.cpu.abi"), "x86_64");
+    assert.equal(deviceAdb("shell", "settings", "get", "global", "wifi_on"), "0", "Disable Wi-Fi on the AVD");
+    assertNoMappings();
+  }
   const apk = join(nativeDir, session ? ".run/klaxon-p0-x86_64-session.apk" : ".run/klaxon-p0-x86_64-fixture.apk");
-  deviceAdb("install", apk);
+  await access(apk);
+  assert.match(deviceAdb("install", apk), /Success/);
   try {
     async function withActivity(action) {
       deviceAdb("shell", "am", "start", "-W", "-n", appId + "/.MainActivity");
@@ -277,17 +291,22 @@ async function android() {
         finally { deviceAdb("forward", "--remove", "tcp:" + port); }
       }
     }
+    if (sdk) return await exerciseAndroidSdkHandoff(withActivity, deviceAdb, deviceAdbBytes, appId);
     if (session) return await exerciseSession(withActivity, deviceAdb, appId);
     const saved = await withActivity(exercise);
     deviceAdb("shell", "am", "force-stop", appId);
     await withActivity(page => verifyRestart(page, saved, apk));
   } finally {
-    deviceAdb("uninstall", appId);
+    assert.match(deviceAdb("uninstall", appId), /Success/);
     assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "");
+    if (sdk) {
+      assertNoMappings();
+      console.log("Android fixture APK uninstalled. ADB forwards and reverse routes are empty.");
+    }
   }
 }
 
 if (platform === "windows") await windows();
 else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
-else if (platform === "android" || platform === "android-session") await android();
-else throw new Error("Choose windows, windows-session, windows-sdk, android or android-session. Android requires a disposable emulator serial.");
+else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android();
+else throw new Error("Choose windows, windows-session, windows-sdk, android, android-session or android-sdk. Android requires a disposable emulator serial.");

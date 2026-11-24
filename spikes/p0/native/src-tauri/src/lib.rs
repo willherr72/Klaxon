@@ -16,7 +16,7 @@ fn is_fixture_window(window: &tauri::WebviewWindow) -> bool {
 
 #[cfg(all(target_os = "android", feature = "p0-session"))]
 fn allows_fixture(window: &tauri::WebviewWindow, operation: &str) -> bool {
-    is_fixture_window(window) && matches!(operation, "seed" | "resume" | "sign-out")
+    is_fixture_window(window) && matches!(operation, "seed" | "seed-peer" | "resume" | "sign-out")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
