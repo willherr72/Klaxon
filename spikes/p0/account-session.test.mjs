@@ -69,6 +69,25 @@ async function client(t, respond) {
     rejectSocketToken: async () => (await authenticating.promise)() };
 }
 
+test("reloading after an authenticated read requires sign-in and clears the account view", async t => {
+  const row = { _id: "test-row", title: "Transient task" };
+  const { page, login } = await client(t, async (path, route, success) => {
+    assert.equal(path, "tasks:list");
+    await success([row]);
+  });
+  await login("synthetic-a");
+  await page.getByRole("button", { name: "Read tasks" }).click();
+  await page.getByRole("listitem").getByText(row.title).waitFor();
+  assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+  assert.deepEqual(await page.context().cookies(), []);
+
+  await page.reload();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  assert.equal(await page.getByLabel("Password").inputValue(), "");
+  assert.equal(await page.getByText(row.title).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Read tasks" }).count(), 0);
+});
+
 test("a transport failure during SDK token refresh returns the user to sign-in", { timeout: 20000 }, async t => {
   const { page, login, errors, rejectSocketToken } = await client(t, async (path, route) => {
     assert.equal(path, "auth:refreshSession");
