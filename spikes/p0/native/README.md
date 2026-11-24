@@ -32,14 +32,14 @@ rustup target add x86_64-linux-android
 node native/package.mjs --target x86_64
 ```
 
-Create a fresh Android Studio virtual device using a Google Play API 36 x86_64 image. Boot it fully and enable airplane mode. Keep it as the sole attached ADB device for the smoke. Replace `emulator-5588` below with its actual serial.
+Create a fresh Android Studio virtual device using a Google Play API 36 x86_64 image. Boot it fully and enable airplane mode with Wi-Fi off. Replace `emulator-5588` below with its actual serial.
 
 ```powershell
 & $env:ADB devices
 node native/smoke.mjs android emulator-5588
 ```
 
-The harness checks the serial, QEMU and boot properties, verifies the spike package is absent, and installs `native/.run/klaxon-p0-x86_64-fixture.apk`. It drives the app’s WebView, force-stops and relaunches the Android activity to check fixture persistence, then uninstalls the spike. Debug signing uses the spike's own Android user home at `native/.run/android-user`.
+The harness checks the serial, QEMU and boot properties, verifies airplane mode and the absence of a default network, checks that the spike package is absent, and installs `native/.run/klaxon-p0-x86_64-fixture.apk`. It drives the app’s WebView over an ADB debug socket, force-stops and relaunches the Android activity to check fixture persistence, then uninstalls the spike. Debug signing uses the spike's own Android user home at `native/.run/android-user`.
 
 ## Arm64 handoff
 

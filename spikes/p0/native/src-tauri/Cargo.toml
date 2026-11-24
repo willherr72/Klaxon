@@ -16,3 +16,7 @@ tauri = { version = "=2.11.0", features = [] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# Preserve debuggable WebViews while keeping the APK practical to transfer to a device.
+[profile.dev.package.klaxon-p0-native]
+strip = "debuginfo"

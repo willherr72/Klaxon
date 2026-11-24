@@ -56,7 +56,8 @@ jobs:
   windows:
     name: Unsigned Windows WebView2 rehearsal
     needs: validate
-    runs-on: windows-2025
+    # WebView2 automation on Server 2025: https://github.com/actions/runner-images/issues/14738
+    runs-on: windows-2022
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -72,6 +73,8 @@ jobs:
           artifact-ids: ${{ needs.validate.outputs.fixture-id }}
           path: spikes/p0/native/.frontend
           merge-multiple: true
+      - name: Verify the Evergreen WebView2 Runtime
+        run: ./spikes/p0/ci/webview2-runtime.ps1
       - name: Build isolated Tauri executable
         working-directory: spikes/p0
         run: cargo build --locked --manifest-path native/src-tauri/Cargo.toml --features custom-protocol

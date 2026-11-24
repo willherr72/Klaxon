@@ -62,18 +62,26 @@ async function withWindowsHost(exe, profile, action) {
   } });
   const exited = new Promise(resolve => { host.once("exit", resolve); host.once("error", resolve); });
   let browser;
+  const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
+  const observed = new Set();
   try {
     for (let attempt = 0; attempt < 150; attempt++) {
-      if (host.exitCode !== null || !host.pid) throw new Error("Windows host exited before attachment");
-      const data = await readFile(join(profile, "EBWebView", "DevToolsActivePort"), "utf8").catch(() => "");
-      const [port, path] = data.trim().split(/\r?\n/);
-      if (/^\d+$/.test(port) && path?.startsWith("/devtools/browser/")) {
-        browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + path, { timeout: 2000 }).catch(() => undefined);
-        if (browser) break;
+      if (host.exitCode !== null || !host.pid) throw new Error("Windows host exited before attachment (exit " + host.exitCode + ")");
+      for (const file of portFiles) {
+        const data = await readFile(join(profile, file), "utf8").catch(() => "");
+        if (!data) continue;
+        observed.add(file);
+        const [port, path] = data.trim().split(/\r?\n/);
+        if (/^\d+$/.test(port) && path?.startsWith("/devtools/browser/")) {
+          browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + path, { timeout: 2000 }).catch(() => undefined);
+          if (browser) break;
+        }
       }
+      if (browser) break;
       await delay(300);
     }
-    assert.ok(browser, "WebView2 did not open its CDP socket");
+    assert.ok(browser, "WebView2 attach timed out, host PID " + host.pid + ", exit " + host.exitCode +
+      ", observed port files: " + ([...observed].join(", ") || "none"));
     const context = browser.contexts()[0];
     return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }));
   } finally {
@@ -117,8 +125,11 @@ async function android() {
       const port = deviceAdb("forward", "tcp:0", "localabstract:" + socket);
       let browser;
       try {
-        for (let attempt = 0; attempt < 80; attempt++) {
-          if (deviceAdb("shell", "cat", "/proc/net/unix").includes("@" + socket)) break;
+        const endpoint = "http://127.0.0.1:" + port;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const targets = await fetch(endpoint + "/json/list", { signal: AbortSignal.timeout(1500) })
+            .then(response => response.json()).catch(() => []);
+          if (targets.some(target => target.type === "page" && target.url === "http://tauri.localhost/")) break;
           await delay(300);
         }
         browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
