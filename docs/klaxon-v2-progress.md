@@ -8,9 +8,23 @@ Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in
 
 | Gate | Evidence already available | Next test and stop condition |
 |---|---|---|
-| P0-03 native session | Browser refresh/revocation and intercepted recovery tests pass. Packaged fixtures retain a local row across restart. The account client requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
-| P0-06 ordinary reminders | The physical sync smoke exercised task editing. Windows and Android notification delivery remain unmeasured. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
+| P0-03 native session | Windows current-user DPAPI restored inert markers across fresh processes with simulated provider confirmation. Browser refresh/revocation and intercepted recovery tests also passed. The packaged account client still requires sign-in after reload. | A packaged client with OS-protected session storage is needed on Windows and Android. Using an enrolled disposable account, restart, verify authenticated access, exercise expiry/refresh, then sign out and check that relaunch requires login. Keep the auth decision open if storage is absent or a revoked session still works. |
+| P0-06 ordinary reminders | The offline reminder evidence fixture passed four synthetic replay cases. Windows and Android notification delivery remain unmeasured. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
 | P0-04 owner Dot | Scheduled browser fallback passed once with Windows off (owner-confirmed). Dot restored the verified client after the prior tab and preview were lost, signed in, saw a connected subscription and renamed exactly one pre-staged synthetic task. A fresh server read at 2026-11-24 16:31:38 UTC confirmed the same ID and new title. Will independently reported seeing the result on Android and Windows. | Remote MCP, scoped agent identity, audit attribution, idempotency receipts and expiry/revocation remain unverified. The browser smoke needs no repeat. See the [Dot playbook](dot-playbook.md#scheduled-browser-fallback) for the managed-preview caveat and evidence limits. |
+
+### Windows native session and reminder evidence
+
+Tested source `d3b90b345fe3dbec5e102344047d12f010b00917` on November 24, 2026, using Node 24.12.0 and Windows PowerShell 5.1. The [candidate decision](adr/p0-architecture.md#p0-03-native-session-candidate) and the [offline probe](../spikes/p0/native/README.md#synthetic-secure-session-probe) apply only to P0. Both new suites now run in the existing unsigned v2 PR workflow.
+
+| Command | Observed result |
+|---|---|
+| From root, `node --test spikes/p0/native/session.test.mjs` | 3/3 passed, zero skips. Twenty fresh Windows processes exercised DPAPI for two synthetic application owners in one Windows profile. An outage denied access and retained the marker for retry. Successful refresh rotated it. Expired and replayed markers were rejected by the simulated provider. Logout survived relaunch. Copying another owner's ciphertext denied access. Marker checks passed for worker output and UTF-8/UTF-16LE plaintext in the fixture directory. |
+| From root, `node --test spikes/p0/reminder-evidence.test.mjs` | 4/4 passed. Synthetic traces rejected duplicate, superseded and canceled displays, distinguished receipts from visible delivery, and required current overdue history after reconnect. The [physical device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) is still pending. |
+| From `spikes/p0`, `node --test account-session.test.mjs` | 6/6 intercepted browser regressions passed, covering memory-only reload, failed refresh, late reads and sign-out ordering. |
+
+Independent review found that a failed DPAPI read could discard a recoverable record. The revised worker preserves unreadable ciphertext and returns no session. The reviewer reran the corrected three Windows cases and the four reminder cases. The storage probe exercised local logout only. Packaged Tauri integration and server revocation of a restored native session remain open.
+
+**Next offline P0 check.** Run the same synthetic lifecycle on a disposable Android emulator, using the test app's Android Keystore key across process restart, then remove the key and uninstall the fixture. Android Keystore is currently a candidate with no runtime evidence from this spike. P1 remains queued.
 
 ### Local synthetic verification
 
@@ -54,7 +68,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
-| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. Secure native session persistence is open. |
+| P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). [Browser and emulator probes](../spikes/p0/README.md) passed. The standalone Windows storage candidate passed. Packaged session persistence on both platforms remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |

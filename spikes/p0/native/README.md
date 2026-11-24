@@ -4,6 +4,14 @@ The Windows executable and Android APK embed the portable Svelte client in Tauri
 
 ## Windows fixture
 
+### Synthetic secure-session probe
+
+From the repository root on Windows with Node 24 and Windows PowerShell 5.1, run `node --test spikes/p0/native/session.test.mjs`. The test starts a new PowerShell process for every operation. It uses current-user DPAPI with the application and fixture owner as context. Only the encrypted synthetic refresh markers cross the process boundary in a temporary directory. The runner checks worker output and stored files for plaintext markers and removes the directory afterward.
+
+The simulated provider decides whether a marker can restore a session. A temporary transport failure or unreadable record denies access and preserves the ciphertext. Provider expiry requires a new sign-in. Local logout clears the selected slot across relaunch. Both fixture owners share one Windows profile. DPAPI does not prevent other code running as that Windows user from unprotecting data with the same context. Hosted revocation, Android Keystore and the Tauri-to-provider flow remain open. See the [candidate and assumptions](../../../docs/adr/p0-architecture.md#p0-03-native-session-candidate).
+
+### Packaged offline client
+
 Use Node from the repository’s `.node-version`, MSVC C++ build tools, the repository’s pinned Rust toolchain and the Microsoft WebView2 runtime. In PowerShell from `spikes/p0`:
 
 ```powershell

@@ -27,4 +27,6 @@ The Android SDK’s adb devices command returned an empty list on this Windows h
 
 For each cell, enroll a disposable browser profile on the actual target and send an ordinary server-originated push using a unique synthetic occurrence ID. Record OS/browser versions, notification and power settings, due time, push-service acceptance, service-worker receipt, observed system notification, acknowledgment and duplicate count. For denial or disconnection, inspect permission status and overdue history after reopening. Repeat with an edited and a canceled occurrence. If closed-app delivery misses the owner’s required window, use reconciled native delivery on that platform and repeat the matrix with duplicates checked. Until then, timing and closed-app guarantees remain unverified.
 
+From the repository root, run `node --test spikes/p0/reminder-evidence.test.mjs` to rehearse how to interpret one occurrence on one device. The synthetic traces distinguish service receipts from observed display, reject duplicate or superseded displays, reject display after cancellation, and require a current overdue history entry after reconnect. All device cells above still require physical observations.
+
 See the [Dot playbook](../dot-playbook.md) for the owner-account tests and manual planning fallback.
