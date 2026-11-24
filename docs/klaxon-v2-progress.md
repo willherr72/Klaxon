@@ -9,8 +9,22 @@ Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in
 | Gate | Evidence already available | Next test and stop condition |
 |---|---|---|
 | P0-03 native session | Both packaged fixtures resumed inert sessions across fresh processes and remained signed out after logout. Windows WebView2 rejected corrupted DPAPI ciphertext and accepted the restored original. Android preserved its Keystore record through a simulated outage and cleared it on definitive expiry. | Hosted authenticated resume, refresh and revocation through OS-protected storage remain open on both platforms. The portable account client still requires sign-in after reload. |
-| P0-06 ordinary reminders | Five synthetic replay cases passed, including a denied or revoked Web Push permission. The same reopening must show denied status and overdue history for the current occurrence revision. | A disposable push subscription, working sender and actual Windows/Android targets are needed. Record visible delivery, overdue recovery and duplicates across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). Stop before choosing a delivery route if only a provider acknowledgment is available. |
+| P0-06 ordinary reminders | Fourteen offline checks passed across the existing evidence traces and the new test-only sender, receiver and service worker. The [one-time owner runbook](p0-reminder-owner-test.md) covers a single focused send to each platform. | Will is ready once the setup is provisioned. Obtain approval for the disposable HTTPS receiver, test VAPID key pair, private enrollments, two sends and cleanup. Physical observations on both platforms remain pending across the [device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery). |
 | P0-04 owner Dot | Scheduled browser fallback passed once with Windows off (owner-confirmed). Dot restored the verified client after the prior tab and preview were lost, signed in, saw a connected subscription and renamed exactly one pre-staged synthetic task. A fresh server read at 2026-11-24 16:31:38 UTC confirmed the same ID and new title. Will independently reported seeing the result on Android and Windows. | Remote MCP, scoped agent identity, audit attribution, idempotency receipts and expiry/revocation remain unverified. The browser smoke needs no repeat. See the [Dot playbook](dot-playbook.md#scheduled-browser-fallback) for the managed-preview caveat and evidence limits. |
+
+### One-time reminder sender and receiver rehearsal
+
+Tested source `14404564d7071e48bc397963e161a79c902dc851` on November 24, 2026 with Node 24.12.0. The existing Development record covers task sync in an owner-confirmed Free team. The isolated fixture uses a static HTTPS receiver and an operator-run sender, independent of Convex. This review used repository records and public browser documentation. No live deployment inspection or provisioning took place.
+
+| Command from repository root | Observed result |
+|---|---|
+| `npm ci --offline --prefix spikes/p0/reminder-push --ignore-scripts --no-audit --no-fund` | Installed the isolated locked dependencies from the local package cache. |
+| `node --test spikes/p0/reminder-evidence.test.mjs spikes/p0/reminder-push/*.test.mjs` | 14/14 passed with zero skips. The existing five evidence cases, four sender tests, four receiver tests and one sender-to-worker test ran offline. The pinned library prepared signed, encrypted requests using deterministic dummy inputs. Transport and display calls were fakes. |
+| `node spikes/p0/reminder-push/rehearse.mjs` | Two mock 201 responses for the same synthetic occurrence, one per target. Both worker receipt and visible receipt remained unobserved. |
+
+The receiver page also passed an intercepted headless Edge check. A blank public-key configuration stopped before the permission call. With mocked permission, registration and subscription APIs, the page exercised subscription export, receipt lookup and cleanup. Independent review found that a malformed second subscription could consume the one-shot run. The sender now prepares both encrypted requests locally before claiming the run directory. The regression verifies that a preparation error prevents both transport calls and that a claimed or uncertain run cannot be retried in the same directory.
+
+The first physical check will be a manually triggered ordinary reminder on focused Windows Edge and Android Chrome tabs. Record the operator's acceptance status, the worker's receipt timestamp and Will's matching OS observation independently. One matching visible copy per target can close those two cells. Real delivery, timing under background restrictions and production scheduling remain unmeasured. [Owner and operator procedure](p0-reminder-owner-test.md)
 
 ### Packaged Android session evidence
 
@@ -154,7 +168,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). The [Windows](#packaged-windows-dpapi-session-evidence) and [Android](#packaged-android-session-evidence) packaged synthetic resume/sign-out tests passed. Restoring a hosted account session through either packaged client remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
-| P0-06 | Reminders | Device tests pending | [Push matrix and synthetic permission evidence](adr/platform-capabilities.md#ordinary-reminder-delivery). Actual Windows and Android delivery remain unmeasured. |
+| P0-06 | Reminders | One-time fixture rehearsed; device tests pending | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
 | P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
 | P1-02 | Schema | Queued | — |
