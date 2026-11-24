@@ -1,24 +1,29 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::{self, Write},
-    os::windows::ffi::OsStrExt,
+    env, io,
     path::{Path, PathBuf},
-    ptr, slice,
     sync::{Mutex, MutexGuard},
 };
 use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
-use windows_sys::Win32::{
-    Foundation::LocalFree,
-    Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
-    },
-    Storage::FileSystem::MoveFileW,
-};
+
+mod store;
 
 const MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/1";
 const PEER_MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/2";
-const CONTEXT: &[u8] = b"dev.klaxon.p0native/session-v1/packaged";
+const SUCCESSOR_MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/3";
+const OWNER_A_ID: &str = "p0-fixture-owner-a";
+const OWNER_A_ACCESS: &str = "p0-inert-access-a";
+
+// In-process response for the pinned Convex auth:refreshSession mutation.
+const REFRESH_RESPONSE: &[u8] = br#"{
+    "status":"success",
+    "value":{"kind":"rotated","tokens":{
+        "accessToken":"p0-inert-access-a",
+        "refreshToken":"KLAXON-P0-INERT/packaged/3",
+        "refreshTokenExpiresAt":4102444800000,
+        "userId":"p0-fixture-owner-a"
+    }}
+}"#;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Owner {
@@ -68,27 +73,13 @@ impl Provider {
         self.subscription = None;
     }
 
-    fn sdk_access(&mut self, slot: Option<&Path>) -> Result<&'static str, &'static str> {
+    fn sdk_access(&mut self, slot: Option<&Path>) -> Result<String, &'static str> {
         let active = self.owner.ok_or("signed-out")?;
-        // Recheck even for cached SDK sessions. A changed record requires a new explicit resume.
-        let access = slot.ok_or("unavailable").and_then(|slot| {
-            let owner = confirmed_owner(slot)?;
-            if owner != active {
-                return Err("unavailable");
-            }
-            if owner == Owner::A
-                && slot
-                    .with_file_name("p0-provider-rotated")
-                    .try_exists()
-                    .map_err(|_| "unavailable")?
-            {
-                return Ok(crate::ROTATED_OWNER_A_ACCESS);
-            }
-            Ok(match owner {
-                Owner::A => "p0-inert-access-a",
-                Owner::B => "p0-inert-access-b",
-            })
-        });
+        // Recheck even for cached SDK sessions. An owner change requires explicit resume.
+        let access = slot
+            .ok_or("unavailable")
+            .and_then(|slot| confirm_session(slot, Some(active)))
+            .map(|session| session.access);
         if access.is_err() {
             self.revoke();
         }
@@ -133,79 +124,8 @@ fn slot() -> Option<PathBuf> {
     Some(directory.join("packaged.bin"))
 }
 
-fn dpapi(input: &[u8], protect: bool) -> io::Result<Vec<u8>> {
-    fn blob(bytes: &[u8]) -> io::Result<CRYPT_INTEGER_BLOB> {
-        Ok(CRYPT_INTEGER_BLOB {
-            cbData: bytes
-                .len()
-                .try_into()
-                .map_err(|_| io::ErrorKind::InvalidData)?,
-            pbData: bytes.as_ptr().cast_mut(),
-        })
-    }
-    let input = blob(input)?;
-    let entropy = blob(CONTEXT)?;
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    // Both APIs read the supplied buffers synchronously and allocate their output with LocalAlloc.
-    // Omitting CRYPTPROTECT_LOCAL_MACHINE selects current-user protection.
-    unsafe {
-        let ok = if protect {
-            CryptProtectData(
-                &input,
-                ptr::null(),
-                &entropy,
-                ptr::null(),
-                ptr::null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        } else {
-            CryptUnprotectData(
-                &input,
-                ptr::null_mut(),
-                &entropy,
-                ptr::null(),
-                ptr::null(),
-                CRYPTPROTECT_UI_FORBIDDEN,
-                &mut output,
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let bytes = if output.cbData == 0 {
-            Vec::new()
-        } else {
-            slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
-        };
-        LocalFree(output.pbData.cast());
-        Ok(bytes)
-    }
-}
-
 fn seed(slot: &Path, marker: &[u8]) -> io::Result<()> {
-    let protected = dpapi(marker, true)?;
-    let staged = slot.with_extension(format!("{}.tmp", std::process::id()));
-    let mut file = fs::File::create_new(&staged)?;
-    let write = file.write_all(&protected);
-    drop(file);
-    let publish = write.and_then(|()| {
-        let wide = |path: &Path| {
-            path.as_os_str()
-                .encode_wide()
-                .chain(Some(0))
-                .collect::<Vec<_>>()
-        };
-        // Same-directory rename. MoveFileW refuses to overwrite an existing destination.
-        if unsafe { MoveFileW(wide(&staged).as_ptr(), wide(slot).as_ptr()) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    });
-    if publish.is_err() {
-        fs::remove_file(staged)?;
-    }
-    publish
+    store::Slot::lock(slot)?.publish(marker, store::Publish::Seed)
 }
 
 fn provider<'a>(
@@ -218,25 +138,70 @@ fn provider<'a>(
     state.lock().map_err(|_| "unavailable")
 }
 
-fn confirmed_owner(slot: &Path) -> Result<Owner, &'static str> {
-    let record = fs::read(slot).map_err(|e| match e.kind() {
+struct ConfirmedSession {
+    owner: Owner,
+    access: String,
+}
+
+fn provider_flag(slot: &Path, flag: &str) -> Result<bool, &'static str> {
+    slot.with_file_name(flag)
+        .try_exists()
+        .map_err(|_| "unavailable")
+}
+
+fn accept_refresh(slot: &store::Slot<'_>, body: &[u8]) -> Result<String, &'static str> {
+    let Some(grant) = super::refresh_response::decode(body).map_err(|_| "unavailable")? else {
+        slot.remove().map_err(|_| "unavailable")?;
+        return Err("signed-out");
+    };
+    if grant.user_id != OWNER_A_ID
+        || grant.access_token != OWNER_A_ACCESS
+        || grant.refresh_token.as_bytes() != SUCCESSOR_MARKER
+    {
+        return Err("unavailable");
+    }
+    slot.publish(grant.refresh_token.as_bytes(), store::Publish::Refresh)
+        .map_err(|_| "unavailable")?;
+    Ok(grant.access_token)
+}
+
+fn confirm_session(
+    path: &Path,
+    expected_owner: Option<Owner>,
+) -> Result<ConfirmedSession, &'static str> {
+    let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
+    let marker = slot.read().map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => "signed-out",
         _ => "unavailable",
     })?;
-    let marker = dpapi(&record, false).map_err(|_| "unavailable")?;
     let owner = match marker.as_slice() {
-        MARKER => Owner::A,
+        MARKER | SUCCESSOR_MARKER => Owner::A,
         PEER_MARKER => Owner::B,
         _ => return Err("unavailable"),
     };
-    if slot
-        .with_file_name("p0-provider-offline")
-        .try_exists()
-        .map_err(|_| "unavailable")?
-    {
+    if expected_owner.is_some_and(|expected| expected != owner) {
+        return Err("unavailable");
+    }
+    if provider_flag(path, "p0-provider-offline")? {
         return Err("retry-required");
     }
-    Ok(owner)
+    let access = match owner {
+        Owner::A if marker == MARKER && provider_flag(path, "p0-require-successor")? => {
+            accept_refresh(
+                &slot,
+                br#"{"status":"success","value":{"kind":"noSession"}}"#,
+            )?
+        }
+        Owner::A if marker == MARKER && provider_flag(path, "p0-provider-refresh")? => {
+            accept_refresh(&slot, REFRESH_RESPONSE)?
+        }
+        Owner::A if expected_owner.is_some() && provider_flag(path, "p0-provider-rotated")? => {
+            crate::ROTATED_OWNER_A_ACCESS.to_owned()
+        }
+        Owner::A => OWNER_A_ACCESS.to_owned(),
+        Owner::B => "p0-inert-access-b".to_owned(),
+    };
+    Ok(ConfirmedSession { owner, access })
 }
 
 #[tauri::command]
@@ -266,28 +231,31 @@ fn fixture_session(
                 .map(|_| "fixture-ready")
                 .map_err(|_| "unavailable")
         }
-        "resume" => match confirmed_owner(&slot) {
-            Ok(owner) => {
-                provider.owner = Some(owner);
+        "resume" => match confirm_session(&slot, None) {
+            Ok(session) => {
+                provider.owner = Some(session.owner);
                 Ok("authenticated")
             }
             Err(status @ ("retry-required" | "signed-out")) => Ok(status),
             Err(error) => Err(error),
         },
-        "sign-out" => match fs::remove_file(&slot) {
-            Ok(()) => Ok("signed-out"),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok("signed-out"),
-            _ => Err("unavailable"),
-        },
+        "sign-out" => sign_out(&slot),
         _ => Err("unavailable"),
     }
+}
+
+fn sign_out(slot: &Path) -> Result<&'static str, &'static str> {
+    store::Slot::lock(slot)
+        .and_then(|slot| slot.remove())
+        .map(|_| "signed-out")
+        .map_err(|_| "unavailable")
 }
 
 #[tauri::command]
 fn fixture_sdk_access(
     window: WebviewWindow,
     state: State<'_, Mutex<Provider>>,
-) -> Result<&'static str, &'static str> {
+) -> Result<String, &'static str> {
     provider(&window, &state)?.sdk_access(slot().as_deref())
 }
 
@@ -337,52 +305,4 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sdk_access_rechecks_record_and_revokes_on_failure() {
-        let mut provider = Provider::new();
-        let directory = env::temp_dir().join(format!("klaxon-p0-sdk-test-{}", std::process::id()));
-        fs::create_dir(&directory).unwrap();
-        let slot = directory.join("packaged.bin");
-        let offline = directory.join("p0-provider-offline");
-        let rotated = directory.join("p0-provider-rotated");
-        let path = Some(slot.as_path());
-
-        seed(&slot, MARKER).unwrap();
-        assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
-        provider.owner = Some(confirmed_owner(&slot).unwrap());
-        let expected = "p0-inert-access-a";
-        assert!(provider.sdk_access(path).unwrap() == expected);
-        fs::write(&rotated, []).unwrap();
-        let rotated_access = provider.sdk_access(path);
-
-        fs::write(&offline, []).unwrap();
-        assert_eq!(provider.sdk_access(path).err(), Some("retry-required"));
-        fs::remove_file(&offline).unwrap();
-        assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
-
-        provider.owner = Some(confirmed_owner(&slot).unwrap());
-        fs::remove_file(&slot).unwrap();
-        seed(&slot, PEER_MARKER).unwrap();
-        assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
-        assert!(provider.owner.is_none());
-        provider.owner = Some(confirmed_owner(&slot).unwrap());
-        let expected = "p0-inert-access-b";
-        assert!(provider.sdk_access(path).unwrap() == expected);
-
-        fs::write(&slot, b"damaged").unwrap();
-        assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
-        assert!(provider.owner.is_none());
-        fs::remove_file(&slot).unwrap();
-        fs::remove_file(&rotated).unwrap();
-        fs::remove_dir(&directory).unwrap();
-        let expected = concat!(
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
-            "eyJzdWIiOiJwMC1pbmVydC1hY2Nlc3MtYTIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDA4NjQwMH0.",
-            "cDAtbm90LWEtc2lnbmF0dXJl"
-        );
-        assert!(rotated_access.is_ok_and(|access| access == expected));
-    }
-}
+mod tests;

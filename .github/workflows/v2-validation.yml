@@ -101,6 +101,6 @@ jobs:
       - name: Check packaged DPAPI handoff to the offline Convex SDK
         working-directory: spikes/p0
         run: node native/smoke.mjs windows-sdk
-      - name: Check access denial after replacing the active DPAPI record
+      - name: Check native refresh responses and DPAPI recovery after interruption
         working-directory: spikes/p0
-        run: cargo test --locked --manifest-path native/src-tauri/Cargo.toml --features p0-session --lib sdk_access_rechecks_record_and_revokes_on_failure
+        run: cargo test --locked --manifest-path native/src-tauri/Cargo.toml --features p0-session --lib

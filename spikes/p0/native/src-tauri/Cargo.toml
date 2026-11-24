@@ -16,10 +16,12 @@ tauri-build = { version = "=2.6.0", features = [] }
 tauri = { version = "=2.11.0", features = [] }
 
 [target.'cfg(windows)'.dependencies]
+serde = { version = "=1.0.228", optional = true, features = ["derive"] }
+serde_json = { version = "=1.0.149", optional = true }
 windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
 
 [features]
-p0-session = ["dep:windows-sys"]
+p0-session = ["dep:serde", "dep:serde_json", "dep:windows-sys"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]

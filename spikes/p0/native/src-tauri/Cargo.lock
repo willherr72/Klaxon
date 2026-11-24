@@ -1609,6 +1609,8 @@ dependencies = [
 name = "klaxon-p0-native"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "windows-sys 0.61.2",

@@ -1,3 +1,5 @@
+#[cfg(all(windows, feature = "p0-session"))]
+mod refresh_response;
 #[cfg(all(target_os = "android", feature = "p0-session"))]
 mod session;
 #[cfg(all(windows, feature = "p0-session"))]
