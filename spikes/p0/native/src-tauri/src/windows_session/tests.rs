@@ -258,6 +258,31 @@ fn sign_out_after_interruption_removes_only_scoped_files() {
 }
 
 #[test]
+fn initial_grant_must_publish_without_overwriting_an_existing_owner() {
+    let slot = TestSlot::new("initial-grant");
+    // The test removes the synced stage so the actual atomic publication must fail.
+    slot.flag("discard-initial-stage", true);
+    assert_eq!(seed_session(&slot.path, Owner::A), Err("unavailable"));
+    assert!(!slot.path.exists() && !slot.staged().exists());
+    slot.flag("discard-initial-stage", false);
+
+    assert_eq!(seed_session(&slot.path, Owner::B), Ok("fixture-ready"));
+    let peer = slot.ciphertext();
+    for flag in ["p0-signin-denied", "p0-signin-owner-mismatch"] {
+        slot.flag(flag, true);
+        assert_eq!(seed_session(&slot.path, Owner::A), Err("unavailable"));
+        slot.flag(flag, false);
+        assert!(
+            slot.ciphertext() == peer,
+            "denial changed an existing session"
+        );
+    }
+    assert_eq!(seed_session(&slot.path, Owner::A), Err("unavailable"));
+    assert!(slot.ciphertext() == peer && !slot.staged().exists());
+    assert!(confirm_session(&slot.path, None).unwrap().owner == Owner::B);
+}
+
+#[test]
 fn sdk_access_publishes_the_grant_only_when_provider_is_available() {
     let slot = TestSlot::new("sdk-refresh");
     seed(&slot.path, MARKER).unwrap();

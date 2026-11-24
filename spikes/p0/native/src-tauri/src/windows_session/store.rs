@@ -57,6 +57,15 @@ impl<'a> Slot<'a> {
         let refresh = matches!(operation, Publish::Refresh);
         let published = written.and_then(|()| {
             #[cfg(test)]
+            if !refresh
+                && self
+                    .path
+                    .with_file_name("discard-initial-stage")
+                    .try_exists()?
+            {
+                fs::remove_file(&staged)?;
+            }
+            #[cfg(test)]
             if refresh {
                 super::tests::crash_checkpoint(self.path, "before-replace");
             }

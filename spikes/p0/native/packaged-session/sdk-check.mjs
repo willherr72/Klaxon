@@ -111,11 +111,33 @@ async function expectRefreshDenial(page, expected) {
   await nativeDenies(page);
 }
 
-export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore = false } = {}) {
+async function checkInitialGrant(page, panel, slot, failures) {
+  for (const flag of failures) {
+    await slot.signInFlag(flag, true);
+    try {
+      const denied = await page.evaluate(() => window.__TAURI__.core.invoke("fixture_session", { operation: "seed" })
+        .then(() => false, status => status === "unavailable"));
+      assert.ok(denied, "an invalid grant or failed first write must deny sign-in");
+      await slot.assertEmpty();
+      await nativeDenies(page);
+    } finally {
+      await slot.signInFlag(flag, false);
+    }
+  }
+  await seed(page, panel);
+  const firstRecord = await slot.read();
+  await click(panel, "Start peer session");
+  await statusIs(page, "unavailable");
+  assert.ok((await slot.read()).equals(firstRecord), "a second sign-in replaced the first owner's record");
+  await nativeDenies(page);
+}
+
+export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore = false, initialGrantFailures } = {}) {
   await launch([async (page, panel) => {
     await click(panel, "Resume session");
     await statusIs(page, "signed-out");
-    await seed(page, panel);
+    if (initialGrantFailures) await checkInitialGrant(page, panel, slot, initialGrantFailures);
+    else await seed(page, panel);
     assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened), 0);
   }]);
   const sealed = await slot.read();
@@ -229,12 +251,16 @@ export async function exerciseWindowsSdkHandoff(launch, root, record) {
   const outage = join(root, "p0-provider-offline");
   const rotation = join(root, "p0-provider-rotated");
   await exerciseSdkHandoff(launch, {
+    signInFlag: (name, enabled) => enabled ? writeFile(join(root, name), "", { flag: "wx" }) : rm(join(root, name)),
     read: () => readFile(record),
     write: bytes => writeFile(record, bytes),
     outage: offline => offline ? writeFile(outage, "", { flag: "wx" }) : rm(outage),
     rotate: rotated => rotated ? writeFile(rotation, "", { flag: "wx" }) : rm(rotation),
-    assertEmpty: () => assert.rejects(access(record), { code: "ENOENT" }),
-  });
+    async assertEmpty() {
+      await assert.rejects(access(record), { code: "ENOENT" });
+      await assert.rejects(access(join(root, "packaged.staged")), { code: "ENOENT" });
+    },
+  }, { initialGrantFailures: ["p0-signin-denied", "p0-signin-owner-mismatch"] });
   await exerciseWindowsRefreshRecord(launch, root, record);
   await checkProfile(join(root, "webview"));
 }

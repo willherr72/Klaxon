@@ -8,8 +8,10 @@ use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
 
 mod store;
 
-const MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/1";
-const PEER_MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/2";
+const OWNER_A_REFRESH: &str = "KLAXON-P0-INERT/packaged/1";
+const OWNER_B_REFRESH: &str = "KLAXON-P0-INERT/packaged/2";
+const MARKER: &[u8] = OWNER_A_REFRESH.as_bytes();
+const PEER_MARKER: &[u8] = OWNER_B_REFRESH.as_bytes();
 const SUCCESSOR_MARKER: &[u8] = b"KLAXON-P0-INERT/packaged/3";
 const OWNER_A_ID: &str = "p0-fixture-owner-a";
 const OWNER_A_ACCESS: &str = "p0-inert-access-a";
@@ -149,6 +151,36 @@ fn provider_flag(slot: &Path, flag: &str) -> Result<bool, &'static str> {
         .map_err(|_| "unavailable")
 }
 
+// Model only the username/password mutation result. The fixture never accepts credentials.
+fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str> {
+    let (id, access, refresh) = match owner {
+        Owner::A => (OWNER_A_ID, OWNER_A_ACCESS, OWNER_A_REFRESH),
+        Owner::B => ("p0-fixture-owner-b", "p0-inert-access-b", OWNER_B_REFRESH),
+    };
+    let result = if provider_flag(path, "p0-signin-denied")? {
+        serde_json::json!({"status":"error","userError":{"error":"USER_NOT_FOUND"}})
+    } else {
+        let issued_id = if provider_flag(path, "p0-signin-owner-mismatch")? {
+            "p0-fixture-other-owner"
+        } else {
+            id
+        };
+        serde_json::json!({"status":"complete","tokens":{
+            "userId":issued_id,"accessToken":access,"refreshToken":refresh,
+            "refreshTokenExpiresAt":4102444800000_i64
+        }})
+    };
+    let response = serde_json::to_vec(&serde_json::json!({"status":"success","value":result}))
+        .map_err(|_| "unavailable")?;
+    let grant =
+        super::refresh_response::decode_sign_in(&response, id).map_err(|_| "unavailable")?;
+    if grant.access_token != access || grant.refresh_token != refresh {
+        return Err("unavailable");
+    }
+    seed(path, grant.refresh_token.as_bytes()).map_err(|_| "unavailable")?;
+    Ok("fixture-ready")
+}
+
 fn accept_refresh(slot: &store::Slot<'_>, body: &[u8]) -> Result<String, &'static str> {
     let Some(grant) = super::refresh_response::decode(body).map_err(|_| "unavailable")? else {
         slot.remove().map_err(|_| "unavailable")?;
@@ -221,16 +253,8 @@ fn fixture_session(
     provider.revoke();
     let slot = slot().ok_or("unavailable")?;
     match operation.as_str() {
-        "seed" | "seed-peer" => {
-            let marker = if operation == "seed" {
-                MARKER
-            } else {
-                PEER_MARKER
-            };
-            seed(&slot, marker)
-                .map(|_| "fixture-ready")
-                .map_err(|_| "unavailable")
-        }
+        "seed" => seed_session(&slot, Owner::A),
+        "seed-peer" => seed_session(&slot, Owner::B),
         "resume" => match confirm_session(&slot, None) {
             Ok(session) => {
                 provider.owner = Some(session.owner);
