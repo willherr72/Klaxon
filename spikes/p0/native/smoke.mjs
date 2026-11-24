@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkSessionPage, containsMarker } from "./packaged-session/web-check.mjs";
+import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -70,6 +71,7 @@ async function withWindowsHost(exe, profile, action, session) {
   const closed = new Promise(resolve => host.once("close", resolve));
   let browser;
   let attachedEndpoint;
+  let webviewPid;
   const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
   const observed = new Set();
   try {
@@ -97,6 +99,13 @@ async function withWindowsHost(exe, profile, action, session) {
     }
     assert.ok(browser, "WebView2 attach timed out, host PID " + host.pid + ", exit " + host.exitCode +
       ", observed port files: " + ([...observed].join(", ") || "none"));
+    if (session) {
+      const debuggerSession = await browser.newBrowserCDPSession();
+      const { processInfo } = await debuggerSession.send("SystemInfo.getProcessInfo");
+      webviewPid = processInfo.find(process => process.type === "browser")?.id;
+      assert.ok(Number.isSafeInteger(webviewPid) && webviewPid > 0, "missing WebView2 browser PID");
+      await debuggerSession.detach();
+    }
     const context = browser.contexts()[0];
     return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), host.pid);
   } finally {
@@ -121,6 +130,16 @@ async function withWindowsHost(exe, profile, action, session) {
           if (active) await delay(200);
         }
         assert.ok(!active, "prior WebView2 endpoint remained active after its host exited");
+        // Endpoint retirement can precede process exit. Reopen the same profile only
+        // after its browser has exited, so the next host can start its own debugger.
+        if (webviewPid) {
+          const running = () => {
+            try { process.kill(webviewPid, 0); return true; }
+            catch (error) { if (error.code === "ESRCH") return false; throw error; }
+          };
+          for (let attempt = 0; attempt < 100 && running(); attempt++) await delay(200);
+          assert.ok(!running(), "prior WebView2 browser PID remained active after its host exited");
+        }
       }
     }
   }
@@ -161,7 +180,7 @@ async function windowsSession() {
       assert.equal(await page.evaluate(() => window.p0Replies === undefined), true, "expected a fresh WebView");
       webviewVersion = page.context().browser().version();
       await checkSessionPage(page, actions);
-      replies += actions.length;
+      replies += actions.filter(Array.isArray).length;
     }, capture);
   }
   try {
@@ -180,12 +199,12 @@ async function windowsSession() {
     await launch([["Resume session", "unavailable"]]);
     assert.ok((await readFile(record)).equals(corrupt), "provider outage must not hide a storage failure");
     await writeFile(record, sealed);
-    await launch([["Resume session", "retry-required"]]);
+    await launch([["Resume session", "retry-required"], checkTaskDenial]);
     assert.ok((await readFile(record)).equals(sealed), "provider outage must preserve the valid protected record");
     await rm(outage);
-    await launch([["Resume session", "authenticated"], ["Sign out", "signed-out"]]);
+    await launch([checkTaskDenial, ["Resume session", "authenticated"], checkTaskSwitch]);
     assert.deepEqual(await readdir(root), ["webview"], "logout should remove the native slot");
-    await launch([["Resume session", "signed-out"]]);
+    await launch([["Resume session", "signed-out"], checkTaskDenial]);
     assert.deepEqual(await readdir(root), ["webview"], "cold resume recreated a native slot");
     for (const chunks of [capture.stdout, capture.stderr]) {
       const log = Buffer.concat(chunks);
@@ -197,7 +216,8 @@ async function windowsSession() {
   }
   await assert.rejects(access(root), { code: "ENOENT" });
   console.log("PASS packaged Windows session:", pids.size, "host PIDs and fresh WebViews,", replies,
-    "status-only replies; native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
+    "isolated session replies plus owner-filtered native reads, live channel updates and late delivery across sign-out/owner switch;",
+    "native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
 }
 
 async function android() {

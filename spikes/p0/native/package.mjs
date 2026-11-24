@@ -30,7 +30,8 @@ async function build() {
   // The public origin drives both the portable client's CSP and the native response header.
   const windowsSession = values.target === "windows" && values.session;
   const frontend = windowsSession ? ".run/windows-session-frontend" : ".frontend";
-  execute(process.execPath, ["build-portable.mjs", "--outdir", "native/" + frontend, ...(values.session ? ["--session"] : [])], spike);
+  execute(process.execPath, ["build-portable.mjs", "--outdir", "native/" + frontend,
+    ...(values.session ? ["--session"] : []), ...(windowsSession ? ["--windows-tasks"] : [])], spike);
   const connections = values.origin ? values.origin + " " + values.origin.replace(/^https:/, "wss:") : "'none'";
   const overlay = JSON.stringify({ ...(windowsSession && { build: { frontendDist: "../" + frontend } }), app: { withGlobalTauri: !!values.session, security: {
     csp: "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; connect-src " + connections,

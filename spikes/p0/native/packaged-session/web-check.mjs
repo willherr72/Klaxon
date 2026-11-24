@@ -3,8 +3,10 @@ import { once } from "node:events";
 
 // Build the expected canary in the test runner. Never inject it into the WebView or logs.
 const marker = "KLAXON-P0-INERT/";
-const fixedMarker = Buffer.from(marker + "packaged/1");
-const representations = [marker, fixedMarker.toString("base64"), fixedMarker.toString("hex")];
+const representations = [marker, ...[1, 2].flatMap(owner => {
+  const bytes = Buffer.from(marker + "packaged/" + owner);
+  return [bytes.toString("base64"), bytes.toString("hex")];
+})];
 export const containsMarker = value => representations.some(form => value.includes(form));
 export async function checkSessionPage(page, actions) {
   assert.equal(new URL(page.url()).origin, "http://tauri.localhost");
@@ -44,16 +46,23 @@ export async function checkSessionPage(page, actions) {
       });
     };
   });
-  for (const [button, expected] of actions) {
-    await panel.getByRole("button", { name: button, exact: true }).click();
-    await page.waitForFunction(() => window.p0Replies.length > 0 &&
-      !document.querySelector('[aria-label="Native session fixture"] button').disabled);
-    assert.ok(await panel.getByLabel("Native session status").textContent() === expected,
-      `expected packaged UI status ${expected}`);
-    assert.equal(await page.evaluate(status => {
-      const raw = window.p0Replies.splice(0);
-      return raw.length === 1 && raw[0] === status;
-    }, expected), true, "bridge must return exactly one allowlisted scalar status");
+  for (const action of actions) {
+    if (typeof action === "function") {
+      await action(page, panel);
+      assert.ok(!containsMarker(await page.evaluate(() => JSON.stringify(window.p0Replies))), "marker in task bridge");
+      await page.evaluate(() => { window.p0Replies.length = 0; });
+    } else {
+      const [button, expected] = action;
+      await panel.getByRole("button", { name: button, exact: true }).click();
+      await page.waitForFunction(() => window.p0Replies.length > 0 &&
+        !document.querySelector('[aria-label="Native session fixture"] button').disabled);
+      assert.ok(await panel.getByLabel("Native session status").textContent() === expected,
+        `expected packaged UI status ${expected}`);
+      assert.equal(await page.evaluate(status => {
+        const raw = window.p0Replies.splice(0);
+        return raw.length === 1 && raw[0] === status;
+      }, expected), true, "bridge must return exactly one allowlisted scalar status");
+    }
     const store = await page.evaluate(async () => ({
       local: localStorage.length, session: sessionStorage.length, hasCookie: document.cookie !== "",
       databases: (await indexedDB.databases()).length, caches: (await caches.keys()).length,

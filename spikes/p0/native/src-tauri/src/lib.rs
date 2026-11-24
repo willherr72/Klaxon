@@ -4,7 +4,7 @@ mod session;
 mod windows_session;
 
 #[cfg(all(any(windows, target_os = "android"), feature = "p0-session"))]
-fn allows_fixture(window: &tauri::WebviewWindow, operation: &str) -> bool {
+fn is_fixture_window(window: &tauri::WebviewWindow) -> bool {
     window.label() == "main"
         && window
             .url()
@@ -12,7 +12,11 @@ fn allows_fixture(window: &tauri::WebviewWindow, operation: &str) -> bool {
             .map(|url| url.origin().ascii_serialization())
             .as_deref()
             == Some("http://tauri.localhost")
-        && matches!(operation, "seed" | "resume" | "sign-out")
+}
+
+#[cfg(all(target_os = "android", feature = "p0-session"))]
+fn allows_fixture(window: &tauri::WebviewWindow, operation: &str) -> bool {
+    is_fixture_window(window) && matches!(operation, "seed" | "resume" | "sign-out")
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

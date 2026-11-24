@@ -5,9 +5,12 @@ import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { compile } from "svelte/compiler";
 
-const { values } = parseArgs({ options: { outdir: { type: "string", default: "dist" }, session: { type: "boolean" } } });
+const { values } = parseArgs({ options: {
+  outdir: { type: "string", default: "dist" }, session: { type: "boolean" }, "windows-tasks": { type: "boolean" },
+} });
 const origin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
 if (values.session && origin) throw new Error("The packaged session fixture runs offline");
+if (values["windows-tasks"] && !values.session) throw new Error("Task transport requires the offline session fixture");
 if (origin && !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(origin)) {
   throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin");
 }
@@ -16,7 +19,7 @@ const bundle = await build({
   entryPoints: [values.session ? "native/packaged-session/main.js" : "portable/main.js"],
   bundle: true, write: false, minify: true, legalComments: "none",
   conditions: ["browser"],
-  define: { P0_PORTABLE_ORIGIN: JSON.stringify(origin) },
+  define: { P0_PORTABLE_ORIGIN: JSON.stringify(origin), P0_WINDOWS_TASKS: String(!!values["windows-tasks"]) },
   plugins: [{
     name: "svelte",
     setup(builder) {
