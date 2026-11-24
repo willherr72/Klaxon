@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 
-export async function androidChrome(serverPort, mappings) {
+export async function androidChrome(serverPort, mappings, loopbackBackend) {
   const serial = process.env.KLAXON_PROBE_AVD;
   if (!/^emulator-\d+$/.test(serial ?? "")) {
     throw new Error("Set KLAXON_PROBE_AVD to a disposable emulator serial");
@@ -10,7 +10,7 @@ export async function androidChrome(serverPort, mappings) {
   const adb = (...args) => execFileSync(process.env.ADB ?? "adb", ["-s", serial, ...args],
     { encoding: "utf8", timeout: 15000 }).trim();
   if (adb("shell", "getprop", "ro.kernel.qemu") !== "1") throw new Error("Expected emulator");
-  for (const port of [3210, serverPort]) {
+  for (const port of loopbackBackend ? [3210, serverPort] : [serverPort]) {
     adb("reverse", "--no-rebind", "tcp:" + port, "tcp:" + port);
     mappings.push(() => adb("reverse", "--remove", "tcp:" + port));
   }

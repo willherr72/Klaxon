@@ -1,6 +1,6 @@
 # Convex Auth and realtime feasibility
 
-This disposable project uses an anonymous Convex deployment bound to loopback. It creates random synthetic accounts and tasks. It uses the Convex Auth username/password components, an owner-scoped query and two mutations. Each session holds access and refresh tokens in memory. The Svelte component renders the subscribed task list.
+The default probe uses an anonymous Convex deployment bound to loopback and creates random synthetic accounts and tasks. Hosted mode uses privately enrolled synthetic accounts. It uses the Convex Auth username/password components, an owner-scoped query and two mutations. Each session holds access and refresh tokens in memory. The Svelte component renders the subscribed task list.
 
 ## Reproduce on Windows
 
@@ -12,7 +12,7 @@ $env:CONVEX_AGENT_MODE = 'anonymous'
 npx --no-install convex dev --typecheck enable
 ```
 
-Confirm that the CLI reports a local deployment at `http://127.0.0.1:3210` and that the functions are ready. The probe pins this endpoint. In a second terminal in the same directory, run:
+Confirm that the CLI reports a local deployment at `http://127.0.0.1:3210` and that the functions are ready. The probe uses this endpoint when P0_CONVEX_URL is unset. In a second terminal in the same directory, run:
 
 ```powershell
 node probe.mjs
@@ -45,3 +45,15 @@ node probe.mjs --android-chrome
 The adapter checks the emulator property, forwards its Chrome debugging socket and reverses two loopback ports for the page and backend. Existing reverse routes cause a setup failure. The probe removes its mappings on exit. Close the disposable AVD after testing.
 
 On November 23, 2026, Windows Edge 158.0.4370.33 created a synthetic task and Android Chrome 133.0.6943.137 rendered it. Android explicitly refreshed its session and renamed the task, and Edge rendered the change. The second account could neither list nor rename that task. Each session logged out and its refresh token was rejected. This exercised the API 36 emulator browser with the Windows host running the backend. Physical Android, Tauri integration and hosted operation with the desktop off need separate runs.
+
+## Hosted development deployment
+
+Use an empty, disposable development deployment in a confirmed Free team. Enroll two distinct, randomly generated synthetic accounts through the deployment administrator’s internal fixture operation. Keep these accounts dedicated to the probe. Account B must have an empty task list.
+
+In a separate shell, set `P0_CONVEX_URL` to the hosted HTTPS deployment origin and provide the synthetic credentials through process variables `P0_USER_A`, `P0_PASS_A`, `P0_USER_B` and `P0_PASS_B`. Launch the same Edge, WebView2 or Android probe command. The browser bundle includes only the public backend origin. The runner supplies credentials to each test session at runtime. Hosted mode checks that anonymous signup returns the enrollment-required error, then verifies refresh, task propagation, cross-owner isolation and logout. Android uses its own network connection to Convex and an ADB reverse mapping to the local test page.
+
+The probe page and automation process run on Windows. A hosted run here verifies cloud-backed reads and writes while Windows is online. A desktop-off acceptance run requires an independently loaded client on another device.
+
+The internal mutation `authFixtures:enroll` takes `{username, password}` and returns null. Run it using a Development deployment key in the provisioning process. It revokes the session created during enrollment. The marker table must be empty outside this transaction and must be excluded from migration or restore. Verify with `convex data fixtureEnrollments --limit 1`. Start the browser probe in a separate process without a deploy key. Password verification is rate-limited per fixture. The runner honors one short retry interval returned by the provider.
+
+Hosted evidence from November 23, 2026: Edge 158.0.4370.33, standalone WebView2 157.0.4341.60 and Android emulator Chrome 133.0.6943.137 passed login, explicit refresh, owner isolation, subscription updates, logout and revoked refresh against the Free Development deployment. During the Android run, Edge entered offline mode after creating the task. Android renamed it over its own HTTPS connection and Edge rendered the updated title after reconnect. Windows still supplied the emulator and the test page. A physical desktop-off run requires another device with an independently available frontend.

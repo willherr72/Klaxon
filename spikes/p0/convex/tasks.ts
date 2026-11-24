@@ -7,7 +7,10 @@ export const list = query({
   handler: async (ctx) => {
     const owner = await getAuthUserId(ctx);
     if (!owner) return [];
-    return ctx.db.query("tasks").withIndex("by_owner", q => q.eq("owner", owner)).take(20);
+    return ctx.db.query("tasks")
+      .withIndex("by_owner", q => q.eq("owner", owner))
+      .order("desc")
+      .take(20);
   },
 });
 

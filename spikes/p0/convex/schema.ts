@@ -3,6 +3,7 @@ import { v } from "convex/values";
 
 export default defineSchema({
   users: defineTable({}),
+  fixtureEnrollments: defineTable({}),
   tasks: defineTable({
     owner: v.id("users"),
     title: v.string(),

@@ -29,8 +29,8 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | ID | Planned PR scope | Status | PR / verification |
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
-| P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Owner confirmed the Free team and identified the supplied endpoint as Development. Scoped access and contents check pending. |
-| P0-03 | Auth/realtime spike | Edge, WebView2 and Android Chrome emulator passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
+| P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
+| P0-03 | Auth/realtime spike | Local and hosted browser tests passed | [Probe results](../spikes/p0/README.md). Physical Android with Windows shut down, packaged Tauri and persistent sessions remain open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). Physical Android push remains unmeasured. |
@@ -104,4 +104,10 @@ Local P0-03 results on 2026-11-23: Windows Edge 158.0.4370.33 created a task and
 
 The Windows Edge and Android emulator Chrome probe passed twice. The final run exited successfully and removed all test ADB mappings. The disposable emulator and local Convex backend were stopped.
 
-Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner confirmed the Free plan and corrected the deployment classification to Development. Only read-only reachability checks ran against it. The hosted desktop-off gate remains open.
+Hosted preflight: the owner supplied a Convex deployment. Its cloud version endpoint returned HTTP 200. Its HTTP actions origin returned HTTP 404 with HTTP actions disabled. CLI login status reported no account token. The owner confirmed the Free plan and corrected the deployment classification to Development. This initial preflight used read-only reachability checks. The hosted desktop-off gate remains open.
+
+Hosted P0-02/03 on 2026-11-23 (Chicago). The scoped CLI identified Development on the owner-confirmed Free team. Preflight found no tables or functions. Deployed only the spike and enrolled two synthetic identities. Verified enrollment is internal, the transient enrollment table is empty, and public signup is denied. Windows Edge, WinForms WebView2 and Android API 36 emulator Chrome verified authenticated task access over HTTPS. Android renamed a shared task with Edge offline and Edge rendered the change after reconnect. All successful runs checked cross-owner denial, logout and revoked refresh. The Android test page was served from Windows. An independently loaded client on physical hardware with Windows powered off remains the P0 gate.
+
+Independent review found the oldest-first 20-row subscription would hide new tasks on later runs. The probe now subscribes to the latest 20, rejects conflicting platform selections and attempts logout after failures. Initial hosted retries exposed a sign-in failure and a reconnect timeout. The harness now honors the provider’s rate-limit interval and coalesces refresh requests when the live client requests a fresh token. The subsequent Android/Edge run passed. V1 and its release pipeline were outside the change.
+
+Regression check: the default anonymous loopback Edge run also passed local signup, refresh, task propagation, owner isolation and logout after the hosted changes. Its backend was stopped and ports 3210/3211 were clear. Hosted Android cleanup found zero remaining ADB mappings before the disposable emulator was stopped.
