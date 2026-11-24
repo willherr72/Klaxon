@@ -175,7 +175,14 @@ async function windowsSession() {
     await writeFile(record, corrupt);
     await launch([["Resume session", "unavailable"]]);
     assert.ok((await readFile(record)).equals(corrupt), "unreadable record should remain available for recovery");
+    const outage = join(root, "p0-provider-offline");
+    await writeFile(outage, "", { flag: "wx" });
+    await launch([["Resume session", "unavailable"]]);
+    assert.ok((await readFile(record)).equals(corrupt), "provider outage must not hide a storage failure");
     await writeFile(record, sealed);
+    await launch([["Resume session", "retry-required"]]);
+    assert.ok((await readFile(record)).equals(sealed), "provider outage must preserve the valid protected record");
+    await rm(outage);
     await launch([["Resume session", "authenticated"], ["Sign out", "signed-out"]]);
     assert.deepEqual(await readdir(root), ["webview"], "logout should remove the native slot");
     await launch([["Resume session", "signed-out"]]);

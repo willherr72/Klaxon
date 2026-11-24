@@ -119,7 +119,11 @@ fn fixture_session(window: WebviewWindow, operation: String) -> Result<&'static 
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok("signed-out"),
             // Simulated provider accepts only the fixture owner's expected generation.
             Ok(record) if dpapi(&record, false).as_deref().ok() == Some(MARKER) => {
-                Ok("authenticated")
+                match slot.with_file_name("p0-provider-offline").try_exists() {
+                    Ok(true) => Ok("retry-required"),
+                    Ok(false) => Ok("authenticated"),
+                    Err(_) => Err("unavailable"),
+                }
             }
             _ => Err("unavailable"),
         },
