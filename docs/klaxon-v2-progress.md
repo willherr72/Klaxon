@@ -30,7 +30,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 |---|---|---|---|
 | P0-01 | Baseline | Inventoried | [Test results and historic CI failures](testing.md) |
 | P0-02 | Isolation | Partial | v2 branch and disposable loopback backend. Hosted Free team pending. |
-| P0-03 | Auth/realtime spike | Browser passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Native and hosted gate open. |
+| P0-03 | Auth/realtime spike | Edge and WebView2 passed locally | [Edge/Svelte probe](../spikes/p0/README.md). Packaged Tauri and hosted gate open. |
 | P0-04 | Dot spike | Account test pending | [Owner-account matrix and fallback](dot-playbook.md) |
 | P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
 | P0-06 | Reminders | Device tests pending | [Push matrix](adr/platform-capabilities.md). ADB found no attached Android device. |

@@ -9,6 +9,7 @@ The Svelte 5/Vite frontend uses Tauri 2 commands for native access. The Rust dom
 | Command or evidence | Observed result |
 | --- | --- |
 | npm ci followed by npm run verify -- --frontend | 23 tooling tests and 65 Vitest tests passed across 10 files. Svelte check reported zero errors and warnings. Production Vite build succeeded. |
+| cargo test --locked --manifest-path src-tauri/Cargo.toml --lib | 186 Rust library tests passed on Windows, including versioned migration, restore and sync regressions. |
 | python -m unittest discover -s scripts/tests -v | Four Android instrumentation-result and log-retention harness tests passed. |
 | Read-only SQLite projection of temporary synthetic schema 17 fixture | Passed integrity, relation, recurrence, local date and unchanged file hash checks. See [migration](migration.md). |
 | Exact-commit Windows CI | Passed shared verification including Rust tests and sync smoke, warnings-as-errors build and live MCP assertions. [Run 42159611795](https://github.com/willherr72/Klaxon/actions/runs/42159611795) |
