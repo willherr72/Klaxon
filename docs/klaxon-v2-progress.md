@@ -242,6 +242,10 @@ Tested source `160ae616afd93b8df1cc42d24a8417bd02a2e929`. A browser created a sy
 
 From `spikes/p0`, `npm run build` and `npm run test:portable` passed, including all 48 tests. The focused command is `node --test --test-name-pattern="task fragment" portable.test.mjs`. The Windows command was `node native/smoke.mjs windows`. This exercised document loading and stable row identity. OS link dispatch, Android routing and the account-scoped detail view remain open. [Routing decision](adr/p0-architecture.md#shared-client-and-backend)
 
+### Session fixture packaging boundary
+
+The packager regression at `72a9bdbc6da19ce813095c2e89d9fb3fe8f33d3c` exercised three unsupported invocations: Windows and x86_64 Android session builds with a hosted origin, and an arm64 Android session build. All three stopped before writing a build artifact. Removing the guard in a temporary copy made the new test fail. From `spikes/p0`, `node --test native/package.test.mjs` passed 3/3 and `npm run test:portable` passed 49/49.
+
 ### Windows CI process identity
 
 The [Windows rehearsal on `452f74b`](https://github.com/willherr72/Klaxon/actions/runs/45518698895/job/138885211138) reached the SDK smoke and rejected a new WebView2 instance whose PID Windows had reused. The frontend and migration job passed. The harness now matches PID and OS creation time, checks the current host, fixture profile and loopback listener, and verifies the browser PID through CDP. Its final inventory includes fixture children started late in the run.
@@ -375,7 +379,7 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
 | P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). The [Windows](#packaged-windows-dpapi-session-evidence) and [Android](#packaged-android-session-evidence) packaged synthetic resume/sign-out tests passed. Restoring a hosted account session through either packaged client remains open. |
 | P0-04 | Dot spike | Scheduled browser read/write passed with Windows off | [Observed run and outstanding checks](dot-playbook.md#scheduled-browser-fallback) |
-| P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md) |
+| P0-05 | Integrations | Interfaces reviewed | [Scopes and unresolved tenant consent](adr/platform-capabilities.md). The [Obsidian interface review](adr/platform-capabilities.md#obsidian-note-links-and-credentials) identified a per-device vault mapping and a shared plugin secret store. A synthetic vault name and nested Unicode note path round-tripped as separate URI parameters in Node. Desktop and Android vault behavior still need runtime verification. |
 | P0-06 | Reminders | Focused delivery passed on both devices, owner-reported | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
 | P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
