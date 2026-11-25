@@ -224,3 +224,25 @@ This account-free command installs the separate debug APK, forwards emulator loo
 Will authorized one live Android run, which passed with this setup. The separate entry point is `node native/smoke.mjs android-provider-acceptance <emulator-serial>`. It repeats the account-free transport admission check, then starts the pinned Convex backend on Windows loopback ports 3210/3211 and pushes the indexed test functions to that ephemeral backend. It creates two disposable synthetic owners, a separate same-owner control session and one task. The emulator reaches port 3210 only through ADB reverse. The run checks the targeted session's cold restore and revocation, the independent Edge control and other-owner denial, then removes the disposable database, accounts, grants and package. The operator supplies no personal account or hosted deployment key. [Recorded results and remaining gate](../../../docs/klaxon-v2-progress.md#android-revocation-on-a-real-local-provider)
 
 Append `--reconnect` to exercise revocation during a subscription outage. The account-free admission check first verifies a packaged WebSocket round trip on emulator loopback port 3212. During the live run that port maps to an ephemeral relay while native auth and HTTP use port 3210. The relay cuts the target socket, native code revokes the saved refresh grant and removes the protected slot, and then the original SDK subscription reconnects. A pass requires the empty callback on the new socket, denial of reads and renames with the cached bearer, and an empty target list through the surviving owner's independent rename. Cold sign-out and fixture cleanup are verified at the end.
+
+## Hosted packaged native acceptance
+
+Select an owner-confirmed disposable Convex Free Development deployment. Use its exact `https://<deployment>.convex.cloud` origin and a fresh key scoped to that deployment. Before provisioning, verify that the pinned CLI's `function-spec` reports the selected origin and that `authFixtures:enrollDisposable` and `authFixtures:retireDisposable` are installed as internal fixture operations. If they need to be pushed, stage only the spike's Convex functions and pinned dependencies in a temporary project and verify the key's Development target before applying the push.
+
+From `spikes/p0`, with the Windows and Android build prerequisites above, set `KLAXON_P0_BUILD_ORIGIN` to the public origin and `ADB` to the SDK's adb executable. Build the two fixture artifacts and attest the packaged HTML, actual SDK origin and native pin on each. For the account-free attestation, use a disposable API 36 x86_64 `KlaxonSessionP0_` emulator with no existing fixture install, no ADB mappings and airplane mode enabled.
+
+```powershell
+node --input-type=module -e "import { buildHostedProvider } from './native/local-provider/build.mjs'; await buildHostedProvider(process.env.KLAXON_P0_BUILD_ORIGIN)"
+node native/package.mjs --target x86_64 --session --android-provider-hosted --origin $env:KLAXON_P0_BUILD_ORIGIN
+node native/local-provider/hosted-run.mjs --origin $env:KLAXON_P0_BUILD_ORIGIN --emulator emulator-5586
+```
+
+For the live run, allow the selected disposable emulator to connect to the network. Pass the private delivery file containing the scoped Development key to the separate provisioning command. The packaged clients receive synthetic login inputs only. The runner uses two fresh owners and one task, with Windows and Android testing successively against the same task. It interrupts each SDK's hosted WSS connection while the native HTTPS issuer and independent Edge control remain reachable.
+
+```powershell
+node native/local-provider/hosted-provision.mjs --origin $env:KLAXON_P0_BUILD_ORIGIN --emulator emulator-5586 --key-file "<private-delivery-file>"
+```
+
+Check the exit status, the result for each client and the retirement counts. Retirement removes the temporary app users, task and username mappings and revokes any remaining sessions for those registered owners. Auth 2.1 retains its inaccessible password hashes and created-user bookkeeping. If retirement cannot be confirmed, keep the reported nonsecret receipt and pass it back with `--retire-receipt` and the same Deployment scope. Finish by retiring the fresh key and shutting down the disposable emulator.
+
+Use `--platform windows` or `--platform android` to verify one client independently. The default exercises both clients.
