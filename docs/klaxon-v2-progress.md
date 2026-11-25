@@ -230,7 +230,17 @@ Tested source `b9df6fe3a111b6d92fac1fd2fd833ca049a531cf`, November 25, 2026 UTC.
 | `npm run build` and `npm run test:portable` | Build passed. All 44 tests passed with zero skips. |
 | `cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --features custom-protocol,p0-session --lib` | 26 Windows Rust tests passed with one subprocess-only entry. Android and Windows reused the acknowledgment decoder. The standalone Android Keystore project also built with the [offline Gradle command](../spikes/p0/native/README.md#android-keystore-lifecycle). |
 
-Next offline P0-03 check: exercise the native Convex mutation request over loopback HTTP with inert input, including a lost reply and a malformed acknowledgment. Hosted native sign-in, authenticated reconnect and provider-side revocation of an already-open subscription still need disposable Development session evidence. Physical-device and reminder gates are unchanged.
+### Windows native sign-out over loopback HTTP
+
+Tested source `61def53d26951fb96201d9694844b86af5d15087`. The Windows Rust fixture read a synthetic successor from current-user DPAPI. Before each dispatch, the test verified that the on-disk journal contained `pending`. A disposable HTTP server on IPv4 loopback checked all five requests for the expected method, mutation path, content type and token-bearing JSON body. It then dropped the first reply. Malformed JSON, a missing value and a 503 carrying a success envelope also left the ciphertext byte-identical and blocked resume. Only the HTTP 200 response carrying an explicit null completed cleanup.
+
+From the repository root, `cargo test --locked --offline --manifest-path spikes/p0/native/src-tauri/Cargo.toml --features p0-session --lib` passed 27 tests, with one subprocess entry exercised by its parent tests. Cargo formatting passed. The packaged fixture shares request construction and acknowledgment handling. Reqwest and the loopback server are Windows test dependencies. The next integration check is to drive native HTTP from a packaged fixture. Hosted native login, reconnect and provider-side revocation still require separate evidence.
+
+### Task links on static and Tauri origins
+
+Tested source `160ae616afd93b8df1cc42d24a8417bd02a2e929`. A browser created a synthetic task under the nested static mount `/klaxon/p0/`. Opening its fragment in a fresh page and reloading each requested the mount itself. The ID in the address matched the stored task row on both reads. Directly opening the equivalent history path returned 404 on this server, which had no rewrite. Packaged Windows WebView2 158.0.4370.33 reopened the same type of fragment after a native process restart. Its asset handler also served the fixture after navigation and reload at the history-style path.
+
+From `spikes/p0`, `npm run build` and `npm run test:portable` passed, including all 48 tests. The focused command is `node --test --test-name-pattern="task fragment" portable.test.mjs`. The Windows command was `node native/smoke.mjs windows`. This exercised document loading and stable row identity. OS link dispatch, Android routing and the account-scoped detail view remain open. [Routing decision](adr/p0-architecture.md#shared-client-and-backend)
 
 ### Windows CI process identity
 
