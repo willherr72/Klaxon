@@ -38,6 +38,8 @@ Source references: src-tauri/src/db/migrations.rs, migration_016.sql, migration_
 
 ### Synthetic failure and recovery evidence
 
+Start the task projection from every reminder with `silent=1`. A v1 task can have zero steps. The fixture includes a pending task with no steps in a custom lane and a completed task with two steps in the default lane. The optional step join retains the first task and orders the second task’s children by `sort_key` and ID. Schema 17 also permits a missing or dangling task lane reference. The preflight checks each task’s lane before the join and reports the count that needs reconciliation. Each rejected synthetic snapshot retains its original file hash.
+
 Schema 17 has no foreign key from a step to its task. The original rehearsal's inner join could still report success when an additional step had no parent. The read-only preflight now checks every step against a silent task. Two disposable snapshots exercise a missing parent and a parent that is an ordinary reminder. Each must report one unresolved step and retain its original file hash after validation. This identifies rows that need reconciliation before import.
 
 `python spikes/migration/probe.py` also seeds a disposable schema-17 database in WAL mode. With one step rename committed and a second rename still pending, the probe takes two copies. Copying the main database file alone produces a copy that passes SQLite integrity and the fixture’s schema and relationship checks, yet still contains the original step title. SQLite’s online backup, taken through a separate read-only connection, contains the committed title. The source retains that same title after the writer closes and rolls back the pending edit.
