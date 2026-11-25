@@ -38,4 +38,6 @@ Source references: src-tauri/src/db/migrations.rs, migration_016.sql, migration_
 
 ### Synthetic failure and recovery evidence
 
+Schema 17 has no foreign key from a step to its task. The original rehearsal's inner join could still report success when an additional step had no parent. The read-only preflight now checks every step against a silent task. Two disposable snapshots exercise a missing parent and a parent that is an ordinary reminder. Each must report one unresolved step and retain its original file hash after validation. This identifies rows that need reconciliation before import.
+
 `python spikes/migration/probe.py` also seeds a disposable second device database in WAL mode. With an uncommitted step edit pending, a separate read-only connection takes an online SQLite backup. Both the recovered source and snapshot must contain the last committed step title. A truncated derivative must fail SQLite validation, after which rereading the intact snapshot must pass. This exercises source-side snapshots only. Verify import idempotency, reconciliation across divergent device histories, and destination restore when P1 opens.
