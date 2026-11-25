@@ -45,7 +45,7 @@ fn run_with_provider<B: AsRef<[u8]>>(
         slot.set_sign_out_state(SignOutState::Pending)
             .map_err(|_| RETRY)?;
     }
-    let marker = slot.read().map_err(|_| RETRY)?;
+    let marker = slot.read().map_err(|_| RETRY)?.marker;
     if !matches!(marker.as_slice(), MARKER | PEER_MARKER | SUCCESSOR_MARKER) {
         return Err(RETRY);
     }

@@ -38,6 +38,12 @@ enum Owner {
     B,
 }
 
+#[derive(Clone, Copy)]
+struct SessionIdentity {
+    owner: Owner,
+    id: store::SessionId,
+}
+
 struct Task {
     owner: Owner,
     id: &'static str,
@@ -48,7 +54,7 @@ struct Task {
 type Rows = Vec<BTreeMap<&'static str, &'static str>>;
 
 struct Provider {
-    owner: Option<Owner>,
+    session: Option<SessionIdentity>,
     subscription: Option<Channel<Rows>>,
     tasks: [Task; 2],
 }
@@ -56,7 +62,7 @@ struct Provider {
 impl Provider {
     fn new() -> Self {
         Self {
-            owner: None,
+            session: None,
             subscription: None,
             tasks: [
                 Task {
@@ -76,7 +82,7 @@ impl Provider {
     }
 
     fn revoke(&mut self) {
-        self.owner = None;
+        self.session = None;
         self.subscription = None;
     }
 
@@ -84,7 +90,7 @@ impl Provider {
         self.revoke();
         match confirm_resume(path.ok_or("unavailable")?) {
             Ok(session) => {
-                self.owner = Some(session.owner);
+                self.session = Some(session.identity);
                 Ok("authenticated")
             }
             Err(status @ ("retry-required" | "signed-out")) => Ok(status),
@@ -93,8 +99,8 @@ impl Provider {
     }
 
     fn sdk_access(&mut self, slot: Option<&Path>) -> Result<String, &'static str> {
-        let active = self.owner.ok_or("signed-out")?;
-        // Recheck even for cached SDK sessions. An owner change requires explicit resume.
+        let active = self.session.ok_or("signed-out")?;
+        // Recheck even for cached SDK sessions. A replacement requires explicit resume.
         let access = slot
             .ok_or("unavailable")
             .and_then(|slot| confirm_session(slot, Some(active)))
@@ -112,7 +118,7 @@ impl Provider {
     }
 
     fn rows(&self) -> Result<Rows, &'static str> {
-        let owner = self.owner.ok_or("signed-out")?;
+        let owner = self.session.ok_or("signed-out")?.owner;
         Ok(self
             .tasks
             .iter()
@@ -122,7 +128,7 @@ impl Provider {
     }
 
     fn publish(&mut self) -> Result<(), &'static str> {
-        let owner = self.owner.ok_or("signed-out")?;
+        let owner = self.session.ok_or("signed-out")?.owner;
         let task = self
             .tasks
             .iter_mut()
@@ -171,7 +177,7 @@ fn provider<'a>(
 }
 
 struct ConfirmedSession {
-    owner: Owner,
+    identity: SessionIdentity,
     access: String,
 }
 
@@ -209,16 +215,15 @@ fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str>
     if grant.access_token != access || grant.refresh_token != refresh {
         return Err("unavailable");
     }
-    slot.publish(grant.refresh_token.as_bytes(), store::Publish::Seed)
+    slot.seed(grant.refresh_token.as_bytes())
         .map_err(|_| "unavailable")?;
     Ok("fixture-ready")
 }
 
 fn accept_refresh(
     slot: &store::Slot<'_>,
-    marker: &[u8],
     body: &[u8],
-) -> Result<String, &'static str> {
+) -> Result<(String, &'static [u8]), &'static str> {
     let Some(grant) = super::refresh_response::decode(body).map_err(|_| "unavailable")? else {
         slot.remove().map_err(|_| "unavailable")?;
         return Err("signed-out");
@@ -229,12 +234,7 @@ fn accept_refresh(
     {
         return Err("unavailable");
     }
-    // A later Resume can confirm the fixture's already committed successor.
-    if marker != grant.refresh_token.as_bytes() {
-        slot.publish(grant.refresh_token.as_bytes(), store::Publish::Refresh)
-            .map_err(|_| "unavailable")?;
-    }
-    Ok(grant.access_token)
+    Ok((grant.access_token, SUCCESSOR_MARKER))
 }
 
 fn confirm_resume(path: &Path) -> Result<ConfirmedSession, &'static str> {
@@ -255,7 +255,7 @@ fn confirm_resume(path: &Path) -> Result<ConfirmedSession, &'static str> {
             if !(200..300).contains(&status) {
                 return Err("retry-required");
             }
-            accept_refresh(slot, marker, &body)
+            accept_refresh(slot, &body)
         });
     }
     confirm_session(path, None)
@@ -263,51 +263,62 @@ fn confirm_resume(path: &Path) -> Result<ConfirmedSession, &'static str> {
 
 fn confirm_session(
     path: &Path,
-    expected_owner: Option<Owner>,
+    expected: Option<SessionIdentity>,
 ) -> Result<ConfirmedSession, &'static str> {
-    confirm_session_with(path, expected_owner, |slot, owner, marker| match owner {
-        Owner::A if marker == MARKER && provider_flag(path, "p0-require-successor")? => {
-            accept_refresh(
-                slot,
-                marker,
-                br#"{"status":"success","value":{"kind":"noSession"}}"#,
-            )
-        }
-        Owner::A if marker == MARKER && provider_flag(path, "p0-provider-refresh")? => {
-            accept_refresh(slot, marker, REFRESH_RESPONSE)
-        }
-        Owner::A if expected_owner.is_some() && provider_flag(path, "p0-provider-rotated")? => {
-            Ok(crate::ROTATED_OWNER_A_ACCESS.to_owned())
-        }
-        Owner::A => Ok(OWNER_A_ACCESS.to_owned()),
-        Owner::B => Ok("p0-inert-access-b".to_owned()),
+    confirm_session_with(path, expected, |slot, owner, marker| {
+        let access = match owner {
+            Owner::A if marker == MARKER && provider_flag(path, "p0-require-successor")? => {
+                return accept_refresh(
+                    slot,
+                    br#"{"status":"success","value":{"kind":"noSession"}}"#,
+                );
+            }
+            Owner::A if marker == MARKER && provider_flag(path, "p0-provider-refresh")? => {
+                return accept_refresh(slot, REFRESH_RESPONSE);
+            }
+            Owner::A if expected.is_some() && provider_flag(path, "p0-provider-rotated")? => {
+                crate::ROTATED_OWNER_A_ACCESS
+            }
+            Owner::A => OWNER_A_ACCESS,
+            Owner::B => "p0-inert-access-b",
+        };
+        Ok((access.to_owned(), marker))
     })
 }
 
 fn confirm_session_with(
     path: &Path,
-    expected_owner: Option<Owner>,
-    check_provider: impl FnOnce(&store::Slot<'_>, Owner, &[u8]) -> Result<String, &'static str>,
+    expected: Option<SessionIdentity>,
+    check_provider: impl FnOnce(
+        &store::Slot<'_>,
+        Owner,
+        &'static [u8],
+    ) -> Result<(String, &'static [u8]), &'static str>,
 ) -> Result<ConfirmedSession, &'static str> {
     let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
     require_no_pending_sign_out(&slot)?;
-    let marker = slot.read().map_err(|error| match error.kind() {
+    let record = slot.read().map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => "signed-out",
         _ => "unavailable",
     })?;
-    let owner = match marker.as_slice() {
-        MARKER | SUCCESSOR_MARKER => Owner::A,
-        PEER_MARKER => Owner::B,
+    let (owner, marker) = match record.marker.as_slice() {
+        MARKER => (Owner::A, MARKER),
+        SUCCESSOR_MARKER => (Owner::A, SUCCESSOR_MARKER),
+        PEER_MARKER => (Owner::B, PEER_MARKER),
         _ => return Err("unavailable"),
     };
-    if expected_owner.is_some_and(|expected| expected != owner) {
+    if expected.is_some_and(|session| session.owner != owner || Some(session.id) != record.id) {
         return Err("unavailable");
     }
     if provider_flag(path, "p0-provider-offline")? {
         return Err("retry-required");
     }
-    let access = check_provider(&slot, owner, &marker)?;
-    Ok(ConfirmedSession { owner, access })
+    let (access, marker) = check_provider(&slot, owner, marker)?;
+    let id = slot.commit(&record, marker).map_err(|_| "unavailable")?;
+    Ok(ConfirmedSession {
+        identity: SessionIdentity { owner, id },
+        access,
+    })
 }
 
 #[cfg(not(feature = "p0-windows-sign-out-http"))]

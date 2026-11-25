@@ -13,7 +13,7 @@ const TEST_ACTION: &str = "KLAXON_P0_TEST_ACTION";
 const TEST_CHECKPOINT: &str = "KLAXON_P0_TEST_CHECKPOINT";
 
 fn seed(slot: &Path, marker: &[u8]) -> io::Result<()> {
-    store::Slot::lock(slot)?.publish(marker, store::Publish::Seed)
+    store::Slot::lock(slot)?.seed(marker)
 }
 
 struct TestSlot {
@@ -154,12 +154,14 @@ fn refresh_child() {
                 assert_eq!(provider.sdk_access(Some(&path)), Err("signed-out"));
             } else {
                 assert_eq!(provider.resume(Some(&path)), Ok("authenticated"));
-                assert!(provider.owner == Some(Owner::A));
+                assert!(provider
+                    .session
+                    .is_some_and(|session| session.owner == Owner::A));
                 #[cfg(feature = "p0-windows-sign-out-http")]
                 if env::var_os("KLAXON_P0_REFRESH_PORT").is_some() {
                     let committed = store::Slot::lock(&path).unwrap().read().unwrap();
                     assert!(
-                        committed == SUCCESSOR_MARKER,
+                        committed.marker == SUCCESSOR_MARKER,
                         "authenticated before DPAPI commit"
                     );
                 }
@@ -170,6 +172,10 @@ fn refresh_child() {
             }
         }
         Ok("sign-out") => assert_eq!(sign_out(&path), Ok("signed-out")),
+        Ok("replace-owner-a") => {
+            assert_eq!(sign_out(&path), Ok("signed-out"));
+            assert_eq!(seed_session(&path, Owner::A), Ok("fixture-ready"));
+        }
         Ok("retry-sign-out") => assert_eq!(sign_out(&path), Err("retry-required")),
         Ok("sign-out-pending") => {
             let mut provider = Provider::new();
@@ -295,7 +301,7 @@ fn sign_out_after_interruption_removes_only_scoped_files() {
     seed(&slot.path, PEER_MARKER).unwrap();
     let peer = slot.ciphertext();
     let session = confirm_session(&slot.path, None).unwrap();
-    assert!(session.owner == Owner::B && session.access == "p0-inert-access-b");
+    assert!(session.identity.owner == Owner::B && session.access == "p0-inert-access-b");
     assert!(
         slot.ciphertext() == peer,
         "the A refresh flag rewrote the peer record"
@@ -303,18 +309,104 @@ fn sign_out_after_interruption_removes_only_scoped_files() {
 }
 
 #[test]
+fn surviving_hosts_require_resume_after_same_owner_replacement() {
+    let slot = TestSlot::new("same-owner-replacement");
+    let path = Some(slot.path.as_path());
+    assert_eq!(seed_session(&slot.path, Owner::A), Ok("fixture-ready"));
+
+    let mut sdk_host = Provider::new();
+    let mut task_host = Provider::new();
+    assert_eq!(sdk_host.resume(path), Ok("authenticated"));
+    assert_eq!(task_host.resume(path), Ok("authenticated"));
+    task_host.active_tasks(path).unwrap().subscription = Some(Channel::new(|_| Ok(())));
+    let predecessor = slot.ciphertext();
+
+    slot.flag("p0-provider-refresh", true);
+    slot.child("resume", "").expect_success();
+    assert!(slot.ciphertext() != predecessor);
+    assert_eq!(sdk_host.sdk_access(path).as_deref(), Ok(OWNER_A_ACCESS));
+    assert_eq!(
+        task_host.active_tasks(path).unwrap().rows().unwrap().len(),
+        1
+    );
+    assert!(task_host.subscription.is_some());
+
+    slot.child("replace-owner-a", "").expect_success();
+    // Both sessions reach the same inert successor marker.
+    slot.child("resume", "").expect_success();
+    let replacement = slot.ciphertext();
+    assert!(sdk_host.sdk_access(path).is_err());
+    assert!(task_host.active_tasks(path).is_err());
+    assert!(task_host.subscription.is_none());
+    assert!(
+        slot.ciphertext() == replacement,
+        "stale host changed the replacement"
+    );
+    assert_eq!(sdk_host.sdk_access(path), Err("signed-out"));
+    assert_eq!(task_host.active_tasks(path).err(), Some("signed-out"));
+
+    assert_eq!(sdk_host.resume(path), Ok("authenticated"));
+    assert_eq!(sdk_host.sdk_access(path).as_deref(), Ok(OWNER_A_ACCESS));
+    assert_eq!(task_host.resume(path), Ok("authenticated"));
+    assert_eq!(
+        task_host.active_tasks(path).unwrap().rows().unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn legacy_session_is_bound_only_after_successful_resume() {
+    let slot = TestSlot::new("legacy-session");
+    let path = Some(slot.path.as_path());
+    store::Slot::lock(&slot.path)
+        .unwrap()
+        .seed_legacy(MARKER)
+        .unwrap();
+    let legacy = slot.ciphertext();
+    let mut provider = Provider::new();
+
+    slot.flag("p0-provider-offline", true);
+    assert_eq!(provider.resume(path), Ok("retry-required"));
+    assert_eq!(provider.sdk_access(path), Err("signed-out"));
+    assert!(slot.ciphertext() == legacy);
+    slot.flag("p0-provider-offline", false);
+
+    let mut writer = slot.child("resume", "before-replace");
+    writer.wait_for_checkpoint(&slot);
+    writer.terminate();
+    assert!(slot.ciphertext() == legacy && slot.staged().exists());
+
+    assert_eq!(provider.resume(path), Ok("authenticated"));
+    let bound = slot.ciphertext();
+    assert!(bound != legacy && !slot.staged().exists());
+    slot.child("resume", "").expect_success();
+    assert!(slot.ciphertext() == bound);
+
+    slot.flag("p0-provider-refresh", true);
+    slot.child("resume", "").expect_success();
+    assert!(slot.ciphertext() != bound);
+    assert_eq!(provider.sdk_access(path).as_deref(), Ok(OWNER_A_ACCESS));
+
+    // A marker-only record can still be signed out without being resumed first.
+    fs::write(&slot.path, legacy).unwrap();
+    assert!(provider.sdk_access(path).is_err());
+    slot.child("sign-out", "").expect_success();
+    assert!(!slot.path.exists());
+}
+
+#[test]
 fn native_task_peer_drops_its_subscription_after_another_process_starts_sign_out() {
     let slot = TestSlot::new("peer-task-revocation");
     seed(&slot.path, SUCCESSOR_MARKER).unwrap();
     let mut peer = Provider::new();
-    peer.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
     let path = Some(slot.path.as_path());
+    assert_eq!(peer.resume(path), Ok("authenticated"));
     peer.active_tasks(path).unwrap().subscription = Some(Channel::new(|_| Ok(())));
     assert_eq!(peer.active_tasks(path).unwrap().rows().unwrap().len(), 1);
     slot.flag("p0-signout-drop-reply", true);
     slot.child("retry-sign-out", "").expect_success();
     assert_eq!(peer.active_tasks(path).err(), Some("retry-required"));
-    assert!(peer.owner.is_none() && peer.subscription.is_none());
+    assert!(peer.session.is_none() && peer.subscription.is_none());
     assert_eq!(peer.publish(), Err("signed-out"));
 }
 
@@ -326,7 +418,7 @@ fn offline_sign_out_blocks_cold_access_before_the_provider_commits() {
     let receipt = slot.path.with_file_name("p0-issuer-revoked-successor");
     let pending = slot.path.with_extension("signout-pending");
     let mut provider = Provider::new();
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert_eq!(provider.resume(Some(&slot.path)), Ok("authenticated"));
     slot.flag("p0-provider-offline", true);
     slot.flag("p0-signout-drop-reply", true);
     slot.child("retry-sign-out", "").expect_success();
@@ -340,7 +432,7 @@ fn offline_sign_out_blocks_cold_access_before_the_provider_commits() {
         provider.sdk_access(Some(&slot.path)).err(),
         Some("retry-required")
     );
-    assert!(provider.owner.is_none());
+    assert!(provider.session.is_none());
     assert!(!receipt.exists(), "resume committed a pending sign-out");
 }
 
@@ -374,7 +466,7 @@ fn lost_sign_out_reply_retries_the_rotated_marker_before_clearing() {
 
     {
         let store = store::Slot::lock(&slot.path).unwrap();
-        store.publish(MARKER, store::Publish::Refresh).unwrap();
+        store.commit(&store.read().unwrap(), MARKER).unwrap();
     }
     slot.child("retry-sign-out", "").expect_success();
     assert!(pending.is_file() && slot.path.is_file());
@@ -391,7 +483,7 @@ fn lost_sign_out_reply_retries_the_rotated_marker_before_clearing() {
     assert!(confirm_session(&slot.path, None).is_ok());
     assert_eq!(sign_out(&slot.path), Ok("signed-out"));
     assert_eq!(seed_session(&slot.path, Owner::B), Ok("fixture-ready"));
-    assert!(confirm_session(&slot.path, None).unwrap().owner == Owner::B);
+    assert!(confirm_session(&slot.path, None).unwrap().identity.owner == Owner::B);
 }
 
 #[test]
@@ -745,7 +837,7 @@ fn initial_grant_must_publish_without_overwriting_an_existing_owner() {
     }
     assert_eq!(seed_session(&slot.path, Owner::A), Err("unavailable"));
     assert!(slot.ciphertext() == peer && !slot.staged().exists());
-    assert!(confirm_session(&slot.path, None).unwrap().owner == Owner::B);
+    assert!(confirm_session(&slot.path, None).unwrap().identity.owner == Owner::B);
 }
 
 #[test]
@@ -755,16 +847,16 @@ fn sdk_access_publishes_the_grant_only_when_provider_is_available() {
     let predecessor = slot.ciphertext();
     let path = Some(slot.path.as_path());
     let mut provider = Provider::new();
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert_eq!(provider.resume(path), Ok("authenticated"));
     slot.flag("p0-provider-refresh", true);
     slot.flag("p0-provider-offline", true);
 
     assert_eq!(provider.sdk_access(path).err(), Some("retry-required"));
-    assert!(provider.owner.is_none());
+    assert!(provider.session.is_none());
     assert!(slot.ciphertext() == predecessor);
     slot.flag("p0-provider-refresh", false);
     slot.flag("p0-provider-offline", false);
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert_eq!(provider.resume(path), Ok("authenticated"));
     slot.flag("p0-provider-refresh", true);
 
     assert!(provider.sdk_access(path).unwrap() == "p0-inert-access-a");
@@ -780,17 +872,11 @@ fn only_a_confirmed_no_session_removes_the_record() {
     let before = test.ciphertext();
     let slot = store::Slot::lock(&test.path).unwrap();
     let failed = br#"{"status":"error","value":{"kind":"noSession"}}"#;
-    assert_eq!(
-        accept_refresh(&slot, MARKER, failed).err(),
-        Some("unavailable")
-    );
+    assert_eq!(accept_refresh(&slot, failed).err(), Some("unavailable"));
     assert!(test.ciphertext() == before);
 
     let ended = br#"{"status":"success","value":{"kind":"noSession"}}"#;
-    assert_eq!(
-        accept_refresh(&slot, MARKER, ended).err(),
-        Some("signed-out")
-    );
+    assert_eq!(accept_refresh(&slot, ended).err(), Some("signed-out"));
     drop(slot);
     assert!(!test.path.try_exists().unwrap());
     assert_eq!(confirm_session(&test.path, None).err(), Some("signed-out"));
@@ -812,7 +898,7 @@ fn invalid_grant_cannot_change_the_record() {
         let body = response.replace(field, replacement);
         assert!(body != response);
         assert_eq!(
-            accept_refresh(&slot, MARKER, body.as_bytes()).err(),
+            accept_refresh(&slot, body.as_bytes()).err(),
             Some("unavailable"),
             "{label}"
         );
@@ -843,7 +929,7 @@ fn sdk_access_rechecks_record_and_revokes_on_failure() {
 
     seed(&slot.path, MARKER).unwrap();
     assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert_eq!(provider.resume(path), Ok("authenticated"));
     let expected = "p0-inert-access-a";
     assert!(provider.sdk_access(path).unwrap() == expected);
     slot.flag("p0-provider-rotated", true);
@@ -854,18 +940,18 @@ fn sdk_access_rechecks_record_and_revokes_on_failure() {
     slot.flag("p0-provider-offline", false);
     assert_eq!(provider.sdk_access(path).err(), Some("signed-out"));
 
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert_eq!(provider.resume(path), Ok("authenticated"));
     assert_eq!(sign_out(&slot.path), Ok("signed-out"));
     seed(&slot.path, PEER_MARKER).unwrap();
     assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
-    assert!(provider.owner.is_none());
-    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    assert!(provider.session.is_none());
+    assert_eq!(provider.resume(path), Ok("authenticated"));
     let expected = "p0-inert-access-b";
     assert!(provider.sdk_access(path).unwrap() == expected);
 
     fs::write(&slot.path, b"damaged").unwrap();
     assert_eq!(provider.sdk_access(path).err(), Some("unavailable"));
-    assert!(provider.owner.is_none());
+    assert!(provider.session.is_none());
     let expected = concat!(
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
         "eyJzdWIiOiJwMC1pbmVydC1hY2Nlc3MtYTIiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDA4NjQwMH0.",

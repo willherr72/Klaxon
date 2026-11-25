@@ -8,7 +8,8 @@ use std::{
 use windows_sys::Win32::{
     Foundation::LocalFree,
     Security::Cryptography::{
-        CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
+        BCryptGenRandom, CryptProtectData, CryptUnprotectData, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     },
     Storage::FileSystem::{
         MoveFileExW, FILE_FLAG_DELETE_ON_CLOSE, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
@@ -16,10 +17,18 @@ use windows_sys::Win32::{
 };
 
 const CONTEXT: &[u8] = b"dev.klaxon.p0native/session-v1/packaged";
+const RECORD_HEADER: &[u8] = b"klaxon-p0-session-v2\0";
 
-pub(super) enum Publish {
+pub(super) type SessionId = [u8; 16];
+
+pub(super) struct Record {
+    pub(super) id: Option<SessionId>,
+    pub(super) marker: Vec<u8>,
+}
+
+enum Publish {
     Seed,
-    Refresh,
+    ReplaceSession,
     SignOutState,
 }
 
@@ -49,14 +58,48 @@ impl<'a> Slot<'a> {
         Ok(Self { path, _lock: lock })
     }
 
-    pub(super) fn read(&self) -> io::Result<Vec<u8>> {
-        let record = fs::read(self.path)?;
-        dpapi(&record, false).map_err(io::Error::other)
+    pub(super) fn read(&self) -> io::Result<Record> {
+        let bytes = dpapi(&fs::read(self.path)?, false).map_err(io::Error::other)?;
+        let Some(payload) = bytes.strip_prefix(RECORD_HEADER) else {
+            // The previous fixture format protected just the inert marker.
+            return Ok(Record {
+                id: None,
+                marker: bytes,
+            });
+        };
+        let (id, marker) = payload
+            .split_first_chunk::<16>()
+            .ok_or(io::ErrorKind::InvalidData)?;
+        Ok(Record {
+            id: Some(*id),
+            marker: marker.to_vec(),
+        })
     }
 
-    pub(super) fn publish(&self, marker: &[u8], operation: Publish) -> io::Result<()> {
-        let ciphertext = dpapi(marker, true)?;
+    pub(super) fn seed(&self, marker: &[u8]) -> io::Result<()> {
+        self.write_session(new_session_id()?, marker, Publish::Seed)
+    }
+
+    // Commit a confirmed marker and bind legacy records in the same atomic write.
+    pub(super) fn commit(&self, record: &Record, marker: &[u8]) -> io::Result<SessionId> {
+        let id = match record.id {
+            Some(id) if record.marker == marker => return Ok(id),
+            Some(id) => id,
+            None => new_session_id()?,
+        };
+        self.write_session(id, marker, Publish::ReplaceSession)?;
+        Ok(id)
+    }
+
+    fn write_session(&self, id: SessionId, marker: &[u8], operation: Publish) -> io::Result<()> {
+        let payload = [RECORD_HEADER, &id, marker].concat();
+        let ciphertext = dpapi(&payload, true)?;
         self.publish_record(&ciphertext, self.path, operation)
+    }
+
+    #[cfg(test)]
+    pub(super) fn seed_legacy(&self, marker: &[u8]) -> io::Result<()> {
+        self.publish_record(&dpapi(marker, true)?, self.path, Publish::Seed)
     }
 
     pub(super) fn sign_out_state(&self) -> io::Result<Option<SignOutState>> {
@@ -103,7 +146,7 @@ impl<'a> Slot<'a> {
 
         let seed = matches!(operation, Publish::Seed);
         #[cfg(test)]
-        let refresh = matches!(operation, Publish::Refresh);
+        let replace_session = matches!(operation, Publish::ReplaceSession);
         let published = written.and_then(|()| {
             #[cfg(test)]
             if seed
@@ -115,7 +158,7 @@ impl<'a> Slot<'a> {
                 fs::remove_file(&staged)?;
             }
             #[cfg(test)]
-            if refresh {
+            if replace_session {
                 super::tests::crash_checkpoint(self.path, "before-replace");
             }
             let flags = MOVEFILE_WRITE_THROUGH | if seed { 0 } else { MOVEFILE_REPLACE_EXISTING };
@@ -134,7 +177,7 @@ impl<'a> Slot<'a> {
                 return Err(io::Error::last_os_error());
             }
             #[cfg(test)]
-            if refresh {
+            if replace_session {
                 super::tests::crash_checkpoint(self.path, "after-replace");
             }
             Ok(())
@@ -148,6 +191,23 @@ impl<'a> Slot<'a> {
     pub(super) fn remove(&self) -> io::Result<()> {
         remove_if_present(self.path)
     }
+}
+
+fn new_session_id() -> io::Result<SessionId> {
+    let mut id = [0; 16];
+    // The system RNG takes a null algorithm handle and writes only to this buffer.
+    let status = unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            id.as_mut_ptr(),
+            id.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::other("could not generate fixture session ID"));
+    }
+    Ok(id)
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
