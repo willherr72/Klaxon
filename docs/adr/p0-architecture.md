@@ -20,6 +20,8 @@ The Android fixture uses a single packaged app process, serialized plugin calls,
 
 On Android, initial sign-in can die after key creation but before the encrypted record is published. Under the fixture's single-writer assumption, resume or a fresh validated sign-in may discard that slot's staging file and key only when both the published record and its legacy backup are verifiably absent. A backup blocks cleanup even when the base file is missing. The [initial sign-in evidence](../klaxon-v2-progress.md#android-initial-sign-in-to-keystore) covers these two recovery paths.
 
+The [Windows sign-out fixture](../klaxon-v2-progress.md#windows-sign-out-after-a-lost-acknowledgment) distinguishes an issuer that may have committed revocation from a client that received confirmation. Keep the protected refresh record available for an idempotent retry while denying fresh access. Persist a confirmed acknowledgment before deleting that record so local cleanup can resume after process termination.
+
 ## Shared client and backend
 
 Accepted for the spike on 2026-11-23. Retain the existing shared static Svelte/Vite build. Keep native OS services behind Tauri commands. Place the spike in its own package so its dependency graph and generated configuration cannot enter a v1 release. Start with client routing that works with a static host and Tauri asset URLs; test direct task-detail navigation before choosing history fallback or hash routes in P1.

@@ -45,6 +45,8 @@ node native/package.mjs --target windows --session
 node native/smoke.mjs windows-sdk
 ```
 
+The sign-out case uses a simulated issuer and the current rotated DPAPI record. It drops two replies, checks access denial and byte-identical ciphertext after a cold launch, then lets the issuer acknowledge a retry. A third process must stay signed out. The test owns the issuer observation files and a separate unrelated file used to check cleanup. [Sign-out evidence](../../../docs/klaxon-v2-progress.md#windows-sign-out-after-a-lost-acknowledgment)
+
 The test verifies owner-filtered reads and updates, failed forced refresh during an outage, recovery, peer switching and sign-out. It checks that native refresh markers stay behind the bridge and that access values stay out of inspected DOM, storage and logs. The runner removes the slot and WebView profile. [Results and limits](../../../docs/klaxon-v2-progress.md#packaged-windows-dpapi-to-sdk-handoff)
 
 The Windows and Android SDK smokes also exercise successful access-token replacement. The harness sets a flag in the native fixture directory and tells the in-process provider to expire A’s first access value. The SDK must request a new value through native IPC, authenticate its subscription again and use the replacement for an HTTP read. The companion `node --test sdk-task-session.test.mjs` check presents the old value directly to each intercepted transport after cutover. The provider’s immediate rejection rule is specific to this test. The encrypted refresh record is reused throughout the exchange.
