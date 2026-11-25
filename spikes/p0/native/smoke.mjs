@@ -17,7 +17,7 @@ import {
 } from "./packaged-session/sdk-check.mjs";
 import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
 import { readFixtureFile } from "./packaged-session/adb-file.mjs";
-import { observeWindowsBrowsers, windowsProcessIdentity } from "./windows-process.mjs";
+import { observeWindowsBrowsers, windowsFixtureProcesses, windowsProcessIdentity } from "./windows-process.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -108,37 +108,6 @@ function windowsLoopbackListeners() {
 function windowsListenerPid(port) {
   const listeners = windowsLoopbackListeners().filter(listener => listener.port === port);
   return listeners.length === 1 ? listeners[0].pid : undefined;
-}
-
-function windowsFixtureProcesses(hostPid, profile) {
-  // Inspect only the host and its WebView2 children. Emit process identities and
-  // profile matches without exposing the child command lines.
-  const script = String.raw`
-    $ErrorActionPreference = 'Stop'
-    $ProgressPreference = 'SilentlyContinue'
-    $fixtureProfile = [IO.Path]::GetFullPath($env:KLAXON_P0_WEBVIEW_PROFILE)
-    $browserProfile = Join-Path $fixtureProfile 'EBWebView'
-    Get-CimInstance Win32_Process -Filter "ProcessId = ${hostPid} OR (ParentProcessId = ${hostPid} AND Name = 'msedgewebview2.exe')" | ForEach-Object {
-      $matchesProfile = 0
-      if ($_.ProcessId -ne ${hostPid} -and $_.CommandLine -match '(?i)(?:^|\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^"\s]+))(?=\s|$)') {
-        $path = [IO.Path]::GetFullPath($Matches[1] + $Matches[2] + $Matches[3])
-        if ($path -eq $fixtureProfile -or $path -eq $browserProfile) { $matchesProfile = 1 }
-      }
-      "{0} {1} {2}" -f $_.ProcessId, $_.CreationDate.ToUniversalTime().Ticks, $matchesProfile
-    }
-  `;
-  const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64")], {
-    encoding: "utf8", timeout: 10000, windowsHide: true,
-    env: { ...process.env, KLAXON_P0_WEBVIEW_PROFILE: profile },
-  });
-  const rows = output.trim();
-  if (!rows) return new Map();
-  return new Map(rows.split(/\r?\n/).map(row => {
-    const match = /^([1-9]\d*) ([1-9]\d*) ([01])$/.exec(row);
-    assert.ok(match && Number.isSafeInteger(Number(match[1])), "invalid Windows fixture process identity");
-    return [Number(match[1]), { created: match[2], matchesProfile: match[3] === "1" }];
-  }));
 }
 
 async function withWindowsHost(exe, profile, action, capture, env) {
