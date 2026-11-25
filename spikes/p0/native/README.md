@@ -4,6 +4,24 @@ The Windows executable and Android APK embed the portable Svelte client in Tauri
 
 ## Windows fixture
 
+### Windows reminder installer rehearsal
+
+This build gives the default offline shell its own per-user installer, application identifier and executable name. It exercises the packaging prerequisite for a later closed-client reminder test. It contains no reminder scheduler. From `spikes/p0`, use the locked project dependencies, pinned Tauri CLI, cached NSIS tools, Python and 7-Zip on Windows:
+
+```powershell
+Remove-Item Env:P0_PUBLIC_DEV_ORIGIN -ErrorAction SilentlyContinue
+$env:CARGO_NET_OFFLINE = 'true'
+node build-portable.mjs --outdir native/.frontend
+if ($LASTEXITCODE -ne 0) { throw 'Portable fixture build failed' }
+Set-Location native
+node ../../../node_modules/@tauri-apps/cli/tauri.js build --debug --ci --bundles nsis --config windows-reminder-identity.json -- --locked --offline --bin klaxon-p0-native
+if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+python verify-windows-reminder-installer.py
+if ($LASTEXITCODE -ne 0) { throw 'Installer inspection failed' }
+```
+
+The verifier compares the archived executable with the build output, allowing the pinned CLI’s NSIS type marker, and checks the complete file inventory and rendered installer settings. The shell requires an existing WebView2 runtime. Keep the unsigned installer on the build host until there is a disposable Windows environment. Registration of the installed shortcut, scheduling under its identity and delivery after process exit each require runtime evidence. [Windows scheduling decision](../../../docs/adr/platform-capabilities.md#ordinary-reminder-delivery)
+
 ### Synthetic secure-session probe
 
 From the repository root on Windows with Node 24 and Windows PowerShell 5.1, run `node --test spikes/p0/native/session.test.mjs`. The test starts a new PowerShell process for every operation. It uses current-user DPAPI with the application and fixture owner as context. Only the encrypted synthetic refresh markers cross the process boundary in a temporary directory. The runner checks worker output and stored files for plaintext markers and removes the directory afterward.
