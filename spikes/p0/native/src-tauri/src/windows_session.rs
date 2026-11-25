@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
 };
+#[cfg(feature = "p0-windows-sign-out-http")]
+use tauri::Manager;
 use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
 
 mod sign_out;
@@ -250,23 +252,44 @@ fn confirm_session(
     Ok(ConfirmedSession { owner, access })
 }
 
+#[cfg(not(feature = "p0-windows-sign-out-http"))]
 #[tauri::command]
 fn fixture_session(
     window: WebviewWindow,
     state: State<'_, Mutex<Provider>>,
     operation: String,
 ) -> Result<&'static str, &'static str> {
-    let mut provider = provider(&window, &state)?;
-    if !matches!(
-        operation.as_str(),
-        "seed" | "seed-peer" | "resume" | "sign-out"
-    ) {
+    run_session(&window, &state, &operation)
+}
+
+#[cfg(feature = "p0-windows-sign-out-http")]
+#[tauri::command]
+async fn fixture_session(
+    window: WebviewWindow,
+    operation: String,
+) -> Result<&'static str, &'static str> {
+    // Keep the slot lock across the exchange without blocking the WebView event loop.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = window.state::<Mutex<Provider>>();
+        run_session(&window, &state, &operation)
+    })
+    .await
+    .map_err(|_| "unavailable")?
+}
+
+fn run_session(
+    window: &WebviewWindow,
+    state: &Mutex<Provider>,
+    operation: &str,
+) -> Result<&'static str, &'static str> {
+    let mut provider = provider(window, state)?;
+    if !matches!(operation, "seed" | "seed-peer" | "resume" | "sign-out") {
         return Err("unavailable");
     }
     // Revoke before attempting I/O. Only a subsequent confirmed resume grants access.
     provider.revoke();
     let slot = slot().ok_or("unavailable")?;
-    match operation.as_str() {
+    match operation {
         "seed" => seed_session(&slot, Owner::A),
         "seed-peer" => seed_session(&slot, Owner::B),
         "resume" => match confirm_session(&slot, None) {
@@ -277,7 +300,12 @@ fn fixture_session(
             Err(status @ ("retry-required" | "signed-out")) => Ok(status),
             Err(error) => Err(error),
         },
+        #[cfg(not(feature = "p0-windows-sign-out-http"))]
         "sign-out" => sign_out::run(&slot),
+        #[cfg(feature = "p0-windows-sign-out-http")]
+        "sign-out" => {
+            sign_out::run_http(&slot, env::var("KLAXON_P0_SIGN_OUT_PORT").ok().as_deref())
+        }
         _ => Err("unavailable"),
     }
 }

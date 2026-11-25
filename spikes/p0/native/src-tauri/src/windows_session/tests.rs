@@ -462,6 +462,35 @@ fn only_success_with_an_explicit_null_acknowledges_sign_out() {
 }
 
 #[test]
+fn invalid_loopback_configuration_keeps_sign_out_pending() {
+    for port in [
+        None,
+        Some(""),
+        Some("0"),
+        Some("000001"),
+        Some("65536"),
+        Some("+80"),
+        Some("80 "),
+        Some("127.0.0.1:80"),
+        Some("http://127.0.0.1:80/api/mutation"),
+    ] {
+        let slot = TestSlot::new("invalid-sign-out-port");
+        seed(&slot.path, SUCCESSOR_MARKER).unwrap();
+        let ciphertext = slot.ciphertext();
+        assert_eq!(sign_out::run_http(&slot.path, port), Err("retry-required"));
+        assert_eq!(
+            fs::read(slot.path.with_extension("signout-pending")).unwrap(),
+            b"pending"
+        );
+        assert!(slot.ciphertext() == ciphertext);
+        assert_eq!(
+            confirm_session(&slot.path, None).err(),
+            Some("retry-required")
+        );
+    }
+}
+
+#[test]
 fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
     let slot = TestSlot::new("http-sign-out");
     seed(&slot.path, SUCCESSOR_MARKER).unwrap();
@@ -472,21 +501,18 @@ fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
         .build()
         .unwrap();
     let attempt = |reply| {
-        sign_out::run_with_provider(&slot.path, |request| {
-            assert_eq!(
-                fs::read(&pending).unwrap(),
-                b"pending",
-                "record intent before sending"
-            );
-            runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(5), loopback_sign_out(request, reply))
-                    .await
-                    .expect("sign-out exchange timed out")
-            })
+        runtime.block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                loopback_sign_out(&slot.path, reply),
+            )
+            .await
+            .expect("sign-out exchange timed out")
         })
     };
 
     let success: &[u8] = br#"{"status":"success","value":null,"logLines":[]}"#;
+    let oversized = [success, &[b' '; 16 * 1024]].concat();
     for (label, reply) in [
         ("lost reply", None),
         ("malformed JSON", Some((200, &b"{"[..]))),
@@ -495,6 +521,7 @@ fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
             Some((200, &br#"{"status":"success","logLines":[]}"#[..])),
         ),
         ("HTTP error with a success envelope", Some((503, success))),
+        ("oversized success envelope", Some((200, &oversized[..]))),
     ] {
         assert_eq!(attempt(reply), Err("retry-required"), "{label}");
         assert!(
@@ -514,9 +541,9 @@ fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
 }
 
 async fn loopback_sign_out(
-    request: &serde_json::Value,
-    reply: Option<(u16, &'static [u8])>,
-) -> Result<(u16, hyper::body::Bytes), &'static str> {
+    slot: &Path,
+    reply: Option<(u16, &[u8])>,
+) -> Result<&'static str, &'static str> {
     use http_body_util::{BodyExt, Full};
     use hyper::{
         body::{Bytes, Incoming},
@@ -532,11 +559,18 @@ async fn loopback_sign_out(
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
-    let address = listener.local_addr().unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let pending = slot.with_extension("signout-pending");
+    let reply = reply.map(|(status, body)| (status, Bytes::copy_from_slice(body)));
     let server = tokio::spawn(async move {
         let checked = AtomicBool::new(false);
         let (stream, _) = listener.accept().await.unwrap();
         let service = service_fn(|request: Request<Incoming>| async {
+            assert_eq!(
+                fs::read(&pending).unwrap(),
+                b"pending",
+                "record intent before sending"
+            );
             let (parts, body) = request.into_parts();
             assert!(parts.method == Method::POST, "expected POST");
             assert!(
@@ -568,12 +602,13 @@ async fn loopback_sign_out(
                 "unexpected mutation body"
             );
             checked.store(true, Ordering::Relaxed);
-            let (status, body) =
-                reply.ok_or_else(|| io::Error::other("fixture dropped its reply"))?;
+            let (status, body) = reply
+                .clone()
+                .ok_or_else(|| io::Error::other("fixture dropped its reply"))?;
             Ok::<_, io::Error>(
                 Response::builder()
                     .status(status)
-                    .body(Full::new(Bytes::from_static(body)))
+                    .body(Full::new(body))
                     .unwrap(),
             )
         });
@@ -587,30 +622,13 @@ async fn loopback_sign_out(
         );
         assert_eq!(served.is_err(), reply.is_none());
     });
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .retry(reqwest::retry::never())
-        .build()
-        .unwrap();
-    let received = client
-        .post(format!("http://{address}/api/mutation"))
-        .json(request)
-        .send()
-        .await;
+    let slot = slot.to_owned();
+    let received =
+        tauri::async_runtime::spawn_blocking(move || sign_out::run_http(&slot, Some(&port)))
+            .await
+            .expect("sign-out worker failed");
     server.await.expect("loopback fixture failed");
-    assert_eq!(
-        received.is_err(),
-        reply.is_none(),
-        "unexpected HTTP outcome"
-    );
-    match received {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            Ok((status, response.bytes().await.expect("unreadable reply")))
-        }
-        Err(_) => Err("retry-required"),
-    }
+    received
 }
 
 #[test]

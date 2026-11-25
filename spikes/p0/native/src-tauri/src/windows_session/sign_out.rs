@@ -4,22 +4,57 @@ use super::{
     MARKER, PEER_MARKER, SUCCESSOR_MARKER,
 };
 use serde_json::{json, Value};
-use std::{fs, io, path::Path, str};
+#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
+use std::{num::NonZeroU16, time::Duration};
+use std::{path::Path, str};
 
 const RETRY: &str = "retry-required";
-const DROP_REPLY: &str = "p0-signout-drop-reply";
-const EXPECT_SUCCESSOR: &str = "p0-signout-expect-successor";
-const ISSUER_RECEIPT: &str = "p0-issuer-revoked-successor";
-const ISSUER_ACK: &str = "p0-issuer-acknowledged-successor";
-const REVOKED: &[u8] = br#"{"status":"success","value":null,"logLines":[]}"#;
-const REJECTED: &[u8] =
-    br#"{"status":"error","errorMessage":"Fixture rejected the sign-out request","logLines":[]}"#;
 
+#[cfg(any(test, not(feature = "p0-windows-sign-out-http")))]
 pub(super) fn run(path: &Path) -> Result<&'static str, &'static str> {
     run_with_provider(path, |request| simulated_response(path, request))
 }
 
-pub(super) fn run_with_provider<B: AsRef<[u8]>>(
+#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
+pub(super) fn run_http(path: &Path, port: Option<&str>) -> Result<&'static str, &'static str> {
+    run_with_provider(path, |request| {
+        // Validate only when dispatch is needed, after the shared path has recorded intent.
+        let port = port
+            .filter(|port| port.len() <= 5 && port.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|port| port.parse().ok())
+            .ok_or(RETRY)?;
+        tauri::async_runtime::handle().block_on(send_http(port, request))
+    })
+}
+
+#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
+async fn send_http(port: NonZeroU16, request: &Value) -> Result<(u16, Vec<u8>), &'static str> {
+    const MAX_BODY_BYTES: usize = 16 * 1024;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|_| RETRY)?;
+    let mut response = client
+        .post(format!("http://127.0.0.1:{port}/api/mutation"))
+        .json(request)
+        .send()
+        .await
+        .map_err(|_| RETRY)?;
+    let status = response.status().as_u16();
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| RETRY)? {
+        if chunk.len() > MAX_BODY_BYTES - body.len() {
+            return Err(RETRY);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, body))
+}
+
+fn run_with_provider<B: AsRef<[u8]>>(
     path: &Path,
     send: impl FnOnce(&Value) -> Result<(u16, B), &'static str>,
 ) -> Result<&'static str, &'static str> {
@@ -54,7 +89,18 @@ pub(super) fn run_with_provider<B: AsRef<[u8]>>(
     accept(&slot, status, body.as_ref())
 }
 
+#[cfg(any(test, not(feature = "p0-windows-sign-out-http")))]
 fn simulated_response(path: &Path, request: &Value) -> Result<(u16, &'static [u8]), &'static str> {
+    use std::{fs, io};
+
+    const DROP_REPLY: &str = "p0-signout-drop-reply";
+    const EXPECT_SUCCESSOR: &str = "p0-signout-expect-successor";
+    const ISSUER_RECEIPT: &str = "p0-issuer-revoked-successor";
+    const ISSUER_ACK: &str = "p0-issuer-acknowledged-successor";
+    const REVOKED: &[u8] = br#"{"status":"success","value":null,"logLines":[]}"#;
+    const REJECTED: &[u8] =
+        br#"{"status":"error","errorMessage":"Fixture rejected the sign-out request","logLines":[]}"#;
+
     let token = request
         .pointer("/args/0/refreshToken")
         .and_then(Value::as_str)

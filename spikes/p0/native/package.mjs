@@ -9,7 +9,12 @@ const { values } = parseArgs({ options: {
   target: { type: "string", default: "windows" },
   origin: { type: "string" },
   session: { type: "boolean" },
+  "sign-out-http": { type: "boolean" },
 } });
+const signOutHttp = values["sign-out-http"];
+if (signOutHttp && (!values.session || values.target !== "windows" || values.origin !== undefined)) {
+  throw new Error("HTTP sign-out requires the offline Windows session fixture");
+}
 if (values.session && (values.origin !== undefined || !["windows", "x86_64"].includes(values.target))) {
   throw new Error("The packaged session fixture requires offline Windows or Android x86_64");
 }
@@ -56,8 +61,15 @@ async function build() {
   await writeFile(config, overlay);
   if (values.target === "windows") {
     env.TAURI_CONFIG = overlay;
-    const args = windowsSession ? ["--bin", "windows_session", "--features", "custom-protocol,p0-session"] :
-      ["--features", "custom-protocol"];
+    const features = ["custom-protocol"];
+    if (signOutHttp) {
+      features.push("p0-windows-sign-out-http");
+      env.CARGO_NET_OFFLINE = "true";
+      env.CARGO_TARGET_DIR = join(native, "src-tauri/target/sign-out-http");
+    } else if (windowsSession) {
+      features.push("p0-session");
+    }
+    const args = [...(windowsSession ? ["--bin", "windows_session"] : []), "--features", features.join(",")];
     execute("cargo", ["build", "--locked", "--manifest-path", "src-tauri/Cargo.toml", ...args], native);
     return;
   }
