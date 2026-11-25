@@ -32,6 +32,8 @@ Convex owns online state. An owner-indexed subscription to a bounded task list i
 
 Keep deterministic integration reconciliation and reminder scheduling in the backend. Give agents scoped, versioned HTTP/MCP access to the same validated domain functions. Select native vs web notification delivery from actual background and closed-app evidence. A provider acknowledgement alone cannot establish that a person received a reminder.
 
+Keep portable account rows and their timestamp visible during reconnect. The browser marks them stale and holds writes until data from the current connection arrives. A pending HTTP read cannot advance freshness after the connection that started it is lost. [Portable browser regression](../klaxon-v2-progress.md#portable-account-task-freshness)
+
 Will's [owner-reported physical smoke](../klaxon-v2-progress.md#remaining-p0-tests) supports keeping Convex for the hosted task spike. Android saved a rename while Windows was powered off, and Windows read it back after restart. Android signed in again after reopening. The native credential-storage decision and the notification delivery decision remain provisional.
 
 Keep v1 authoritative during rehearsal. Use synthetic archives and a disposable workspace. Cross-device reconciliation, restore and explicit owner acceptance precede a change of authority. Running both schedulers on real data would make delivery results ambiguous.

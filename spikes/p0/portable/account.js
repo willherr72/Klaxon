@@ -26,10 +26,12 @@ export async function signIn(origin, username, password, events) {
   const http = new ConvexHttpClient(origin, options);
   http.setAuth(tokens.accessToken);
   const live = new ConvexClient(origin, { logger: false });
-  const transport = live.subscribeToConnectionState(state => {
-    if (!disposed) events.connected(state.isWebSocketConnected);
-  });
-  events.connected(live.connectionState().isWebSocketConnected);
+  const connectionState = () => live.connectionState();
+  const publishConnection = state => {
+    if (!disposed) events.connection(state);
+  };
+  const transport = live.subscribeToConnectionState(publishConnection);
+  publishConnection(connectionState());
 
   async function rotate() {
     const rotated = await sessionClient.mutation(api.auth.refreshSession, { refreshToken: tokens.refreshToken });
@@ -77,10 +79,15 @@ export async function signIn(origin, username, password, events) {
     else events.authenticated(authenticated);
   }
   live.setAuth(fetchToken, authChanged);
-  live.onUpdate(api.tasks.list, {}, rows => { if (!disposed) events.rows(rows); },
+  live.onUpdate(api.tasks.list, {}, rows => {
+    if (disposed) return;
+    publishConnection(connectionState());
+    events.rows(rows);
+  },
     () => { if (!disposed) events.error("Task subscription failed. Read tasks to retry."); });
 
   return {
+    connectionState,
     read: () => http.query(api.tasks.list, {}),
     create: title => http.mutation(api.tasks.create, { title }),
     rename: (id, title) => http.mutation(api.tasks.rename, { id, title }),

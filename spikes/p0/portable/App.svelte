@@ -8,9 +8,12 @@
   let session = $state.raw(null);
   let generation = 0;
   let connected = $state(false);
+  let connectionCount = 0;
+  let transportEpoch = 0;
   let authenticated = $state(false);
   let rows = $state([]);
   let rowsVersion = 0;
+  let rowsFresh = $state(false);
   let receivedAt = $state("");
   let busy = $state(false);
   let error = $state("");
@@ -20,12 +23,29 @@
   let title = $state("");
   let editing = $state(null);
   let renamed = $state("");
-  let canWrite = $derived(!busy && !!receivedAt && (!origin || (online && authenticated && connected)));
+  let canWrite = $derived(!busy && !!receivedAt && (!origin || (online && authenticated && connected && rowsFresh)));
 
-  function receive(tasks) {
+  function markStale() {
+    transportEpoch++;
+    rowsFresh = false;
+  }
+  function updateOnline(value) {
+    if (online && !value) markStale();
+    online = value;
+  }
+  function updateConnection(state) {
+    // The socket can reopen before the server has sent any task results.
+    if ((connected && !state.isWebSocketConnected) ||
+      (connectionCount > 0 && connectionCount !== state.connectionCount)) markStale();
+    connected = state.isWebSocketConnected;
+    connectionCount = state.connectionCount;
+  }
+
+  function receive(tasks, startedConnected = true) {
     rowsVersion++;
     rows = tasks;
     receivedAt = new Date().toISOString();
+    rowsFresh = !origin || (startedConnected && online && connected);
   }
   function loadFixture() {
     try { receive(readFixture()); }
@@ -51,7 +71,9 @@
     busy = false;
     notice = "";
     session = null;
+    markStale();
     connected = false;
+    connectionCount = 0;
     authenticated = false;
     rows = [];
     receivedAt = "";
@@ -65,10 +87,10 @@
     password = "";
     const started = generation;
     const opened = await signIn(origin, username.trim(), credentials, {
-      connected: value => { connected = value; },
+      connection: updateConnection,
       authenticated: value => { authenticated = value; },
-      rows: receive,
-      error: message => { error = message; },
+      rows: tasks => { if (online && connected) receive(tasks); },
+      error: message => { markStale(); error = message; },
       expired: message => { endSession(); error = message; },
     });
     if (started !== generation) return;
@@ -101,22 +123,38 @@
   async function read() {
     if (origin) {
       const active = session;
+      updateConnection(active.connectionState());
+      const started = transportEpoch;
+      const isCurrentRead = () => {
+        if (active !== session) return false;
+        updateConnection(active.connectionState());
+        if (started === transportEpoch) return true;
+        notice = rowsFresh ? "Connection changed during the read. Showing subscription updates."
+          : "Connection changed during the read. Read tasks again.";
+        return false;
+      };
       let version = rowsVersion;
-      let result = await active.read();
-      if (active !== session) return;
-      // The two transports expose no common revision. A read started after the push
-      // can reconcile either arrival order without guessing which title is newer.
-      if (version !== rowsVersion) {
-        version = rowsVersion;
-        result = await active.read();
-        if (active !== session) return;
+      let startedConnected = connected;
+      try {
+        let result = await active.read();
+        if (!isCurrentRead()) return;
+        // The two transports expose no common revision. A read started after the push
+        // can reconcile either arrival order without guessing which title is newer.
         if (version !== rowsVersion) {
-          notice = "Tasks changed during both reads. Showing subscription updates.";
-          return;
+          version = rowsVersion;
+          startedConnected = connected;
+          result = await active.read();
+          if (!isCurrentRead()) return;
+          if (version !== rowsVersion) {
+            notice = "Tasks changed during both reads. Showing subscription updates.";
+            return;
+          }
         }
+        receive(result, startedConnected);
+        notice = "Read from the server.";
+      } catch (err) {
+        if (isCurrentRead()) throw err;
       }
-      receive(result);
-      notice = "Read from the server.";
     } else {
       loadFixture();
       if (!error) notice = "Read from device storage.";
@@ -135,9 +173,14 @@
     notice = "Signed out.";
   }
   function submit(event, action) { event.preventDefault(); void perform(action); }
+  function submitWrite(event, id, draft) {
+    event.preventDefault();
+    if (session) updateConnection(session.connectionState());
+    if (canWrite) void perform(() => save(id, draft));
+  }
 </script>
 
-<svelte:window ononline={() => { online = true; }} onoffline={() => { online = false; }} />
+<svelte:window ononline={() => updateOnline(true)} onoffline={() => updateOnline(false)} />
 <header>
   <span class="brand">Klaxon</span>
   <span class="mode">{origin ? "Convex account" : "Local fixture"}</span>
@@ -165,7 +208,7 @@
       <button class="secondary" disabled={busy || !online} onclick={() => perform(signOut)}>Sign out</button>
     </div>
   {/if}
-  <form onsubmit={e => submit(e, () => save(null, title))}>
+  <form onsubmit={e => submitWrite(e, null, title)}>
     <label>Task title <input bind:value={title} required maxlength="200" /></label>
     <button disabled={!canWrite || !title.trim()}>Create task</button>
   </form>
@@ -174,7 +217,7 @@
       <button class="secondary" disabled={busy || (origin && !online)} onclick={() => perform(read)}>Read tasks</button>
     </div>
     {#if receivedAt}
-      <p class="stamp">{origin && (!connected || !online) ? "Last available rows" : "Last read"} <time datetime={receivedAt}>{receivedAt}</time></p>
+      <p class="stamp">{origin && !rowsFresh ? "Last available rows" : "Last read"} <time datetime={receivedAt}>{receivedAt}</time></p>
     {/if}
     {#if rows.length === 0}<p>{receivedAt ? "No synthetic tasks." : "Waiting for tasks."}</p>{/if}
     <ul aria-label="Synthetic tasks">
@@ -182,7 +225,7 @@
         <li data-task-id={row._id}>
           <strong>{row.title}</strong><small>{row._id}</small>
           {#if editing === row._id}
-            <form onsubmit={e => submit(e, () => save(row._id, renamed))}>
+            <form onsubmit={e => submitWrite(e, row._id, renamed)}>
               <label>New title <input bind:value={renamed} required maxlength="200" /></label>
               <div class="actions">
                 <button disabled={!canWrite || !renamed.trim()}>Save title</button>
