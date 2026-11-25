@@ -12,6 +12,7 @@ import { withWindowsHost } from "../smoke.mjs";
 import { withLocalBackend } from "./backend.mjs";
 import { buildLocalProvider, controlScript, executable } from "./build.mjs";
 import { exerciseLocalProvider } from "./check.mjs";
+import { withSubscriptionRelay } from "./relay.mjs";
 
 const origin = "http://127.0.0.1:3210";
 let stage = "build";
@@ -77,7 +78,7 @@ async function enroll(issuer) {
   return { credentials, http, grant: result.tokens };
 }
 
-async function run(url) {
+async function run(url, relay) {
   assert.equal(url, origin);
   const issuer = client();
   const accounts = [];
@@ -121,13 +122,11 @@ async function run(url) {
       stage = "initial control subscription render";
       await waitForTitle(title);
       stage = "packaged host exercise";
-      const observed = await exerciseLocalProvider({ launch, control: a.http, stranger: b.http, taskId, title, updatedTitle });
-      if (observed.renamedControlRows === 1) {
-        stage = "control subscription rename";
-        await waitForTitle(updatedTitle);
-        observed.controlSubscriptionRenderedRename = true;
-      }
-      return observed;
+      return exerciseLocalProvider({
+        launch, control: a.http, stranger: b.http, taskId, title, updatedTitle, relay,
+        verifySlotCleared: () => assert.rejects(access(slot), { code: "ENOENT" }),
+        waitForControlTitle: waitForTitle,
+      });
     });
     if (result.status !== "passed") return result;
     assert.equal(capture.hosts.size, 2);
@@ -155,7 +154,10 @@ async function run(url) {
 }
 
 try {
-  await buildLocalProvider();
+  const args = process.argv.slice(2);
+  const reconnect = args.length === 1 && args[0] === "--reconnect";
+  if (args.length && !reconnect) throw Error("Expected --reconnect or no argument");
+  if (!reconnect) await buildLocalProvider();
   // The native child inherits only platform settings and its dedicated test inputs.
   const platformEnv = new Set([
     "systemroot", "windir", "systemdrive", "comspec", "pathext", "path", "temp", "tmp",
@@ -165,7 +167,12 @@ try {
   for (const key of Object.keys(process.env)) if (!platformEnv.has(key.toLowerCase())) delete process.env[key];
   stage = "isolated local backend startup or cleanup";
   const evidence = await withLocalBackend(async ({ url }) => {
-    const result = await run(url);
+    // The fixed upstream belongs to our isolated backend before the relay listens.
+    const result = reconnect ? await withSubscriptionRelay(async relay => {
+      stage = "packaged reconnect build";
+      await buildLocalProvider(relay.port);
+      return run(url, relay);
+    }) : await run(url);
     stage = "isolated local backend cleanup";
     return result;
   });

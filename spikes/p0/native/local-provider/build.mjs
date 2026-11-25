@@ -11,8 +11,11 @@ export const controlScript = join(native, ".run", "local-provider-control.js");
 const target = join(native, "src-tauri", "target", "sign-out-http");
 export const executable = join(target, "debug", "windows_local_provider.exe");
 
-export async function buildLocalProvider() {
+export async function buildLocalProvider(reconnectPort) {
   if (process.platform !== "win32") throw Error("The packaged provider exercise requires Windows.");
+  if (reconnectPort !== undefined && !(Number.isInteger(reconnectPort) && reconnectPort > 0 && reconnectPort <= 65535)) {
+    throw Error("Invalid subscription relay port");
+  }
   await mkdir(assets, { recursive: true });
   await build({
     entryPoints: [join(here, "control.js")], bundle: true, platform: "browser",
@@ -29,7 +32,7 @@ export async function buildLocalProvider() {
     identifier: "dev.klaxon.p0localprovider", build: { frontendDist: "../.run/local-provider-frontend" },
     app: { withGlobalTauri: true, security: { csp: [
       "default-src 'self'", "base-uri 'none'", "form-action 'none'", "object-src 'none'",
-      "connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:3210",
+      "connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:" + (reconnectPort ?? 3210),
     ].join("; ") } },
   };
   execFileSync("cargo", [

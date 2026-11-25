@@ -1,9 +1,10 @@
 import { ConvexClient, ConvexHttpClient } from "convex/browser";
 import { anyApi as api } from "convex/server";
-import { observeOutcome } from "./observation.mjs";
+import { isCachedBearerRenameDenied, observeOutcome, subscriptionOrigin } from "./observation.mjs";
 
 const origin = "http://127.0.0.1:3210";
 const observationMs = 12_000;
+const reconnectFollowUpMs = 1_000;
 const taskList = document.createElement("ul");
 taskList.setAttribute("aria-label", "Local provider tasks");
 document.body.append(taskList);
@@ -50,23 +51,42 @@ async function waitFor(predicate) {
   return predicate();
 }
 
-async function exercise({ taskId, title }) {
+async function exercise({ taskId, title, reconnectPort }) {
   let stage = "native resume";
   let client;
   try {
+    const reconnect = reconnectPort !== undefined;
+    let socketOrigin = origin;
+    if (reconnect) {
+      stage = "reconnect transport configuration";
+      socketOrigin = subscriptionOrigin(origin, reconnectPort);
+      if (typeof window.p0DisconnectTransport !== "function" || typeof window.p0RestoreTransport !== "function") {
+        return { status: "failed", stage };
+      }
+      stage = "native resume";
+    }
     if (await invoke("local_resume") !== "authenticated") return { status: "failed", stage };
     stage = "native access";
     const bearer = await invoke("local_access", { forceRefresh: false });
     if (typeof bearer !== "string" || !bearer) return { status: "failed", stage };
 
+    let renameResponseStatus;
+    let renameEnvelopeStatus;
     const http = new ConvexHttpClient(origin, {
       auth: bearer,
       logger: false,
-      fetch: (input, options) => fetch(input, {
-        ...options,
-        redirect: "error",
-        signal: AbortSignal.timeout(observationMs),
-      }),
+      fetch: async (input, options) => {
+        const response = await fetch(input, {
+          ...options,
+          redirect: "error",
+          signal: AbortSignal.timeout(observationMs),
+        });
+        if (reconnect && input === `${origin}/api/mutation`) {
+          renameResponseStatus = response.status;
+          renameEnvelopeStatus = (await response.clone().json()).status;
+        }
+        return response;
+      },
     });
     const hasTask = rows => rows.some(task => task._id === taskId && task.title === title);
     stage = "initial authenticated HTTP read";
@@ -77,13 +97,18 @@ async function exercise({ taskId, title }) {
     if (initialAuth !== true || !hasTask(initialHttpRows)) return { status: "failed", stage };
 
     stage = "initial authenticated subscription and render";
-    client = new ConvexClient(origin, { logger: false, expectAuth: true, initialAuthTokenReuse: true });
+    client = new ConvexClient(socketOrigin, { logger: false, expectAuth: true, initialAuthTokenReuse: true });
     let forcedRefreshes = 0;
     let queryErrors = 0;
     let rows = [];
     let callbacks = 0;
     let revokeStarted;
     let emptyAt;
+    let restoreStarted;
+    let emptyAfterRestoreAt;
+    let emptyCallbackConnection;
+    let postRestoreNonemptyCallbacks = 0;
+    let postClearNonemptyCallbacks = 0;
     client.setAuth(async ({ forceRefreshToken }) => {
       // The existing socket and HTTP client keep the same bearer for the observation.
       if (forceRefreshToken) forcedRefreshes++;
@@ -94,6 +119,14 @@ async function exercise({ taskId, title }) {
       renderTasks(tasks);
       callbacks++;
       if (revokeStarted !== undefined && tasks.length === 0) emptyAt ??= performance.now();
+      if (restoreStarted !== undefined && socketReconnected()) {
+        if (tasks.length === 0) {
+          emptyAfterRestoreAt ??= performance.now();
+          emptyCallbackConnection = client.connectionState().connectionCount;
+        }
+        else postRestoreNonemptyCallbacks++;
+      }
+      if (emptyAfterRestoreAt !== undefined && tasks.length > 0) postClearNonemptyCallbacks++;
     }, () => { queryErrors++; });
 
     function hasRenderedTask() {
@@ -112,46 +145,120 @@ async function exercise({ taskId, title }) {
     const initialRenderedRows = taskList.children.length;
     const initialCallbacks = callbacks;
     const initialForcedRefreshes = forcedRefreshes;
-    stage = "native revoke";
-    revokeStarted = performance.now();
-    if (await invoke("local_revoke") !== "revoked") return { status: "failed", stage };
-    const revokeAcknowledged = performance.now();
-
-    stage = "revocation observation";
-    const [httpResult] = await Promise.all([
-      Promise.all([http.query(api.auth.isAuthenticated, {}), http.query(api.tasks.list, {})])
-        .then(([authenticated, tasks]) => ({ authenticated, rows: tasks.length }), () => null),
-      waitFor(() => emptyAt !== undefined || queryErrors > 0 || !socketContinued() ||
-        forcedRefreshes !== initialForcedRefreshes || !matchesBearer()),
-    ]);
-
     function socketContinued() {
       const state = client.connectionState();
       return state.isWebSocketConnected && state.connectionCount === before.connectionCount;
     }
+    function socketOffline() {
+      const state = client.connectionState();
+      return !state.isWebSocketConnected && state.connectionCount === before.connectionCount;
+    }
+    function socketReconnected() {
+      const state = client.connectionState();
+      return state.isWebSocketConnected && state.connectionCount > before.connectionCount;
+    }
 
+    let offlineEvidence;
+    if (reconnect) {
+      stage = "disconnect subscription transport";
+      await window.p0DisconnectTransport();
+      if (!await waitFor(socketOffline)) return { status: "failed", stage };
+      offlineEvidence = {
+        disconnectedBeforeRevoke: true,
+        cachedBeforeRevoke: hasTask(rows),
+        renderedBeforeRevoke: hasRenderedTask(),
+      };
+    }
+    stage = "native revoke";
+    revokeStarted = performance.now();
+    // The native command acknowledges sign-out only after verifying the exact refresh grant is gone.
+    if (await invoke("local_revoke") !== "revoked") return { status: "failed", stage };
+    const revokeAcknowledged = performance.now();
+
+    if (reconnect) {
+      stage = "confirm transport stayed offline during revoke";
+      if (!socketOffline()) return { status: "failed", stage };
+      Object.assign(offlineEvidence, {
+        nativeRevoked: true,
+        disconnectedAfterRevoke: true,
+        cachedAfterRevoke: hasTask(rows),
+        staleWhileOffline: hasRenderedTask(),
+      });
+      stage = "restore subscription transport";
+      // A server update can arrive as soon as the host opens the relay.
+      restoreStarted = performance.now();
+      await window.p0RestoreTransport();
+      stage = "wait for the new subscription connection";
+      if (!await waitFor(socketReconnected)) return { status: "inconclusive", stage };
+    }
+
+    stage = "revocation observation";
+    const [httpResult, staleBearerRenameOutcome] = await Promise.all([
+      Promise.all([http.query(api.auth.isAuthenticated, {}), http.query(api.tasks.list, {})])
+        .then(([authenticated, tasks]) => ({ authenticated, rows: tasks.length }), () => null),
+      reconnect ? checkCachedBearerRename() : null,
+      reconnect ? waitForReconnectedSubscription() :
+        waitFor(() => emptyAt !== undefined || queryErrors > 0 || !socketContinued() ||
+          forcedRefreshes !== initialForcedRefreshes || !matchesBearer()),
+    ]);
+
+    async function checkCachedBearerRename() {
+      const probeTitle = title === "Revoked session rename probe" ? "Unexpected revoked session write" :
+        "Revoked session rename probe";
+      try {
+        await http.mutation(api.tasks.rename, { id: taskId, title: probeTitle });
+        return "succeeded";
+      } catch (error) {
+        return isCachedBearerRenameDenied(renameResponseStatus, renameEnvelopeStatus, error) ? "denied" : "unexpected-error";
+      }
+    }
+
+    async function waitForReconnectedSubscription() {
+      if (await waitFor(() => emptyAfterRestoreAt !== undefined)) {
+        // Keep this subscription active while the surviving owner's edit is
+        // confirmed by a second live subscription.
+        await window.p0VerifyControlRename();
+        await new Promise(resolve => setTimeout(resolve, reconnectFollowUpMs));
+      }
+    }
+
+    const observedEmptyAt = reconnect ? emptyAfterRestoreAt : emptyAt;
     const evidence = {
       uninterrupted: socketContinued(),
       sameBearer: matchesBearer(),
       bearerUnexpired: expiryMs > Date.now() + 5_000,
       forcedRefreshes: forcedRefreshes - initialForcedRefreshes,
       queryErrors,
-      emptyCallback: emptyAt !== undefined,
+      emptyCallback: observedEmptyAt !== undefined,
       subscriptionRows: rows.length,
       renderedRows: taskList.children.length,
       httpAuthenticated: httpResult?.authenticated ?? null,
       httpRows: httpResult?.rows ?? null,
     };
+    if (reconnect) {
+      Object.assign(evidence, offlineEvidence, {
+        initialConnectionCount: before.connectionCount,
+        connectionCount: client.connectionState().connectionCount,
+        emptyCallbackConnection,
+        reconnected: socketReconnected(),
+        emptyAfterRestore: emptyAfterRestoreAt !== undefined,
+        postRestoreNonemptyCallbacks,
+        postClearNonemptyCallbacks,
+        staleBearerRenameDenied: staleBearerRenameOutcome === "denied",
+        staleBearerRenameOutcome,
+        renameHttpStatus: renameResponseStatus,
+      });
+    }
     const sinceRevokeMs = instant => Math.round((instant - revokeStarted) / 100) * 100;
     return {
-      status: observeOutcome(evidence),
+      status: observeOutcome(evidence, reconnect ? "reconnect" : undefined),
       ...evidence,
       initialHttpRows: initialHttpRows.length,
       initialSubscriptionRows,
       initialRenderedRows,
       subscriptionUpdates: callbacks - initialCallbacks,
       nativeRevokeCompletedMs: sinceRevokeMs(revokeAcknowledged),
-      emptyCallbackMs: emptyAt === undefined ? null : sinceRevokeMs(emptyAt),
+      emptyCallbackMs: observedEmptyAt === undefined ? null : sinceRevokeMs(observedEmptyAt),
     };
   } catch {
     return { status: "failed", stage };
