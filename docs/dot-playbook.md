@@ -10,6 +10,12 @@ The scheduled browser read/write check is complete. Future authorized runs must 
 
 OpenAI documents a cloud computer for Dot, ongoing work and owner-selected app access. ChatGPT’s custom MCP documentation also describes workspace controls and write actions. The owner must verify that their Dot can actually select this connection under their account’s settings. Use only the existing authorized plan. [Dot guide](https://help.openai.com/en/articles/20001530-getting-started-with-your-dot) · [Custom MCP connections](https://help.openai.com/en/articles/12584461-connecting-custom-mcp-servers-in-chatgpt)
 
+## Browser create acceptance
+
+**Passed on November 25, 2026.** Will confirmed sign-in. His Dot used the verified portable account client in its own cloud Chrome browser with a disposable workspace. The client HTML had SHA-256 `7836a60429a094b92bfc537a5698eea421c2d1fd26765e3220a20784c9766b1c`.
+
+Dot checked that the unique synthetic title was absent, clicked **Create** once, and saw **Server acknowledged the write** at approximately 15:32:32 UTC. An explicit **Read tasks** request returned the same stable ID and title exactly once at 15:32:39.299 UTC. No other tasks were touched. Independent cross-client owner confirmation remains unverified.
+
 ## Acceptance run
 
 Will reports that he edited the hosted task while Windows was off in his [physical desktop-off smoke](klaxon-v2-progress.md#remaining-p0-tests). The actor for every check below must be the owner's Dot. If the owner has no supported connector or authorized browser session, record which route was unavailable and retain manual planning.
@@ -19,14 +25,13 @@ Use a disposable workspace and one synthetic task named Dot fixture. Record UTC 
 | Check | Evidence required | State |
 |---|---|---|
 | Connect and read | From Dot, complete remote HTTPS MCP authorization, select the workspace and read the fixture. Verify a second workspace is inaccessible. | Pending |
-| Create and update | Create one task, update its title with the returned revision, retry the create with the same idempotency key. Independently confirm one row, new revision and actor in audit history. | Pending |
+| Browser create | Create one synthetic task and confirm one matching row on an explicit server read. | Passed. See the [browser create evidence](#browser-create-acceptance). |
+| MCP create and update | Create one task, update its title with the returned revision, retry the create with the same idempotency key. Independently confirm one row, new revision and actor in audit history. | Pending |
 | Reconnect | Allow expiry, reconnect, read again, then revoke access and verify the next operation fails. | Pending |
 | Scheduled browser fallback with Windows off | Restore the client if needed, sign in, update the pre-staged task and read it back from the server. | Passed once. See the [recorded run](#scheduled-browser-fallback). |
 | Scoped identity and audit | Verify a scoped agent identity and an audit event attributing the scheduled mutation to that identity. | Pending |
 
-The next browser-only P0 check is one owner-authorized create. Have Will’s Dot open the verified portable Convex account client on its cloud browser and create one uniquely titled synthetic task in the disposable workspace. Capture the create acknowledgment, then use **Read tasks** to verify the same ID and title from the server. Will can independently confirm one matching row in a separate authenticated client. If the create reply is ambiguous, read the task list before any retry. Retain the time, tested build, actor, and one-row result without recording task IDs or account details in the repository.
-
-The browser create check covers hosted task creation by Dot. Revision-aware replay and scoped audit depend on the planned P1 contract. To assess the remote MCP route in P0, Will can check whether his Dot can select a custom HTTPS MCP connection under his existing plan and workspace controls. The hosted endpoint and scoped credential implementation belong to P3. Record an unavailable connector and retain the browser or manual path when the account or endpoint cannot support the test.
+The browser create check covers hosted task creation by Dot. Revision-aware replay and scoped audit remain open and depend on the planned P1 contract. To assess the remote MCP route in P0, Will can check whether his Dot can select a custom HTTPS MCP connection under his existing plan and workspace controls. The hosted endpoint and scoped credential implementation belong to P3. Record an unavailable connector and retain the browser or manual path when the account or endpoint cannot support the test.
 
 ## Planning instructions
 
