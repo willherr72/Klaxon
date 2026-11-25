@@ -16,8 +16,15 @@ pub(super) fn run(path: &Path) -> Result<&'static str, &'static str> {
 }
 
 #[cfg(any(test, feature = "p0-windows-sign-out-http"))]
-pub(super) fn run_http(path: &Path, port: Option<&str>) -> Result<&'static str, &'static str> {
+pub(super) fn run_http(
+    path: &Path,
+    port: Option<&str>,
+    release_local_state: impl FnOnce(),
+) -> Result<&'static str, &'static str> {
     run_with_provider(path, |request| {
+        // The journal is pending and the slot file remains locked across HTTP.
+        // Concurrent IPC can now observe the revoked in-memory provider.
+        release_local_state();
         // Validate only when dispatch is needed, after the shared path has recorded intent.
         let port = port
             .filter(|port| port.len() <= 5 && port.bytes().all(|byte| byte.is_ascii_digit()))

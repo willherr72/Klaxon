@@ -477,7 +477,10 @@ fn invalid_loopback_configuration_keeps_sign_out_pending() {
         let slot = TestSlot::new("invalid-sign-out-port");
         seed(&slot.path, SUCCESSOR_MARKER).unwrap();
         let ciphertext = slot.ciphertext();
-        assert_eq!(sign_out::run_http(&slot.path, port), Err("retry-required"));
+        assert_eq!(
+            sign_out::run_http(&slot.path, port, || {}),
+            Err("retry-required")
+        );
         assert_eq!(
             fs::read(slot.path.with_extension("signout-pending")).unwrap(),
             b"pending"
@@ -624,7 +627,7 @@ async fn loopback_sign_out(
     });
     let slot = slot.to_owned();
     let received =
-        tauri::async_runtime::spawn_blocking(move || sign_out::run_http(&slot, Some(&port)))
+        tauri::async_runtime::spawn_blocking(move || sign_out::run_http(&slot, Some(&port), || {}))
             .await
             .expect("sign-out worker failed");
     server.await.expect("loopback fixture failed");

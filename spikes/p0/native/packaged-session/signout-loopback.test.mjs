@@ -68,7 +68,7 @@ test("an immediate second mutation cannot consume the cold retry acknowledgment"
 test("requires the pending journal at receipt before counting a mutation", async () => {
   await withSignOutLoopback(() => { throw new Error("journal unavailable"); }, async fixture => {
     assert.equal((await post(fixture.port)).status, 400);
-    assert.throws(() => fixture.assertAttempts(0), { message: "Sign-out intent was missing at HTTP dispatch" });
+    assert.throws(() => fixture.assertAttempts(0), { message: "Pending sign-out check failed at HTTP dispatch" });
   });
 });
 

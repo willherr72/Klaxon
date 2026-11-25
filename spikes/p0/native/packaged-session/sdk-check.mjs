@@ -315,6 +315,7 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
   const exchange = join(root, "p0-provider-refresh");
   const pending = join(root, "packaged.signout-pending");
   let successor;
+  let signingOutPage;
   async function checkPending() {
     assert.ok((await readFile(pending, "utf8")) === "pending", "expected durable sign-out intent");
   }
@@ -336,8 +337,11 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
     await expectColdDenial(page, panel);
   }
 
-  await withSignOutLoopback(checkPending, async loopback => {
-    const env = { KLAXON_P0_SIGNOUT_LOOPBACK_PORT: String(loopback.port) };
+  await withSignOutLoopback(async () => {
+    await checkPending();
+    if (signingOutPage) await nativeDenies(signingOutPage);
+  }, async loopback => {
+    const env = { KLAXON_P0_SIGN_OUT_PORT: String(loopback.port) };
     await launch([async (page, panel) => {
       await seed(page, panel);
       const predecessor = await readFile(record);
@@ -355,10 +359,12 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
       await assert.rejects(access(pending), { code: "ENOENT" });
       loopback.assertAttempts(0);
 
+      signingOutPage = page;
       await click(panel, "Sign out");
       await page.waitForFunction(() => ["retry-required", "signed-out", "unavailable"]
         .includes(document.querySelector('[aria-label="SDK session status"]').textContent));
       loopback.assertAttempts(1);
+      signingOutPage = undefined;
       assert.equal(await panel.getByLabel("SDK session status").textContent(), "retry-required");
       await checkPendingRecord();
       await expectClearedSignOut(page, panel);

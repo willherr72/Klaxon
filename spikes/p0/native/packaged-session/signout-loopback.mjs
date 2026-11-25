@@ -50,8 +50,9 @@ export async function withSignOutLoopback(checkPending, action) {
     try {
       await checkPending();
     } catch {
-      return reject("Sign-out intent was missing at HTTP dispatch");
+      return reject("Pending sign-out check failed at HTTP dispatch");
     }
+    if (req.socket.destroyed) return reject("Client disconnected before the pending sign-out check finished");
     attempts++;
     if (reply === "drop") {
       req.socket.destroy();

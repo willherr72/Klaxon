@@ -65,13 +65,14 @@ From `spikes/p0` with the offline dependencies already cached, build the fixture
 
 ```powershell
 node native/package.mjs --target windows --session --sign-out-http
+node native/smoke.mjs windows-sdk-signout-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe
 ```
 
-This selects Cargo features `custom-protocol,p0-windows-sign-out-http` and emits `native/src-tauri/target/sign-out-http/debug/windows_session.exe`. Launch that executable with the disposable `KLAXON_P0_SESSION_RUN` and WebView2 profile used by the Windows smoke harness. Bind a fixture HTTP server to `127.0.0.1` on an ephemeral port and give only its decimal port to the native child as `KLAXON_P0_SIGN_OUT_PORT`. The WebView uses the existing `fixture_session` command with `{ operation: "sign-out" }`.
+The build selects Cargo features `custom-protocol,p0-windows-sign-out-http`. The smoke starts an IPv4 loopback HTTP server on an ephemeral port, supplies its decimal port to each native child through `KLAXON_P0_SIGN_OUT_PORT`, and owns the disposable DPAPI slot and WebView2 profile. The WebView uses the existing `fixture_session` command with `{ operation: "sign-out" }`.
 
 The native command posts the inert marker to `/api/mutation` with the `auth:signOut` JSON envelope. It allows five seconds for the HTTP exchange and up to 16 KiB of response body. Redirects, proxies and automatic retries are disabled. For a seeded slot, missing or invalid port configuration leaves sign-out pending and returns `retry-required`. The 200 success envelope with an explicit `value: null` completes DPAPI cleanup. The browser CSP still sets `connect-src 'none'`.
 
-For a smoke with a rotated marker, seed owner A, create `p0-provider-refresh` in the run directory and resume. Have the fixture server drop the first sign-out reply, then check that the journal is `pending` and the ciphertext is byte-identical. Relaunch with the same run directory and profile. Resume should return `retry-required`. On a second sign-out, return `{"status":"success","value":null,"logLines":[]}` and verify that a fresh launch stays signed out.
+The smoke seeds and rotates an inert grant before clicking Sign out. The server validates the request and pending journal, then drops the reply. A second host must preserve the ciphertext and deny resume before it can retry. After the server acknowledges that retry, a third host must remain signed out. The runner scans the retired profile for known canaries and cleans up the listener and fixture files.
 
 ## Android emulator fixture
 

@@ -303,9 +303,11 @@ fn run_session(
         #[cfg(not(feature = "p0-windows-sign-out-http"))]
         "sign-out" => sign_out::run(&slot),
         #[cfg(feature = "p0-windows-sign-out-http")]
-        "sign-out" => {
-            sign_out::run_http(&slot, env::var("KLAXON_P0_SIGN_OUT_PORT").ok().as_deref())
-        }
+        "sign-out" => sign_out::run_http(
+            &slot,
+            env::var("KLAXON_P0_SIGN_OUT_PORT").ok().as_deref(),
+            || drop(provider),
+        ),
         _ => Err("unavailable"),
     }
 }
