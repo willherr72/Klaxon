@@ -9,55 +9,82 @@ import { verifyHostedPage } from "./check.mjs";
 const inputPath = "cache/p0-local-input.json";
 const slot = "no_backup/localprovider.bin";
 
-export async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, exercise, origin) {
+export async function withAndroidTarget({ withActivity, adb, adbBytes, appId, primaryUser = false }, input, exercise, origin) {
   const slotName = origin ? "localprovider-hosted-" + createHash("sha256").update(origin).digest("hex") : "localprovider";
   const recordPath = "no_backup/" + slotName + ".bin";
   const pids = new Set();
   const list = path => adb("shell", "run-as", appId, "ls", "-1", path).split(/\r?\n/);
+  const verifyPage = page => verifyHostedPage(page, origin, { requireRetirableProbe: primaryUser });
+  function readPrivateFile(path) {
+    let encoded;
+    try {
+      return readFixtureFile(args => {
+        encoded = adbBytes(args);
+        return encoded;
+      }, appId, path);
+    } finally { encoded?.fill(0); }
+  }
   async function coldLaunch(action) {
-    adb("shell", "am", "force-stop", appId);
+    adb("shell", "am", "force-stop", ...(primaryUser ? ["--user", "0"] : []), appId);
     assert.equal(adb("shell", "sh", "-c", "'pidof " + appId + " || true'"), "");
     await withActivity(async (page, pid) => {
       assert.ok(!pids.has(pid), "Expected a fresh Android app process");
       pids.add(pid);
-      if (origin) await verifyHostedPage(page, origin);
+      if (origin) await verifyPage(page);
       else await page.waitForFunction(() => location.origin === "http://tauri.localhost" &&
           !!document.querySelector('meta[name="p0-android-provider-preflight"][content="loopback-only"]') &&
           !!window.p0LocalProvider && typeof window.__TAURI__?.core?.invoke === "function");
       await action(page);
       if (pids.size === 1) {
         assert.ok(!list("cache").includes("p0-local-input.json"), "One-use input should be consumed");
-        const sealed = readFixtureFile(adbBytes, appId, recordPath);
-        assert.ok(sealed.length > 0 && !sealed.includes(input.owner), "Expected a protected owner record");
+        const sealed = readPrivateFile(recordPath);
+        try { assert.ok(sealed.length > 0 && !sealed.includes(input.owner), "Expected a protected owner record"); }
+        finally { sealed.fill(0); }
       }
     });
   }
-  if (origin) await withActivity(page => verifyHostedPage(page, origin));
-  // Stdin keeps the one-use input out of process arguments and the WebView.
-  const bytes = Buffer.from(JSON.stringify(input));
-  try {
-    adbBytes(["shell", "-T", "run-as", appId, "sh", "-c", "'umask 077; cat > " + inputPath + "'"], bytes);
-    assert.ok(readFixtureFile(adbBytes, appId, inputPath).equals(bytes), "One-use input was not staged intact");
-  } finally { bytes.fill(0); }
   function verifySlotCleared() {
     assert.ok(!list("no_backup").some(name => name.startsWith(slotName + ".")), "Provider slot should be cleared");
   }
-  const result = await exercise(coldLaunch, verifySlotCleared);
-  if (origin && result.status !== "passed") console.error("Android hosted observation", {
-    status: result.status, stage: result.stage ?? "subscription result",
-  });
-  assert.equal(result.status, "passed", "SDK lifecycle failed at " + (result.stage ?? "observation"));
-  verifySlotCleared();
-  await coldLaunch(async page => {
-    assert.equal(await page.evaluate(() => window.__TAURI__.core.invoke("local_resume")), "signed-out");
-    assert.ok(await page.evaluate(async () => {
-      try { await window.__TAURI__.core.invoke("local_access", { forceRefresh: false }); }
-      catch (error) { return error === "signed-out"; }
-      return false;
-    }), "SDK access should be denied after cold logout");
-  });
-  assert.equal(pids.size, 3);
-  return { ...result, appProcesses: pids.size, inputConsumed: true, coldLogout: true };
+  if (origin) await withActivity(verifyPage);
+  // Stdin keeps the one-use input out of process arguments and the WebView.
+  const bytes = Buffer.from(JSON.stringify(input));
+  try {
+    let staged;
+    try {
+      adbBytes(["shell", "-T", "run-as", appId, "sh", "-c", "'umask 077; cat > " + inputPath + "'"], bytes);
+      staged = readPrivateFile(inputPath);
+      assert.ok(staged.equals(bytes), "One-use input was not staged intact");
+    } finally {
+      staged?.fill(0);
+      bytes.fill(0);
+    }
+    const result = await exercise(coldLaunch, verifySlotCleared);
+    if (origin && result.status !== "passed") console.error("Android hosted observation", {
+      status: result.status, stage: result.stage ?? "subscription result",
+    });
+    assert.equal(result.status, "passed", "SDK lifecycle failed at " + (result.stage ?? "observation"));
+    verifySlotCleared();
+    await coldLaunch(async page => {
+      assert.equal(await page.evaluate(() => window.__TAURI__.core.invoke("local_resume")), "signed-out");
+      assert.ok(await page.evaluate(async () => {
+        try { await window.__TAURI__.core.invoke("local_access", { forceRefresh: false }); }
+        catch (error) { return error === "signed-out"; }
+        return false;
+      }), "SDK access should be denied after cold logout");
+    });
+    assert.equal(pids.size, 3);
+    return { ...result, appProcesses: pids.size, inputConsumed: true, coldLogout: true };
+  } catch (error) {
+    // A failed ADB command can still have landed. Retry removal if its acknowledgment was lost.
+    const removeInput = () => adb("shell", "run-as", appId, "rm", "-f", inputPath);
+    try { removeInput(); }
+    catch {
+      try { removeInput(); }
+      catch { throw Error("Android one-use input cleanup unconfirmed"); }
+    }
+    throw error;
+  }
 }
 
 export async function exerciseAndroidProviderSession(platform) {

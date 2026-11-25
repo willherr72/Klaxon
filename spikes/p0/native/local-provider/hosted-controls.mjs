@@ -115,7 +115,7 @@ export async function withHostedProviderScenario(origin, accounts, exercise) {
   let task = "not-created";
   let evidence;
 
-  async function signIn({ username, password }) {
+  async function signIn({ username, password, owner: expectedOwner }) {
     const result = await issuer.mutation(api.auth.signInWithUsernamePassword, { username, password });
     const { accessToken, refreshToken, userId } = result?.tokens ?? {};
     const reusedRefresh = knownGrants.has(refreshToken);
@@ -128,6 +128,9 @@ export async function withHostedProviderScenario(origin, accounts, exercise) {
     if (result?.status !== "complete" || ![accessToken, refreshToken, userId].every(nonempty) ||
         reusedRefresh || reusedBearer) {
       throw Error("Expected an independent hosted session grant");
+    }
+    if (expectedOwner !== undefined && userId !== expectedOwner) {
+      throw Error("Hosted sign-in returned a different fixture owner");
     }
     const http = client(origin);
     clients.push(http);

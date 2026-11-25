@@ -14,6 +14,7 @@ let result;
 let started = false;
 const fixture = {
   get origin() { return origin; },
+  hostedProbeVersion: 1,
   get signInResult() { return signInResult; },
   get result() { return result; },
   signIn() {
@@ -52,7 +53,7 @@ async function waitFor(predicate) {
   return predicate();
 }
 
-async function exercise({ taskId, title, reconnectPort, hostedReconnect }) {
+async function exercise({ taskId, title, reconnectPort, hostedReconnect, hostedProbeTitle }) {
   let stage = "native resume";
   let client;
   try {
@@ -211,8 +212,12 @@ async function exercise({ taskId, title, reconnectPort, hostedReconnect }) {
     ]);
 
     async function checkCachedBearerRename() {
-      const probeTitle = title === "Revoked session rename probe" ? "Unexpected revoked session write" :
-        "Revoked session rename probe";
+      let probeTitle = hostedProbeTitle;
+      if (!hostedReconnect) {
+        probeTitle = title === "Revoked session rename probe" ? "Unexpected revoked session write" :
+          "Revoked session rename probe";
+      }
+      if (typeof probeTitle !== "string" || probeTitle === title) return "unexpected-error";
       try {
         await http.mutation(api.tasks.rename, { id: taskId, title: probeTitle });
         return "succeeded";

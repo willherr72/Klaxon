@@ -237,7 +237,7 @@ node native/package.mjs --target x86_64 --session --android-provider-hosted --or
 node native/local-provider/hosted-run.mjs --origin $env:KLAXON_P0_BUILD_ORIGIN --emulator emulator-5586
 ```
 
-For the live run, allow the selected disposable emulator to connect to the network. Pass the private delivery file containing the scoped Development key to the separate provisioning command. The packaged clients receive synthetic login inputs only. The runner uses two fresh owners and one task, with Windows and Android testing successively against the same task. It interrupts each SDK's hosted WSS connection while the native HTTPS issuer and independent Edge control remain reachable.
+For the live run, use packages rebuilt with the current hosted probe. Allow the selected disposable emulator to connect to the network. Pass the private delivery file containing the scoped Development key to the separate provisioning command. The packaged clients receive synthetic login inputs only. The runner uses two fresh owners and one task, with Windows and Android testing successively against the same task. It interrupts each SDK's hosted WSS connection while the native HTTPS issuer and independent Edge control remain reachable.
 
 ```powershell
 node native/local-provider/hosted-provision.mjs --origin $env:KLAXON_P0_BUILD_ORIGIN --emulator emulator-5586 --key-file "<private-delivery-file>"
@@ -273,8 +273,18 @@ node native/local-provider/owner-phone.mjs --owner-approved --serial $usbSerial 
 
 The command verifies the package identity, single ARM64 ABI, debug signature and disabled Android backup on the build host first. On the phone it checks for earlier P0 installs across Android users. It installs the matching APK for user zero with replacement disabled. A scoped WebView forward lets it attest the HTML, SDK and native origin pins without accounts. The command removes its forward and verified fixture install. If the package outcome is uncertain, preserve the install receipt at `/data/local/tmp/klaxon-p0-install-active`. If ADB loses the forward acknowledgment, inspect the selected phone's test mapping before retrying. Leave other devices and forwards untouched. The owner can remove the computer's USB debugging authorization after the session.
 
-#### Hosted phone lifecycle still to verify
+#### Hosted phone lifecycle
 
-The hosted WebView exposes automation hooks, and native sign-in consumes a one-use private input written by the runner. For a future hosted lifecycle run, rebuild for an owner-confirmed disposable Development origin and verify all three pins in the same install before enrolling synthetic identities. Keep the Development key off-device. The account-free entry point currently ends after attestation and cleanup.
+Get the owner's approval for one run on the named USB phone and the named disposable Convex Free Development deployment. Confirm that the internal disposable enrollment and retirement functions are installed for that deployment, that the phone has its own Wi-Fi or cellular connection, and that the account-free USB and package prerequisites above hold. Rebuild from this source for the approved HTTPS origin and record the verified APK SHA-256. The earlier build-only APK is pinned to a synthetic hostname.
 
-On the phone's own network, record native sign-in, cold Keystore resume and rotation, authenticated HTTP and WSS, exact-grant revocation, stale-bearer denial and signed-out cold launch. Use the existing control expectations for same-owner continuity and cross-owner denial. A device-wide outage needs a distinct cold-resume check that observes denial, protected-record preservation and recovery after reconnect. Verify test identity retirement and remove only the fixture and its debug connection afterward.
+Use a fresh scoped Development key from private local delivery. Keep it off-device. Run from `spikes/p0` after the owner has authorized the device and hosted lifecycle.
+
+```powershell
+node native/local-provider/owner-phone.mjs --owner-approved --owner-approved-hosted --serial $usbSerial --origin $compiledOrigin --apk-sha256 $verifiedSha256 --key-file $privateKeyFile
+```
+
+The runner verifies the installed HTML, SDK and native pins and the retirement-compatible test probe before opening the key file. It requires Android to report a validated Wi-Fi or cellular default network before enrollment. It checks the two acknowledged enrollment IDs against control sign-in before creating one task. The phone path keeps generated account passwords in memory on the host and passes the one-use native login through ADB stdin. The same verified package remains installed through the cold restarts and logout. [Android connectivity diagnostics](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java)
+
+Require native sign-in, cold Keystore resume and rotation, authenticated HTTP and WSS, exact-grant revocation, stale-bearer denial and signed-out cold launch. The independent Edge control must render the same-owner change while the target stays empty, and the separate authenticated owner must be denied. This run cuts the SDK subscription. A device-wide outage needs a distinct cold-resume check that observes denial, protected-record preservation and recovery after reconnect.
+
+A passing run reports three revoked control sessions, two retired owners, two removed app users and usernames, one removed task, and verified phone fixture and mapping cleanup. The runner requires a definitive retirement reply and checks its counts before removing the receipt. If retirement is unconfirmed, use the reported nonsecret receipt with `hosted-provision.mjs --retire-receipt` and the same Development scope. A retry validates the saved progress again. If the runner reports that it could not save the expected counts, verify those counts during recovery. The operator retires the fresh key after confirming remote cleanup. The owner controls removal of the computer's USB debugging authorization.

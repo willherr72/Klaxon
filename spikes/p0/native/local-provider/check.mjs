@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { anyApi as api } from "convex/server";
 
 const localOrigin = "http://127.0.0.1:3210";
@@ -11,11 +12,15 @@ async function verifiedPage(page) {
   assert.equal(await page.getByRole("list", { name: "Local provider tasks" }).getByRole("listitem").count(), 0);
 }
 
-export async function verifyHostedPage(page, origin) {
+export async function verifyHostedPage(page, origin, { requireRetirableProbe = false } = {}) {
   await verifiedPage(page);
   assert.equal(await page.locator('meta[name="p0-hosted-provider"]').getAttribute("content"), origin);
   assert.equal(await page.evaluate(() => window.p0LocalProvider.origin), origin);
   assert.equal(await page.evaluate(() => window.__TAURI__.core.invoke("local_provider_origin")), origin);
+  if (requireRetirableProbe) {
+    assert.equal(await page.evaluate(() => window.p0LocalProvider.hostedProbeVersion), 1,
+      "Expected a cleanup-compatible hosted rename probe");
+  }
 }
 
 export async function exerciseLocalProvider({
@@ -25,10 +30,16 @@ export async function exerciseLocalProvider({
   let stage = "local clients and fixture input";
   try {
     const reconnect = relay || hostedReconnect;
-    const verifyPage = hostedReconnect ? page => verifyHostedPage(page, origin) : verifiedPage;
+    const verifyPage = hostedReconnect ? page => verifyHostedPage(page, origin, { requireRetirableProbe: true }) : verifiedPage;
     assert.ok(control.url === origin && stranger.url === origin);
     assert.ok(typeof taskId === "string" && taskId.length > 0);
     assert.ok(typeof title === "string" && typeof updatedTitle === "string" && title !== updatedTitle);
+    let hostedProbeTitle;
+    if (hostedReconnect) {
+      // Retirement accepts fixture titles with a UUID. The control can rename during the probe.
+      do { hostedProbeTitle = "Hosted control edit " + randomUUID(); }
+      while (hostedProbeTitle === title || hostedProbeTitle === updatedTitle);
+    }
     const matches = (rows, expectedTitle) => rows.some(task => task._id === taskId && task.title === expectedTitle);
     const list = client => client.query(api.tasks.list, {});
     const authenticated = client => client.query(api.auth.isAuthenticated, {});
@@ -97,7 +108,7 @@ export async function exerciseLocalProvider({
         });
       }
       await page.evaluate(expected => { window.p0LocalProvider.observe(expected); },
-        { taskId, title, reconnectPort: relay?.port, hostedReconnect });
+        { taskId, title, reconnectPort: relay?.port, hostedReconnect, ...(hostedReconnect && { hostedProbeTitle }) });
       await page.waitForFunction(() => window.p0LocalProvider.result !== undefined, undefined, { timeout: 60_000 });
       observation = await page.evaluate(() => window.p0LocalProvider.result);
     });

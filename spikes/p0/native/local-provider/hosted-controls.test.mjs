@@ -124,6 +124,18 @@ test("verifies sign-out when hosted HTTP rejects the old bearer with 401", async
   assert.equal(fixture.calls.filter(call => call === "auth:refreshSession").length, 3);
 });
 
+test("denies a returned control owner that differs from the enrolled owner before task creation", async t => {
+  const fixture = scriptedControls(t);
+  const enrolled = {
+    a: { ...accounts.a, owner: "unrelated-fixture-owner" },
+    b: { ...accounts.b, owner: "owner-b" },
+  };
+  await assert.rejects(withHostedProviderScenario(origin, enrolled, assert.fail), error =>
+    error.fixtureCleanup?.knownControlSessions === 1 && error.fixtureCleanup?.controlSessionsRevoked === 1 &&
+    error.fixtureCleanup?.task === "not-created");
+  assert.ok(!fixture.calls.includes("tasks:create"));
+});
+
 test("preflights distinct empty owners and tracks the separate Edge grant", async t => {
   const fixture = scriptedControls(t);
   const result = await withHostedProviderScenario(origin, accounts, async controls => {

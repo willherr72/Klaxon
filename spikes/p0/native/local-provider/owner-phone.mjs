@@ -107,35 +107,106 @@ export async function withOwnerPhone({ serial, apkSha256 }, action, {
   }
 }
 
-async function attest() {
+function hasValidatedPhoneNetwork(snapshot) {
+  const defaults = [...snapshot.matchAll(/^[ \t]*Active default network: ([1-9]\d*)[ \t]*\r?$/gm)];
+  if (defaults.length !== 1) return false;
+  const current = snapshot.split(/\r?\n[ \t]*\r?\n/)
+    .find(section => /^[ \t]*Current Networks:[ \t]*\r?$/m.test(section));
+  const entries = current?.split(/\r?\n/).filter(row => /^[ \t]*NetworkAgentInfo\{/.test(row) &&
+    row.includes("network{" + defaults[0][1] + "}"));
+  if (entries?.length !== 1) return false;
+  const network = / nc\{\[[ \t]*Transports: (WIFI|CELLULAR) Capabilities: ([A-Z0-9_&]+)/.exec(entries[0]);
+  if (!network) return false;
+  const capabilities = network[2].split("&");
+  return ["INTERNET", "NOT_VPN", "VALIDATED"].every(capability => capabilities.includes(capability)) &&
+    !capabilities.includes("CAPTIVE_PORTAL");
+}
+
+export async function runOwnerPhoneFixture(config, {
+  withPhone = withOwnerPhone, verifyPage, withAccounts, withScenario, withTarget, exerciseProvider,
+} = {}) {
+  verifyPage ??= (await import("./check.mjs")).verifyHostedPage;
+  const { origin, keyFile } = config;
+  let retirementReceipt;
+  let retirementProgressUnconfirmed;
+  try {
+    return await withPhone(config, async target => {
+      await target.withActivity(page => verifyPage(page, origin, { requireRetirableProbe: !!keyFile }));
+      const attested = { api: target.api, originAttested: true };
+      if (!keyFile) return attested;
+
+      assert.ok(hasValidatedPhoneNetwork(target.adb("shell", "dumpsys", "connectivity", "--short")),
+        "Expected a validated Wi-Fi or cellular phone network before enrollment");
+      withAccounts ??= (await import("./hosted-provision.mjs")).withHostedFixtureAccounts;
+      withScenario ??= (await import("./hosted-controls.mjs")).withHostedProviderScenario;
+      withTarget ??= (await import("./android-session-preflight.mjs")).withAndroidTarget;
+      exerciseProvider ??= (await import("./check.mjs")).exerciseLocalProvider;
+      try {
+        const { evidence, retirement } = await withAccounts({ origin, keyFile }, accounts =>
+          withScenario(origin, accounts, ({ input, ...controls }) =>
+            withTarget({ ...target, primaryUser: true }, input, (launch, verifySlotCleared) => exerciseProvider({
+              ...controls, launch, verifySlotCleared, origin, hostedReconnect: true,
+            }), origin)));
+        assert.ok(evidence.status === "passed" && evidence.appProcesses === 3 &&
+          evidence.inputConsumed && evidence.coldLogout, "Hosted phone lifecycle incomplete");
+        assert.ok(evidence.fixtureCleanup.knownControlSessions === 3 &&
+          evidence.fixtureCleanup.controlSessionsRevoked === 3, "Hosted control retirement incomplete");
+        assert.ok(retirement.ownersRetired === 2 && retirement.tasksDeleted === 1 &&
+          retirement.usernamesDeleted === 2 && retirement.usersDeleted === 2, "Hosted fixture retirement counts do not match");
+        return { ...attested, hosted: evidence, retirement };
+      } catch (error) {
+        retirementReceipt = error?.retirementReceipt;
+        retirementProgressUnconfirmed = error?.retirementProgressUnconfirmed;
+        throw error;
+      }
+    });
+  } catch (error) {
+    // A later device cleanup failure must not hide the remote retirement retry.
+    if (retirementReceipt && error?.retirementReceipt !== retirementReceipt) {
+      throw Object.assign(new Error("Hosted fixture retirement also unconfirmed", { cause: error }),
+        { retirementReceipt, retirementProgressUnconfirmed, code: error?.code });
+    }
+    throw error;
+  }
+}
+
+async function run() {
   let config;
   try {
     assert.ok(providerWorkerEnvironmentIsClean());
     const { values } = parseArgs({
       args: process.argv.slice(3),
       options: { serial: { type: "string" }, origin: { type: "string" },
-        "apk-sha256": { type: "string" }, "owner-approved": { type: "boolean" } },
+        "apk-sha256": { type: "string" }, "owner-approved": { type: "boolean" },
+        "owner-approved-hosted": { type: "boolean" }, "key-file": { type: "string" } },
     });
     assert.ok(values["owner-approved"] && phoneSerial.test(values.serial ?? "") &&
       convexDevelopmentOriginPattern.test(values.origin) && /^[0-9a-f]{64}$/.test(values["apk-sha256"] ?? ""));
-    config = { serial: values.serial, origin: values.origin, apkSha256: values["apk-sha256"] };
+    const keyFile = values["key-file"];
+    assert.equal(!!values["owner-approved-hosted"], keyFile !== undefined);
+    if (keyFile !== undefined) assert.ok(keyFile.trim());
+    config = { serial: values.serial, origin: values.origin, apkSha256: values["apk-sha256"], keyFile };
   } catch {
     console.error("Invalid owner phone fixture configuration.");
     process.exitCode = 1;
     return;
   }
   try {
-    const { verifyHostedPage } = await import("./check.mjs");
-    const api = await withOwnerPhone(config, async ({ withActivity, api }) => {
-      await withActivity(page => verifyHostedPage(page, config.origin));
-      return api;
-    });
-    console.log("ARM64 phone origin attestation passed. Fixture removed and scoped ADB mappings absent. Android API", api);
+    const evidence = await runOwnerPhoneFixture(config);
+    if (config.keyFile) {
+      console.log("ARM64 phone fixture removed and scoped ADB mappings absent.", evidence);
+    } else {
+      console.log("ARM64 phone origin attestation passed. Fixture removed and scoped ADB mappings absent. Android API", evidence.api);
+    }
   } catch (error) {
+    if (error?.retirementReceipt) {
+      console.error("Hosted retirement unconfirmed. Retry with --retire-receipt", error.retirementReceipt);
+      if (error.retirementProgressUnconfirmed) console.error("Expected cleanup counts could not be saved. Verify counts on recovery.");
+    }
     if (error?.code === "P0_PHONE_ADB_CLEANUP") {
       console.error("Phone ADB mapping cleanup unconfirmed. Inspect the selected phone's scoped forwards and install receipt before retrying.");
     } else {
-      console.error("Phone fixture admission, attestation or package cleanup failed. Inspect any remaining scoped install receipt before retrying.");
+      console.error("Phone fixture stopped during admission, attestation, lifecycle or cleanup. Inspect any remaining scoped install receipt before retrying.");
     }
     process.exitCode = 1;
   }
@@ -143,7 +214,7 @@ async function attest() {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   if (process.argv[2] === "--isolated-worker") {
-    await attest();
+    await run();
   } else {
     const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--isolated-worker", ...process.argv.slice(2)],
       { env: androidAcceptanceEnv(process.env), stdio: "inherit", windowsHide: true });

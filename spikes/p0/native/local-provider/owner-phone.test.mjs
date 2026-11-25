@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { admitOwnerPhone, withOwnerPhone } from "./owner-phone.mjs";
+import { admitOwnerPhone, runOwnerPhoneFixture, withOwnerPhone } from "./owner-phone.mjs";
 
 const serial = "SyntheticPhone01";
 const appId = "dev.klaxon.p0native";
@@ -43,6 +43,10 @@ function fakeAdb(overrides = {}) {
 test("the phone CLI requires explicit approval and a valid serial, origin and hash", () => {
   for (const cli of [
     args, [...args, "--owner-approved", "--accounts-file", "missing"],
+    [...args, "--owner-approved", "--key-file", "missing"],
+    [...args, "--owner-approved", "--owner-approved-hosted"],
+    [...args, "--owner-approved", "--owner-approved-hosted", "--key-file", "  "],
+    [...args, "--owner-approved-hosted", "--key-file", "missing"],
     [...args.slice(0, -1), "bad-hash", "--owner-approved"],
     ["--serial", "emulator-5554", ...args.slice(2), "--owner-approved"],
   ]) {
@@ -52,6 +56,135 @@ test("the phone CLI requires explicit approval and a valid serial, origin and ha
     assert.ifError(result.error);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^Invalid owner phone fixture configuration\./);
+  }
+});
+
+const wifiNetwork = "Active default network: 12\n\nCurrent Networks:\n" +
+  "  NetworkAgentInfo{ network{12} nc{[ Transports: WIFI Capabilities: INTERNET&NOT_VPN&VALIDATED]} }";
+
+function fakeLifecycle({ attestationError, network = wifiNetwork, retirementError, packageError,
+  retiredTasks = 1, revokedControls = 3,
+} = {}) {
+  const steps = [];
+  const keyFile = "private-fixture-test";
+  const accounts = { a: { username: "owner-a", password: "synthetic-a" },
+    b: { username: "owner-b", password: "synthetic-b" } };
+  const input = { ...accounts.a, owner: "fixture-owner" };
+  const controls = { control: {}, stranger: {}, taskId: "synthetic-task", title: "before", updatedTitle: "after" };
+  const evidence = { status: "passed", appProcesses: 3, inputConsumed: true, coldLogout: true,
+    fixtureCleanup: { knownControlSessions: 3, controlSessionsRevoked: revokedControls } };
+  const retirement = { ownersRetired: 2, sessionsRevoked: 0, tasksDeleted: retiredTasks, usernamesDeleted: 2, usersDeleted: 2,
+    passwordRowsRetained: 2, authUserIdRowsRetained: 2 };
+  const target = {
+    api: 36, withActivity: check => check("selected fixture page"),
+    adb(...command) {
+      steps.push("device network");
+      assert.deepEqual(command, ["shell", "dumpsys", "connectivity", "--short"]);
+      return network;
+    },
+  };
+  const config = { serial, apkSha256, origin, keyFile };
+  const services = {
+    async withPhone({ serial: selected, apkSha256: hash }, check) {
+      assert.equal(selected, serial);
+      assert.equal(hash, apkSha256);
+      steps.push("owned install ready");
+      try { return await check(target); }
+      finally {
+        steps.push("device cleanup");
+        if (packageError) throw packageError;
+      }
+    },
+    async verifyPage(page, expectedOrigin, { requireRetirableProbe }) {
+      assert.equal(page, "selected fixture page");
+      assert.equal(expectedOrigin, origin);
+      steps.push(requireRetirableProbe ? "origin and cleanup probe attestation" : "origin attestation");
+      if (attestationError) throw attestationError;
+    },
+    async withAccounts(options, action) {
+      assert.deepEqual(options, { origin, keyFile });
+      steps.push("hosted enrollment");
+      const result = await action(accounts);
+      steps.push("hosted retirement");
+      if (retirementError) throw retirementError;
+      return { evidence: result, retirement };
+    },
+    async withScenario(expectedOrigin, actualAccounts, action) {
+      assert.equal(expectedOrigin, origin);
+      assert.equal(actualAccounts, accounts);
+      steps.push("two owner controls");
+      return action({ input, ...controls });
+    },
+    async withTarget(device, credentials, exercise, expectedOrigin) {
+      assert.equal(device.withActivity, target.withActivity);
+      assert.equal(device.primaryUser, true);
+      assert.equal(credentials, input);
+      assert.equal(expectedOrigin, origin);
+      steps.push("native lifecycle");
+      return exercise("Android launch", "protected-slot check");
+    },
+    async exerciseProvider(options) {
+      assert.deepEqual(options, { launch: "Android launch", verifySlotCleared: "protected-slot check", ...controls,
+        origin, hostedReconnect: true });
+      steps.push("hosted exercise");
+      return evidence;
+    },
+  };
+  return { steps, config, evidence, retirement, services };
+}
+
+test("origin attestation and phone networking precede enrollment in the same verified install", async () => {
+  const { services, config, evidence, retirement, steps } = fakeLifecycle();
+  const result = await runOwnerPhoneFixture(config, services);
+  assert.deepEqual(result, { api: 36, originAttested: true, hosted: evidence, retirement });
+  assert.deepEqual(steps, ["owned install ready", "origin and cleanup probe attestation", "device network", "hosted enrollment",
+    "two owner controls", "native lifecycle", "hosted exercise", "hosted retirement", "device cleanup"]);
+});
+
+test("account-free mode and failed origin or network evidence never reach enrollment", async () => {
+  const defaultMode = fakeLifecycle();
+  const { keyFile, ...config } = defaultMode.config;
+  assert.ok(keyFile);
+  assert.deepEqual(await runOwnerPhoneFixture(config, defaultMode.services), { api: 36, originAttested: true });
+  assert.deepEqual(defaultMode.steps, ["owned install ready", "origin attestation", "device cleanup"]);
+  for (const failure of [
+    { attestationError: Error("origin mismatch") },
+    { network: "Active default network: none" },
+    { network: wifiNetwork.replace("Transports: WIFI", "Transports: WIFI|VPN") },
+    { network: wifiNetwork.replace("Transports: WIFI", "Transports: USB") },
+    { network: wifiNetwork.replace("&VALIDATED", "&CAPTIVE_PORTAL") },
+    { network: wifiNetwork.replace("network{12}", "network{112}") },
+    { network: wifiNetwork.replace("Current Networks:", "Network history:") },
+  ]) {
+    const fixture = fakeLifecycle(failure);
+    await assert.rejects(runOwnerPhoneFixture(fixture.config, fixture.services), /origin mismatch|phone network/i);
+    assert.ok(!fixture.steps.includes("hosted enrollment"));
+    assert.equal(fixture.steps.at(-1), "device cleanup");
+  }
+});
+
+test("a validated cellular default can proceed to hosted enrollment", async () => {
+  const fixture = fakeLifecycle({ network: wifiNetwork.replace("Transports: WIFI", "Transports: CELLULAR") });
+  assert.equal((await runOwnerPhoneFixture(fixture.config, fixture.services)).hosted.status, "passed");
+  assert.ok(fixture.steps.includes("hosted enrollment"));
+});
+
+test("retirement failure retains the scoped receipt even when package cleanup also fails", async () => {
+  const receipt = "synthetic-retirement.json";
+  const packageError = Error("simulated package cleanup failure");
+  const fixture = fakeLifecycle({
+    retirementError: Object.assign(Error("retirement unconfirmed"), { retirementReceipt: receipt }),
+    packageError,
+  });
+  await assert.rejects(runOwnerPhoneFixture(fixture.config, fixture.services), error =>
+    error.retirementReceipt === receipt && error.cause === packageError);
+});
+
+test("hosted pass requires complete control revocation and exact retirement of the synthetic task", async () => {
+  for (const incomplete of [{ revokedControls: 2 }, { retiredTasks: 0 }]) {
+    const fixture = fakeLifecycle(incomplete);
+    await assert.rejects(runOwnerPhoneFixture(fixture.config, fixture.services), /retirement incomplete|counts do not match/);
+    assert.deepEqual(fixture.steps.slice(-2), ["hosted retirement", "device cleanup"]);
   }
 });
 
