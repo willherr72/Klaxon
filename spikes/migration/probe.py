@@ -91,6 +91,7 @@ def check_snapshot_recovery(directory):
     """Exercise snapshot reads while a synthetic device has live WAL pages."""
     source = directory / "active.db"
     snapshot = directory / "snapshot.db"
+    main_only = directory / "main-only.db"
     seed_fixture(source)
     with closing(sqlite3.connect(source)) as writer:
         assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
@@ -98,14 +99,28 @@ def check_snapshot_recovery(directory):
         writer.execute("UPDATE task_steps SET title='committed title' WHERE id='s'")
         writer.commit()
         writer.execute("UPDATE task_steps SET title='interrupted edit' WHERE id='s'")
+        # Hold the writer open so a close-time checkpoint cannot obscure
+        # whether acquiring the snapshot changed either source file.
+        wal = directory / "active.db-wal"
+        before_wal = wal.read_bytes()
+        before_main = source.read_bytes()
+        assert before_wal
+        # Negative control: copy just the main file while the committed edit
+        # is still in the WAL. Nothing writes or checkpoints during this copy.
+        main_only.write_bytes(before_main)
         with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as reader:
             with closing(sqlite3.connect(snapshot)) as target:
                 reader.backup(target)
+        assert source.read_bytes() == before_main
+        assert wal.read_bytes() == before_wal
         # Closing the writer without committing simulates an interrupted edit.
-    verify_projection(snapshot)
-    for path in (source, snapshot):
+    for path, expected_title in (
+        (main_only, "step"), (snapshot, "committed title"), (source, "committed title")
+    ):
+        verify_projection(path)
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as reader:
-            assert reader.execute("SELECT title FROM task_steps WHERE id='s'").fetchone() == ("committed title",)
+            title = reader.execute("SELECT title FROM task_steps WHERE id='s'").fetchone()
+            assert title == (expected_title,), f"Unexpected step title in {path.name}"
 
     # A partial copy must fail validation, and retry from the intact snapshot
     # must still succeed. Only truncate a new disposable copy.
@@ -129,4 +144,5 @@ if __name__ == "__main__":
         verify_projection(fixture)
         check_snapshot_recovery(Path(tmp))
         check_unresolved_steps(Path(tmp))
-    print("Schema 17 projection, step-parent validation, live WAL snapshot, interrupted edit, truncated copy and retry passed")
+    print("Schema 17 projection and step-parent checks passed. Main-only copy passed integrity but missed the "
+          "committed WAL edit. Online backup preserved it. Interrupted edit, truncated copy and retry checks passed.")
