@@ -1,3 +1,6 @@
+#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
+use crate::windows_loopback as loopback;
+use crate::windows_store as store;
 use std::{
     collections::BTreeMap,
     env, io,
@@ -8,10 +11,7 @@ use std::{
 use tauri::Manager;
 use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
 
-#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
-mod loopback;
 mod sign_out;
-mod store;
 
 const OWNER_A_REFRESH: &str = "KLAXON-P0-INERT/packaged/1";
 const OWNER_B_REFRESH: &str = "KLAXON-P0-INERT/packaged/2";
@@ -459,4 +459,4 @@ pub fn install(builder: Builder<Wry>) -> Builder<Wry> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

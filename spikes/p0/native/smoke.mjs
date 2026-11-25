@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
 import { openTaskLink } from "../task-link-check.mjs";
@@ -110,7 +110,7 @@ function windowsListenerPid(port) {
   return listeners.length === 1 ? listeners[0].pid : undefined;
 }
 
-async function withWindowsHost(exe, profile, action, capture, env) {
+export async function withWindowsHost(exe, profile, action, capture, env) {
   const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
   const removed = [];
   // Chromium can leave the debugger files after exit. Keep the profile and its
@@ -451,10 +451,12 @@ async function android(serial) {
   }
 }
 
-if (platform === "windows") await windows();
-else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
-else if (Object.hasOwn(windowsLoopbackCases, platform)) {
-  assert.ok(platformArgument, "Pass the separately built Windows loopback fixture executable");
-  await windowsSession(true, { ...windowsLoopbackCases[platform], exe: resolve(platformArgument) });
-} else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android(platformArgument);
-else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  if (platform === "windows") await windows();
+  else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
+  else if (Object.hasOwn(windowsLoopbackCases, platform)) {
+    assert.ok(platformArgument, "Pass the separately built Windows loopback fixture executable");
+    await windowsSession(true, { ...windowsLoopbackCases[platform], exe: resolve(platformArgument) });
+  } else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android(platformArgument);
+  else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");
+}

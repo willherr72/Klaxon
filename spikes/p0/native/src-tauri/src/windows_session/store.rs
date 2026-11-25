@@ -16,6 +16,7 @@ use windows_sys::Win32::{
     },
 };
 
+#[cfg(any(test, feature = "p0-session"))]
 const CONTEXT: &[u8] = b"dev.klaxon.p0native/session-v1/packaged";
 const RECORD_HEADER: &[u8] = b"klaxon-p0-session-v2\0";
 
@@ -40,11 +41,17 @@ pub(super) enum SignOutState {
 
 pub(super) struct Slot<'a> {
     path: &'a Path,
+    context: &'static [u8],
     _lock: File,
 }
 
 impl<'a> Slot<'a> {
+    #[cfg(any(test, feature = "p0-session"))]
     pub(super) fn lock(path: &'a Path) -> io::Result<Self> {
+        Self::lock_with_context(path, CONTEXT)
+    }
+
+    pub(super) fn lock_with_context(path: &'a Path, context: &'static [u8]) -> io::Result<Self> {
         // All fixture operations acquire this exclusive handle. Windows removes the lock
         // on close, including after process termination. Contention fails closed.
         let lock = OpenOptions::new()
@@ -55,11 +62,15 @@ impl<'a> Slot<'a> {
             .open(path.with_extension("lock"))?;
         // Only this slot's reserved staging file can be left by an interrupted writer.
         remove_if_present(&path.with_extension("staged"))?;
-        Ok(Self { path, _lock: lock })
+        Ok(Self {
+            path,
+            context,
+            _lock: lock,
+        })
     }
 
     pub(super) fn read(&self) -> io::Result<Record> {
-        let bytes = dpapi(&fs::read(self.path)?, false).map_err(io::Error::other)?;
+        let bytes = dpapi(&fs::read(self.path)?, self.context, false).map_err(io::Error::other)?;
         let Some(payload) = bytes.strip_prefix(RECORD_HEADER) else {
             // The previous fixture format protected just the inert marker.
             return Ok(Record {
@@ -76,8 +87,10 @@ impl<'a> Slot<'a> {
         })
     }
 
-    pub(super) fn seed(&self, marker: &[u8]) -> io::Result<()> {
-        self.write_session(new_session_id()?, marker, Publish::Seed)
+    pub(super) fn seed(&self, marker: &[u8]) -> io::Result<SessionId> {
+        let id = new_session_id()?;
+        self.write_session(id, marker, Publish::Seed)?;
+        Ok(id)
     }
 
     // Commit a confirmed marker and bind legacy records in the same atomic write.
@@ -93,13 +106,17 @@ impl<'a> Slot<'a> {
 
     fn write_session(&self, id: SessionId, marker: &[u8], operation: Publish) -> io::Result<()> {
         let payload = [RECORD_HEADER, &id, marker].concat();
-        let ciphertext = dpapi(&payload, true)?;
+        let ciphertext = dpapi(&payload, self.context, true)?;
         self.publish_record(&ciphertext, self.path, operation)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "p0-session"))]
     pub(super) fn seed_legacy(&self, marker: &[u8]) -> io::Result<()> {
-        self.publish_record(&dpapi(marker, true)?, self.path, Publish::Seed)
+        self.publish_record(
+            &dpapi(marker, self.context, true)?,
+            self.path,
+            Publish::Seed,
+        )
     }
 
     pub(super) fn sign_out_state(&self) -> io::Result<Option<SignOutState>> {
@@ -128,8 +145,8 @@ impl<'a> Slot<'a> {
 
     pub(super) fn finish_sign_out(&self) -> io::Result<()> {
         self.remove()?;
-        #[cfg(test)]
-        super::tests::crash_checkpoint(self.path, "after-sign-out-remove");
+        #[cfg(all(test, feature = "p0-session"))]
+        crate::windows_session::tests::crash_checkpoint(self.path, "after-sign-out-remove");
         remove_if_present(&self.path.with_extension("signout-pending"))
     }
 
@@ -145,10 +162,10 @@ impl<'a> Slot<'a> {
         drop(file);
 
         let seed = matches!(operation, Publish::Seed);
-        #[cfg(test)]
+        #[cfg(all(test, feature = "p0-session"))]
         let replace_session = matches!(operation, Publish::ReplaceSession);
         let published = written.and_then(|()| {
-            #[cfg(test)]
+            #[cfg(all(test, feature = "p0-session"))]
             if seed
                 && self
                     .path
@@ -157,9 +174,9 @@ impl<'a> Slot<'a> {
             {
                 fs::remove_file(&staged)?;
             }
-            #[cfg(test)]
+            #[cfg(all(test, feature = "p0-session"))]
             if replace_session {
-                super::tests::crash_checkpoint(self.path, "before-replace");
+                crate::windows_session::tests::crash_checkpoint(self.path, "before-replace");
             }
             let flags = MOVEFILE_WRITE_THROUGH | if seed { 0 } else { MOVEFILE_REPLACE_EXISTING };
             // The staged file is on the same volume and the API can only rename it.
@@ -176,9 +193,9 @@ impl<'a> Slot<'a> {
             {
                 return Err(io::Error::last_os_error());
             }
-            #[cfg(test)]
+            #[cfg(all(test, feature = "p0-session"))]
             if replace_session {
-                super::tests::crash_checkpoint(self.path, "after-replace");
+                crate::windows_session::tests::crash_checkpoint(self.path, "after-replace");
             }
             Ok(())
         });
@@ -217,7 +234,7 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
     }
 }
 
-fn dpapi(input: &[u8], protect: bool) -> io::Result<Vec<u8>> {
+fn dpapi(input: &[u8], context: &[u8], protect: bool) -> io::Result<Vec<u8>> {
     fn blob(bytes: &[u8]) -> io::Result<CRYPT_INTEGER_BLOB> {
         Ok(CRYPT_INTEGER_BLOB {
             cbData: bytes
@@ -228,7 +245,7 @@ fn dpapi(input: &[u8], protect: bool) -> io::Result<Vec<u8>> {
         })
     }
     let input = blob(input)?;
-    let entropy = blob(CONTEXT)?;
+    let entropy = blob(context)?;
     let mut output = CRYPT_INTEGER_BLOB::default();
     // Both APIs read the supplied buffers synchronously and allocate their output with LocalAlloc.
     // Omitting CRYPTPROTECT_LOCAL_MACHINE selects current-user protection.

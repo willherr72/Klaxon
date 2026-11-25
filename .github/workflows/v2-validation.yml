@@ -120,3 +120,8 @@ jobs:
           cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --target-dir native/src-tauri/target/sign-out-http --features p0-windows-sign-out-http --lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node native/smoke.mjs windows-sdk-refresh-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe
+      - name: Check the local provider grant and protected record contracts
+        working-directory: spikes/p0
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --target-dir native/src-tauri/target/sign-out-http --features p0-local-provider --lib

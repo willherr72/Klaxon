@@ -13,7 +13,7 @@ const TEST_ACTION: &str = "KLAXON_P0_TEST_ACTION";
 const TEST_CHECKPOINT: &str = "KLAXON_P0_TEST_CHECKPOINT";
 
 fn seed(slot: &Path, marker: &[u8]) -> io::Result<()> {
-    store::Slot::lock(slot)?.seed(marker)
+    store::Slot::lock(slot)?.seed(marker).map(|_| ())
 }
 
 struct TestSlot {
@@ -130,7 +130,7 @@ impl Drop for TestChild {
     }
 }
 
-pub(super) fn crash_checkpoint(path: &Path, checkpoint: &str) {
+pub(crate) fn crash_checkpoint(path: &Path, checkpoint: &str) {
     if env::var_os(TEST_PATH).as_deref() == Some(path.as_os_str())
         && env::var(TEST_CHECKPOINT).as_deref() == Ok(checkpoint)
     {
