@@ -4,20 +4,25 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { compile } from "svelte/compiler";
-import { androidProviderPreflightConnections } from "./build-policy.mjs";
+import { androidProviderPreflightConnections, convexDevelopmentOriginPattern, hostedProviderConnections } from "./build-policy.mjs";
 
 const { values } = parseArgs({ options: {
   outdir: { type: "string", default: "dist" }, session: { type: "boolean" }, "windows-tasks": { type: "boolean" },
   "android-provider-preflight": { type: "boolean" },
+  "android-provider-hosted": { type: "boolean" },
 } });
 const origin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
 const androidProviderPreflight = values["android-provider-preflight"];
+const androidProviderHosted = values["android-provider-hosted"];
 if (androidProviderPreflight && (!values.session || values["windows-tasks"] || origin)) {
   throw new Error("Android provider preflight requires the offline session frontend without Windows tasks");
 }
-if (values.session && origin) throw new Error("The packaged session fixture runs offline");
+if (androidProviderHosted && (!values.session || values["windows-tasks"] || !origin)) {
+  throw Error("Android hosted provider requires a hosted origin and the Android session frontend");
+}
+if (values.session && origin && !androidProviderHosted) throw new Error("The packaged session fixture runs offline");
 if (values["windows-tasks"] && !values.session) throw new Error("Task transport requires the offline session fixture");
-if (origin && !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(origin)) {
+if (origin && !convexDevelopmentOriginPattern.test(origin)) {
   throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin");
 }
 
@@ -44,12 +49,14 @@ const scriptHashes = [hash(script)];
 let marker = "";
 let providerScript = "";
 await mkdir(values.outdir, { recursive: true });
-if (androidProviderPreflight) {
-  connections = androidProviderPreflightConnections;
-  marker = '<meta name="p0-android-provider-preflight" content="loopback-only">\n';
+if (androidProviderPreflight || androidProviderHosted) {
+  connections = androidProviderHosted ? hostedProviderConnections(origin) : androidProviderPreflightConnections;
+  marker = androidProviderHosted ? `<meta name="p0-hosted-provider" content="${origin}">\n` :
+    '<meta name="p0-android-provider-preflight" content="loopback-only">\n';
   const provider = await build({
     entryPoints: ["native/local-provider/client.js"], bundle: true, write: false,
     format: "iife", platform: "browser", minify: true, legalComments: "none",
+    define: androidProviderHosted ? { P0_PROVIDER_ORIGIN: JSON.stringify(origin) } : {},
   });
   const asset = provider.outputFiles[0].contents;
   const integrity = hash(asset);

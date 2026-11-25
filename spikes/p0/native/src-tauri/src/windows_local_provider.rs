@@ -1,6 +1,6 @@
 use crate::{
+    provider_endpoint::{matches_issuer, post},
     refresh_response::{self, Grant},
-    windows_loopback,
     windows_store::{Record, SessionId, SignOutState, Slot},
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -15,9 +15,14 @@ use std::{
 use tauri::{Builder, Manager, WebviewWindow, Wry};
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-const MUTATION_URL: &str = "http://127.0.0.1:3210/api/mutation";
-const ISSUER: &str = "http://127.0.0.1:3210/components/auth";
+#[cfg(not(feature = "p0-hosted-provider"))]
 const ENTROPY: &[u8] = b"dev.klaxon.p0localprovider/session-v1/packaged";
+#[cfg(feature = "p0-hosted-provider")]
+const ENTROPY: &[u8] = concat!(
+    "dev.klaxon.p0hostedprovider/session-v1/packaged/",
+    env!("KLAXON_P0_HOSTED_ORIGIN")
+)
+.as_bytes();
 const UNAVAILABLE: &str = "unavailable";
 const RETRY: &str = "retry-required";
 const SIGNED_OUT: &str = "signed-out";
@@ -63,7 +68,7 @@ fn subject(bearer: &str) -> Result<String, &'static str> {
     let claims: Claims = serde_json::from_slice(&payload).map_err(|_| UNAVAILABLE)?;
     if !nonempty(&claims.sub)
         || claims.aud != "convex-auth"
-        || claims.iss != ISSUER
+        || !matches_issuer(&claims.iss)
         || claims.iat == 0
         || claims.exp <= claims.iat
     {
@@ -310,10 +315,6 @@ fn lock_slot(path: &Path) -> Result<Slot<'_>, &'static str> {
     Ok(slot)
 }
 
-fn post(request: &Value) -> Reply {
-    windows_loopback::post_mutation(MUTATION_URL, request)
-}
-
 struct Credentials {
     username: String,
     password: String,
@@ -413,7 +414,9 @@ pub(super) fn install(builder: Builder<Wry>) -> Builder<Wry> {
             local_sign_in,
             local_resume,
             local_access,
-            local_revoke
+            local_revoke,
+            #[cfg(feature = "p0-hosted-provider")]
+            crate::provider_endpoint::local_provider_origin,
         ])
 }
 

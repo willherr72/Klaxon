@@ -19,6 +19,8 @@ tauri = { version = "=2.11.0", features = [] }
 serde = { version = "=1.0.228", optional = true, features = ["derive"] }
 serde_json = { version = "=1.0.149", optional = true }
 reqwest = { version = "=0.13.3", optional = true, default-features = false, features = ["json"] }
+rustls = { version = "=0.23.44", optional = true, default-features = false, features = ["ring"] }
+webpki-roots = { version = "=1.0.9", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "=0.21.1", optional = true }
@@ -39,6 +41,7 @@ p0-session = ["dep:jni", "dep:serde", "dep:serde_json", "dep:windows-sys"]
 p0-android-provider-preflight = ["p0-session", "dep:reqwest"]
 p0-windows-sign-out-http = ["p0-session", "dep:reqwest"]
 p0-local-provider = ["dep:base64", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:windows-sys"]
+p0-hosted-provider = ["reqwest/rustls-no-provider", "dep:rustls", "dep:webpki-roots"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]

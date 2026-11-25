@@ -17,21 +17,27 @@ mod session;
 compile_error!("Android provider preflight is a debug-only fixture");
 #[cfg(all(target_os = "android", feature = "p0-android-provider-preflight"))]
 mod android_local_provider;
-#[cfg(all(target_os = "android", feature = "p0-android-provider-preflight"))]
-#[path = "windows_session/loopback.rs"]
-mod preflight_loopback;
-#[cfg(all(windows, feature = "p0-local-provider"))]
-mod windows_local_provider;
-#[cfg(all(
-    windows,
-    any(
-        feature = "p0-local-provider",
-        feature = "p0-windows-sign-out-http",
-        all(test, feature = "p0-session")
+#[cfg(any(
+    all(target_os = "android", feature = "p0-android-provider-preflight"),
+    all(
+        windows,
+        any(
+            feature = "p0-local-provider",
+            feature = "p0-windows-sign-out-http",
+            all(test, feature = "p0-session")
+        )
     )
 ))]
-#[path = "windows_session/loopback.rs"]
-mod windows_loopback;
+mod fixture_http;
+#[cfg(test)]
+mod hosted_origin;
+#[cfg(any(
+    all(windows, feature = "p0-local-provider"),
+    all(target_os = "android", feature = "p0-android-provider-preflight")
+))]
+mod provider_endpoint;
+#[cfg(all(windows, feature = "p0-local-provider"))]
+mod windows_local_provider;
 
 #[cfg(all(target_os = "android", feature = "p0-android-provider-preflight"))]
 #[tauri::command]
@@ -47,8 +53,7 @@ async fn android_provider_preflight(
             "format": "convex_encoded_json",
             "args": [{"refreshToken": "klaxon-p0-inert-android-preflight"}]
         });
-        let (status, body) =
-            preflight_loopback::post_mutation("http://127.0.0.1:3210/api/mutation", &request)?;
+        let (status, body) = provider_endpoint::post(&request)?;
         if status == 200 && matches!(refresh_response::decode(&body), Ok(None)) {
             Ok("no-session")
         } else {

@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit
 @TauriPlugin
 class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
     private companion object {
-        const val SLOT = "localprovider"
-        const val ISSUER = "http://127.0.0.1:3210/components/auth"
+        const val LOOPBACK_ORIGIN = "http://127.0.0.1:3210"
+        const val LOOPBACK_SLOT = "localprovider"
         const val MAX_INPUT_BYTES = 4096
         const val MAX_RECORD_BYTES = 16 * 1024
         const val RETRY = "retry-required"
@@ -49,7 +49,20 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
 
     // Access is process-local. The sealed slot holds only the owner, subject, and refresh token.
     private var active: Active? = null
+    private val origin by lazy { providerOrigin() ?: fail(UNAVAILABLE) }
+    private val slot by lazy {
+        if (origin == LOOPBACK_ORIGIN) {
+            LOOPBACK_SLOT
+        } else {
+            // Keep sealed refresh grants separate across provider builds of this Android app.
+            val hash = digest(origin.toByteArray(Charsets.UTF_8)).joinToString("") {
+                (it.toInt() and 0xff).toString(16).padStart(2, '0')
+            }
+            "localprovider-hosted-$hash"
+        }
+    }
 
+    private external fun providerOrigin(): String?
     private external fun providerSignIn(input: ByteArray): Array<String>?
     private external fun providerRefresh(refresh: String): Array<String>?
     private external fun providerSignOut(refresh: String): Boolean
@@ -113,7 +126,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         val header = JSONObject(decoder.decode(parts[0]).toString(Charsets.UTF_8))
         require(header.requiredText("alg") != "none" && decoder.decode(parts[2]).isNotEmpty())
         val claims = JSONObject(decoder.decode(parts[1]).toString(Charsets.UTF_8))
-        require(claims.requiredText("aud") == "convex-auth" && claims.requiredText("iss") == ISSUER)
+        require(claims.requiredText("aud") == "convex-auth" && claims.requiredText("iss") == "$origin/components/auth")
         val issued = claims.requiredSeconds("iat")
         val expires = claims.requiredSeconds("exp")
         require(issued > 0 && expires > issued && expires > now())
@@ -129,7 +142,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         try {
             require(bytes.size in 1..MAX_RECORD_BYTES)
             val next = Active(digest(bytes), grant.access, grant.expiresAt)
-            if (initial) store.seed(SLOT, bytes) else store.rotate(SLOT, bytes)
+            if (initial) store.seed(slot, bytes) else store.rotate(slot, bytes)
             active = next
         } finally {
             bytes.fill(0)
@@ -139,7 +152,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
     private fun ensureOpen(store: FixtureStore) {
         if (revokeRequested) fail(RETRY)
         val state = try {
-            store.signOutState(SLOT)
+            store.signOutState(slot)
         } catch (_: Exception) {
             fail(RETRY)
         }
@@ -152,7 +165,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         try {
             val store = FixtureStore(host)
             ensureOpen(store)
-            require(store.recoverUnpublishedSeed(SLOT))
+            require(store.recoverUnpublishedSeed(slot))
             active = null
             val granted = grant(providerSignIn(input ?: fail(UNAVAILABLE))) ?: fail(UNAVAILABLE)
             publish(store, granted, initial = true)
@@ -166,19 +179,19 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
     fun resume(invoke: Invoke) = dispatch(invoke) {
         active = null
         val store = FixtureStore(host)
-        if (store.signOutState(SLOT) == SignOutState.ACKNOWLEDGED) {
-            store.finishSignOut(SLOT)
+        if (store.signOutState(slot) == SignOutState.ACKNOWLEDGED) {
+            store.finishSignOut(slot)
             revokeRequested = false
             fail(SIGNED_OUT)
         }
         ensureOpen(store)
-        if (store.recoverUnpublishedSeed(SLOT)) fail(SIGNED_OUT)
-        val current = readStored(store.read(SLOT))
+        if (store.recoverUnpublishedSeed(slot)) fail(SIGNED_OUT)
+        val current = readStored(store.read(slot))
         val next = grant(providerRefresh(current.refresh))
         if (next == null) {
-            store.persistSignOutState(SLOT, SignOutState.ACKNOWLEDGED)
-            store.finishSignOut(SLOT)
-            require(store.inventory(SLOT) == "no-key/no-file")
+            store.persistSignOutState(slot, SignOutState.ACKNOWLEDGED)
+            store.finishSignOut(slot)
+            require(store.inventory(slot) == "no-key/no-file")
             fail(SIGNED_OUT)
         }
         require(next.stored.owner == current.owner && next.stored.subject == current.subject &&
@@ -194,7 +207,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         val current = active ?: fail(SIGNED_OUT)
         active = null
         if (current.expiresAt <= now()) fail(SIGNED_OUT)
-        val bytes = store.read(SLOT) ?: fail(UNAVAILABLE)
+        val bytes = store.read(slot) ?: fail(UNAVAILABLE)
         try {
             require(digest(bytes).contentEquals(current.recordDigest))
         } finally {
@@ -209,21 +222,21 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         active = null
         revokeRequested = true
         val store = FixtureStore(host)
-        val state = store.signOutState(SLOT)
-        if (state == null && store.recoverUnpublishedSeed(SLOT)) {
+        val state = store.signOutState(slot)
+        if (state == null && store.recoverUnpublishedSeed(slot)) {
             revokeRequested = false
             fail(SIGNED_OUT)
         }
         if (state != SignOutState.ACKNOWLEDGED) {
-            store.persistSignOutState(SLOT, SignOutState.PENDING)
-            val current = readStored(store.readForSignOut(SLOT))
+            store.persistSignOutState(slot, SignOutState.PENDING)
+            val current = readStored(store.readForSignOut(slot))
             if (!providerSignOut(current.refresh)) fail(RETRY)
             // The same persisted token must receive a definitive noSession before key deletion.
             if (!(providerRefresh(current.refresh)?.contentEquals(arrayOf("no-session")) ?: false)) fail(RETRY)
-            store.persistSignOutState(SLOT, SignOutState.ACKNOWLEDGED)
+            store.persistSignOutState(slot, SignOutState.ACKNOWLEDGED)
         }
-        store.finishSignOut(SLOT)
-        require(store.inventory(SLOT) == "no-key/no-file")
+        store.finishSignOut(slot)
+        require(store.inventory(slot) == "no-key/no-file")
         revokeRequested = false
         arrayOf("revoked")
     }

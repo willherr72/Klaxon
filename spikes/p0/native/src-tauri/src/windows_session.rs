@@ -1,5 +1,5 @@
 #[cfg(any(test, feature = "p0-windows-sign-out-http"))]
-use crate::windows_loopback as loopback;
+use crate::fixture_http as loopback;
 use crate::windows_store as store;
 use std::{
     collections::BTreeMap,

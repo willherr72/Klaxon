@@ -48,6 +48,25 @@ test("routes only a validated reconnect port to a different loopback subscriptio
   }
 });
 
+test("the hosted outage gate closes the live socket and prevents an open while cut", async () => {
+  class Socket extends EventTarget {
+    static OPEN = 1;
+    readyState = Socket.OPEN;
+    close() {
+      this.readyState = 3;
+      queueMicrotask(() => this.dispatchEvent(new Event("close")));
+    }
+  }
+  const gate = observation.createSubscriptionGate(Socket);
+  const original = new gate.WebSocket();
+  gate.disconnect();
+  assert.equal(original.readyState, 3);
+  const blocked = new gate.WebSocket();
+  assert.equal(blocked.readyState, 3);
+  gate.restore();
+  assert.equal(new gate.WebSocket().readyState, Socket.OPEN);
+});
+
 const reconnectEvidence = {
   ...evidence,
   uninterrupted: false,

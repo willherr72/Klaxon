@@ -7,6 +7,32 @@ export function subscriptionOrigin(directOrigin, reconnectPort) {
   return `http://127.0.0.1:${reconnectPort}`;
 }
 
+// The hosted fixture cuts only this SDK client's WSS transport. Native HTTPS
+// and the independent control stay online.
+export function createSubscriptionGate(Socket) {
+  const sockets = new Set();
+  let cut = false;
+  return {
+    WebSocket: class extends Socket {
+      constructor(...args) {
+        super(...args);
+        if (cut) {
+          this.close();
+          return;
+        }
+        sockets.add(this);
+        this.addEventListener("close", () => sockets.delete(this), { once: true });
+      }
+    },
+    disconnect() {
+      if (![...sockets].some(socket => socket.readyState === Socket.OPEN)) throw Error("No open hosted subscription");
+      cut = true;
+      for (const socket of sockets) socket.close();
+    },
+    restore() { cut = false; },
+  };
+}
+
 export function isCachedBearerRenameDenied(status, envelopeStatus, error) {
   // The local backend can deliver a function error in HTTP 200. The SDK
   // also accepts 560 for this error envelope.

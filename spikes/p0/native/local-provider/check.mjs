@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { anyApi as api } from "convex/server";
 
-const origin = "http://127.0.0.1:3210";
+const localOrigin = "http://127.0.0.1:3210";
 const deadline = { timeout: 30_000 };
 
 async function verifiedPage(page) {
@@ -11,9 +11,21 @@ async function verifiedPage(page) {
   assert.equal(await page.getByRole("list", { name: "Local provider tasks" }).getByRole("listitem").count(), 0);
 }
 
-export async function exerciseLocalProvider({ launch, control, stranger, taskId, title, updatedTitle, relay, verifySlotCleared, waitForControlTitle }) {
+export async function verifyHostedPage(page, origin) {
+  await verifiedPage(page);
+  assert.equal(await page.locator('meta[name="p0-hosted-provider"]').getAttribute("content"), origin);
+  assert.equal(await page.evaluate(() => window.p0LocalProvider.origin), origin);
+  assert.equal(await page.evaluate(() => window.__TAURI__.core.invoke("local_provider_origin")), origin);
+}
+
+export async function exerciseLocalProvider({
+  launch, control, stranger, taskId, title, updatedTitle, relay, verifySlotCleared, waitForControlTitle,
+  origin = localOrigin, hostedReconnect = false,
+}) {
   let stage = "local clients and fixture input";
   try {
+    const reconnect = relay || hostedReconnect;
+    const verifyPage = hostedReconnect ? page => verifyHostedPage(page, origin) : verifiedPage;
     assert.ok(control.url === origin && stranger.url === origin);
     assert.ok(typeof taskId === "string" && taskId.length > 0);
     assert.ok(typeof title === "string" && typeof updatedTitle === "string" && title !== updatedTitle);
@@ -28,7 +40,7 @@ export async function exerciseLocalProvider({ launch, control, stranger, taskId,
 
     stage = "packaged sign-in";
     await launch(async page => {
-      await verifiedPage(page);
+      await verifyPage(page);
       await page.evaluate(() => window.p0LocalProvider.signIn());
       await page.waitForFunction(() => window.p0LocalProvider.signInResult !== undefined, undefined, deadline);
       assert.ok(await page.evaluate(() => window.p0LocalProvider.signInResult === "fixture-ready"));
@@ -70,22 +82,22 @@ export async function exerciseLocalProvider({ launch, control, stranger, taskId,
     }
 
     await launch(async page => {
-      await verifiedPage(page);
+      await verifyPage(page);
       assert.ok(await page.evaluate(() => window.p0LocalProvider.signInResult === undefined));
-      if (relay) {
+      if (reconnect) {
         await page.exposeFunction("p0VerifyControlRename", async () => {
           try { controlEvidence = await verifyControls(); }
           catch { throw Error("Independent control verification failed"); }
         });
-        await page.exposeFunction("p0DisconnectTransport", async () => { await relay.disconnect(); });
+        if (relay) await page.exposeFunction("p0DisconnectTransport", async () => { await relay.disconnect(); });
         await page.exposeFunction("p0RestoreTransport", async () => {
           // Native deletes the record after the issuer acknowledges and rejects refresh.
           await verifySlotCleared();
-          await relay.restore();
+          await relay?.restore();
         });
       }
       await page.evaluate(expected => { window.p0LocalProvider.observe(expected); },
-        { taskId, title, reconnectPort: relay?.port });
+        { taskId, title, reconnectPort: relay?.port, hostedReconnect });
       await page.waitForFunction(() => window.p0LocalProvider.result !== undefined, undefined, { timeout: 60_000 });
       observation = await page.evaluate(() => window.p0LocalProvider.result);
     });
@@ -97,9 +109,9 @@ export async function exerciseLocalProvider({ launch, control, stranger, taskId,
           "The relay must observe a working upstream both before the cut and after restoration");
       }
     }
-    if (observation.stage || (relay && observation.status !== "passed")) return observation;
+    if (observation.stage || (reconnect && observation.status !== "passed")) return observation;
 
-    if (!relay) controlEvidence = await verifyControls();
+    if (!reconnect) controlEvidence = await verifyControls();
     assert.ok(controlEvidence?.controlSubscriptionRenderedRename);
     return { ...observation, ...controlEvidence };
   } catch {

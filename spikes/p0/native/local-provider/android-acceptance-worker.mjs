@@ -14,6 +14,10 @@ export function androidAcceptanceEnv(env) {
   return Object.fromEntries(Object.entries(env).filter(([key]) => platformKeys.has(key.toLowerCase())));
 }
 
+export function providerWorkerEnvironmentIsClean() {
+  return process.execArgv.length === 0 && Object.keys(process.env).every(key => platformKeys.has(key.toLowerCase()));
+}
+
 export function launchAndroidAcceptance(args) {
   const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...args], {
     env: androidAcceptanceEnv(process.env), stdio: "inherit", windowsHide: true,
@@ -23,8 +27,7 @@ export function launchAndroidAcceptance(args) {
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  if (process.execArgv.length || process.argv[2] !== "android-provider-acceptance" ||
-      Object.keys(process.env).some(key => !platformKeys.has(key.toLowerCase()))) {
+  if (process.argv[2] !== "android-provider-acceptance" || !providerWorkerEnvironmentIsClean()) {
     throw Error("Use the isolated Android acceptance entry point in native/smoke.mjs");
   }
   const { android } = await import("../smoke.mjs");

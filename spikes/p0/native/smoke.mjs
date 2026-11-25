@@ -389,14 +389,14 @@ export async function withWebViewForward(deviceAdb, serial, target, action) {
   }
 }
 
-export async function android(serial) {
+export async function android(serial, hosted, { requireNetwork = true } = {}) {
   assert.match(serial ?? "", /^emulator-\d+$/, "Pass a disposable AVD serial");
   const sdk = platform === "android-sdk";
   const acceptance = platform === "android-provider-acceptance";
-  const provider = platform === "android-provider-preflight" || acceptance;
+  const provider = platform === "android-provider-preflight" || acceptance || !!hosted;
   const extra = process.argv.slice(4);
   const reconnect = acceptance && extra.length === 1 && extra[0] === "--reconnect";
-  if (provider) assert.ok(extra.length === 0 || reconnect, "Pass one disposable emulator serial and optional acceptance --reconnect");
+  if (provider && !hosted) assert.ok(extra.length === 0 || reconnect, "Pass one disposable emulator serial and optional acceptance --reconnect");
   const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
@@ -406,8 +406,13 @@ export async function android(serial) {
   const session = platform === "android-session" || guarded;
   if (session) assert.match(deviceAdb("emu", "avd", "name").split(/\r?\n/)[0].trim(), /^KlaxonSessionP0_[A-Za-z0-9]+$/);
   assert.equal(deviceAdb("shell", "getprop", "sys.boot_completed"), "1");
-  assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
-  assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:\s*none/i);
+  if (hosted && requireNetwork) {
+    assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "0", "Disable airplane mode on the hosted AVD");
+    assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:[ \t]*\d+/i);
+  } else {
+    assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
+    assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:\s*none/i);
+  }
   function assertNoMappings() {
     assert.ok(!deviceAdb("forward", "--list").split(/\r?\n/).some(line => line.split(/\s+/)[0] === serial),
       "Require an AVD without ADB forwards");
@@ -415,11 +420,11 @@ export async function android(serial) {
   }
   if (guarded) {
     assert.equal(deviceAdb("shell", "getprop", "ro.product.cpu.abi"), "x86_64");
-    assert.equal(deviceAdb("shell", "settings", "get", "global", "wifi_on"), "0", "Disable Wi-Fi on the AVD");
+    if (!hosted) assert.equal(deviceAdb("shell", "settings", "get", "global", "wifi_on"), "0", "Disable Wi-Fi on the AVD");
     assertNoMappings();
   }
   if (provider) assert.equal(deviceAdb("shell", "getprop", "ro.build.version.sdk"), "36");
-  const variant = provider ? "provider-preflight" : session ? "session" : "fixture";
+  const variant = hosted ? "provider-hosted" : provider ? "provider-preflight" : session ? "session" : "fixture";
   const apk = join(nativeDir, ".run/klaxon-p0-x86_64-" + variant + ".apk");
   await access(apk);
   const exerciseInstalled = async () => {
@@ -447,6 +452,7 @@ export async function android(serial) {
         }
       });
     }
+    if (hosted) return hosted({ withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId });
     if (provider) {
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
       const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance } =
@@ -485,7 +491,8 @@ export async function android(serial) {
   try { report = await withAndroidFixture(deviceAdb, apk, appId, exerciseInstalled); }
   finally { if (guarded) assertNoMappings(); }
   if (guarded) console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
-  if (provider) console.log(platform, report);
+  if (provider && !hosted) console.log(platform, report);
+  return report;
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {

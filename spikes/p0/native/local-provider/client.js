@@ -1,8 +1,8 @@
 import { ConvexClient, ConvexHttpClient } from "convex/browser";
 import { anyApi as api } from "convex/server";
-import { isCachedBearerRenameDenied, observeOutcome, subscriptionOrigin } from "./observation.mjs";
+import { createSubscriptionGate, isCachedBearerRenameDenied, observeOutcome, subscriptionOrigin } from "./observation.mjs";
 
-const origin = "http://127.0.0.1:3210";
+const origin = typeof P0_PROVIDER_ORIGIN === "string" ? P0_PROVIDER_ORIGIN : "http://127.0.0.1:3210";
 const observationMs = 12_000;
 const reconnectFollowUpMs = 1_000;
 const taskList = document.createElement("ul");
@@ -13,6 +13,7 @@ let signInResult;
 let result;
 let started = false;
 const fixture = {
+  get origin() { return origin; },
   get signInResult() { return signInResult; },
   get result() { return result; },
   signIn() {
@@ -51,16 +52,18 @@ async function waitFor(predicate) {
   return predicate();
 }
 
-async function exercise({ taskId, title, reconnectPort }) {
+async function exercise({ taskId, title, reconnectPort, hostedReconnect }) {
   let stage = "native resume";
   let client;
   try {
-    const reconnect = reconnectPort !== undefined;
+    const reconnect = hostedReconnect || reconnectPort !== undefined;
+    const gate = hostedReconnect && origin.startsWith("https:") ? createSubscriptionGate(WebSocket) : undefined;
     let socketOrigin = origin;
     if (reconnect) {
       stage = "reconnect transport configuration";
       socketOrigin = subscriptionOrigin(origin, reconnectPort);
-      if (typeof window.p0DisconnectTransport !== "function" || typeof window.p0RestoreTransport !== "function") {
+      if ((hostedReconnect && !gate) || (!gate && typeof window.p0DisconnectTransport !== "function") ||
+          typeof window.p0RestoreTransport !== "function") {
         return { status: "failed", stage };
       }
       stage = "native resume";
@@ -97,7 +100,10 @@ async function exercise({ taskId, title, reconnectPort }) {
     if (initialAuth !== true || !hasTask(initialHttpRows)) return { status: "failed", stage };
 
     stage = "initial authenticated subscription and render";
-    client = new ConvexClient(socketOrigin, { logger: false, expectAuth: true, initialAuthTokenReuse: true });
+    client = new ConvexClient(socketOrigin, {
+      logger: false, expectAuth: true, initialAuthTokenReuse: true,
+      ...(gate && { webSocketConstructor: gate.WebSocket }),
+    });
     let forcedRefreshes = 0;
     let queryErrors = 0;
     let rows = [];
@@ -161,7 +167,8 @@ async function exercise({ taskId, title, reconnectPort }) {
     let offlineEvidence;
     if (reconnect) {
       stage = "disconnect subscription transport";
-      await window.p0DisconnectTransport();
+      if (gate) gate.disconnect();
+      else await window.p0DisconnectTransport();
       if (!await waitFor(socketOffline)) return { status: "failed", stage };
       offlineEvidence = {
         disconnectedBeforeRevoke: true,
@@ -188,6 +195,7 @@ async function exercise({ taskId, title, reconnectPort }) {
       // A server update can arrive as soon as the host opens the relay.
       restoreStarted = performance.now();
       await window.p0RestoreTransport();
+      gate?.restore();
       stage = "wait for the new subscription connection";
       if (!await waitFor(socketReconnected)) return { status: "inconclusive", stage };
     }

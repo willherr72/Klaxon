@@ -1,17 +1,16 @@
 use crate::{
-    preflight_loopback,
+    provider_endpoint,
     refresh_response::{self, Grant},
 };
 use jni::{
     objects::{JByteArray, JObject, JObjectArray, JString},
-    sys::{jboolean, jobjectArray},
+    sys::{jboolean, jobjectArray, jstring},
     JNIEnv,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{plugin::PluginHandle, Builder, Manager, State, WebviewWindow, Wry};
 
-const MUTATION_URL: &str = "http://127.0.0.1:3210/api/mutation";
 const RETRY: &str = "retry-required";
 const SIGNED_OUT: &str = "signed-out";
 const UNAVAILABLE: &str = "unavailable";
@@ -45,7 +44,7 @@ fn sign_in_input(bytes: &[u8]) -> Result<SignInInput, &'static str> {
 
 fn mutation(path: &'static str, args: Value) -> Result<(u16, Vec<u8>), &'static str> {
     let request = json!({"path": path, "format": "convex_encoded_json", "args": [args]});
-    preflight_loopback::post_mutation(MUTATION_URL, &request)
+    provider_endpoint::post(&request)
 }
 
 fn successful_body((status, body): (u16, Vec<u8>)) -> Result<Vec<u8>, &'static str> {
@@ -57,6 +56,15 @@ fn successful_body((status, body): (u16, Vec<u8>)) -> Result<Vec<u8>, &'static s
 
 // Private Kotlin calls, made from the fixture's worker. No provider body or
 // unfiltered error crosses into Tauri IPC.
+#[no_mangle]
+pub extern "system" fn Java_dev_klaxon_p0native_LocalProviderPlugin_providerOrigin(
+    env: JNIEnv<'_>,
+    _plugin: JObject<'_>,
+) -> jstring {
+    env.new_string(provider_endpoint::ORIGIN)
+        .map_or(std::ptr::null_mut(), JString::into_raw)
+}
+
 #[no_mangle]
 pub extern "system" fn Java_dev_klaxon_p0native_LocalProviderPlugin_providerSignIn(
     mut env: JNIEnv<'_>,
@@ -236,5 +244,7 @@ pub(super) fn install(builder: Builder<Wry>) -> Builder<Wry> {
             local_access,
             local_revoke,
             crate::android_provider_preflight,
+            #[cfg(feature = "p0-hosted-provider")]
+            crate::provider_endpoint::local_provider_origin,
         ])
 }

@@ -9,6 +9,26 @@ import { fileURLToPath } from "node:url";
 
 const spike = fileURLToPath(new URL("../", import.meta.url));
 
+test("provisioning accepts only the Development key scope matching the selected origin", async () => {
+  const { devKeyMatchesOrigin } = await import("./local-provider/hosted-provision.mjs");
+  const origin = "https://fixture.convex.cloud";
+  assert.equal(devKeyMatchesOrigin("dev:fixture|inert-example", origin), true);
+  for (const key of ["prod:fixture|inert-example", "dev:other|inert-example", "dev:fixture|", "inert-example"]) {
+    assert.equal(devKeyMatchesOrigin(key, origin), false);
+  }
+  assert.equal(devKeyMatchesOrigin("dev:fixture|inert-example", origin + "/"), false);
+});
+
+test("hosted native entry rejects a noncanonical origin before reading credentials", () => {
+  const result = spawnSync(process.execPath, [
+    "native/local-provider/hosted-run.mjs", "--origin", "https://fixture.convex.cloud/",
+    "--emulator", "emulator-5586", "--accounts-file", "missing-private-file",
+  ], { cwd: spike, encoding: "utf8", env: { ...process.env, DEBUG: "pw:protocol", NODE_USE_ENV_PROXY: "1" } });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^Invalid hosted native fixture configuration\./);
+});
+
 test("Android live admission starts a fresh process without proxy or protocol logging settings", async () => {
   const { androidAcceptanceEnv } = await import("./local-provider/android-acceptance-worker.mjs");
   assert.deepEqual(androidAcceptanceEnv({
@@ -58,6 +78,17 @@ for (const { name, options, invalid, message } of [
       ["--target", "x86_64", "--session", "--sign-out-http"],
     ],
     message: /Android provider preflight requires --target x86_64 --session without --origin or --sign-out-http/,
+  },
+  {
+    name: "Android hosted provider packaging requires a canonical origin and isolated session flags",
+    options: ["--android-provider-hosted"],
+    invalid: [
+      ["--target", "x86_64", "--session"],
+      ["--target", "x86_64", "--session", "--origin", "https://fixture.convex.cloud/"],
+      ["--target", "x86_64", "--session", "--origin", "https://fixture.convex.cloud", "--android-provider-preflight"],
+      ["--target", "windows", "--session", "--origin", "https://fixture.convex.cloud"],
+    ],
+    message: /Android hosted provider requires/,
   },
 ]) {
   test(name, async t => {
@@ -154,6 +185,10 @@ test("portable builds isolate the Android provider preflight marker and loopback
       name: "hosted", args: [], origin: "https://fixture.convex.cloud",
       connect: "connect-src https://fixture.convex.cloud wss://fixture.convex.cloud",
     },
+    {
+      name: "hosted-session", args: ["--session", "--android-provider-hosted"], origin: "https://fixture.convex.cloud",
+      connect: "connect-src ipc: http://ipc.localhost https://fixture.convex.cloud wss://fixture.convex.cloud",
+    },
   ]) {
     const outdir = join(root, name);
     const result = spawnSync(process.execPath, ["build-portable.mjs", "--outdir", outdir, ...args], {
@@ -165,10 +200,14 @@ test("portable builds isolate the Android provider preflight marker and loopback
     assert.equal(html.includes(preflightMarker), !!preflight);
     const [, policy] = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/);
     assert.equal(policy.split("; ").find(rule => rule.startsWith("connect-src ")), connect);
-    if (preflight) {
+    if (preflight || name === "hosted-session") {
       assert.ok(html.includes("fixture_sdk_access"));
       const client = await readFile(join(outdir, "local-provider.js"), "utf8");
       assert.match(client, /\.p0LocalProvider=/);
+      if (name === "hosted-session") {
+        assert.ok(html.includes('<meta name="p0-hosted-provider" content="https://fixture.convex.cloud">'));
+        assert.ok(client.includes(origin));
+      }
       const integrity = "sha256-" + createHash("sha256").update(client).digest("base64");
       assert.ok(html.includes(`<script src="./local-provider.js" integrity="${integrity}"></script>`));
       assert.ok(policy.split("; ").find(rule => rule.startsWith("script-src ")).includes("'" + integrity + "'"));

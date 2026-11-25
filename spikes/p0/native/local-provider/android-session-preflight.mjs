@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { androidSubscriptionPort } from "../../build-policy.mjs";
 import { readFixtureFile } from "../packaged-session/adb-file.mjs";
 import { withPreflightReverse } from "./android-preflight.mjs";
 import { withScriptedAndroidProvider } from "./scripted-android-provider.mjs";
+import { verifyHostedPage } from "./check.mjs";
 
 const inputPath = "cache/p0-local-input.json";
 const slot = "no_backup/localprovider.bin";
 
-async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, exercise) {
+export async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, exercise, origin) {
+  const slotName = origin ? "localprovider-hosted-" + createHash("sha256").update(origin).digest("hex") : "localprovider";
+  const recordPath = "no_backup/" + slotName + ".bin";
   const pids = new Set();
   const list = path => adb("shell", "run-as", appId, "ls", "-1", path).split(/\r?\n/);
   async function coldLaunch(action) {
@@ -16,17 +20,19 @@ async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, 
     await withActivity(async (page, pid) => {
       assert.ok(!pids.has(pid), "Expected a fresh Android app process");
       pids.add(pid);
-      await page.waitForFunction(() => location.origin === "http://tauri.localhost" &&
-        !!document.querySelector('meta[name="p0-android-provider-preflight"][content="loopback-only"]') &&
-        !!window.p0LocalProvider && typeof window.__TAURI__?.core?.invoke === "function");
+      if (origin) await verifyHostedPage(page, origin);
+      else await page.waitForFunction(() => location.origin === "http://tauri.localhost" &&
+          !!document.querySelector('meta[name="p0-android-provider-preflight"][content="loopback-only"]') &&
+          !!window.p0LocalProvider && typeof window.__TAURI__?.core?.invoke === "function");
       await action(page);
       if (pids.size === 1) {
         assert.ok(!list("cache").includes("p0-local-input.json"), "One-use input should be consumed");
-        const sealed = readFixtureFile(adbBytes, appId, slot);
+        const sealed = readFixtureFile(adbBytes, appId, recordPath);
         assert.ok(sealed.length > 0 && !sealed.includes(input.owner), "Expected a protected owner record");
       }
     });
   }
+  if (origin) await withActivity(page => verifyHostedPage(page, origin));
   // Stdin keeps the one-use input out of process arguments and the WebView.
   const bytes = Buffer.from(JSON.stringify(input));
   try {
@@ -34,9 +40,12 @@ async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, 
     assert.ok(readFixtureFile(adbBytes, appId, inputPath).equals(bytes), "One-use input was not staged intact");
   } finally { bytes.fill(0); }
   function verifySlotCleared() {
-    assert.ok(!list("no_backup").some(name => name.startsWith("localprovider.")), "Provider slot should be cleared");
+    assert.ok(!list("no_backup").some(name => name.startsWith(slotName + ".")), "Provider slot should be cleared");
   }
   const result = await exercise(coldLaunch, verifySlotCleared);
+  if (origin && result.status !== "passed") console.error("Android hosted observation", {
+    status: result.status, stage: result.stage ?? "subscription result",
+  });
   assert.equal(result.status, "passed", "SDK lifecycle failed at " + (result.stage ?? "observation"));
   verifySlotCleared();
   await coldLaunch(async page => {

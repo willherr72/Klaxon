@@ -57,14 +57,49 @@ impl Drop for TestDirectory {
 }
 
 fn bearer(subject: Value) -> String {
+    bearer_with_issuer(subject, &format!("{}/components/auth", expected_origin()))
+}
+
+fn expected_origin() -> &'static str {
+    #[cfg(feature = "p0-hosted-provider")]
+    return env!("KLAXON_P0_HOSTED_ORIGIN");
+    #[cfg(not(feature = "p0-hosted-provider"))]
+    return "http://127.0.0.1:3210";
+}
+
+fn bearer_with_issuer(subject: Value, issuer: &str) -> String {
     let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
     let claims = URL_SAFE_NO_PAD.encode(
         json!({"sub": subject, "aud": "convex-auth", "iat": 1700000000, "exp": 1700000100,
-            "iss": "http://127.0.0.1:3210/components/auth"})
+            "iss": issuer})
         .to_string(),
     );
     let signature = URL_SAFE_NO_PAD.encode(b"inert signature");
     format!("{header}.{claims}.{signature}")
+}
+
+#[test]
+fn jwt_subject_requires_the_selected_provider_issuer() {
+    let origin = expected_origin();
+    let issuer = format!("{origin}/components/auth");
+    assert_eq!(
+        subject(&bearer_with_issuer(json!(SUBJECT), &issuer)),
+        Ok(SUBJECT.to_owned())
+    );
+    for alternate in [
+        format!("{issuer}/"),
+        format!("{origin}/components/auth?other"),
+        "https://other-fixture.convex.cloud/components/auth".to_owned(),
+        "https://different-fixture.convex.cloud/components/auth".to_owned(),
+        "http://127.0.0.1:3210/components/auth".to_owned(),
+    ] {
+        if alternate != issuer {
+            assert_eq!(
+                subject(&bearer_with_issuer(json!(SUBJECT), &alternate)),
+                Err(UNAVAILABLE)
+            );
+        }
+    }
 }
 
 fn response(status: Value, owner: &str, subject: Value, refresh: &str) -> Reply {
@@ -106,6 +141,18 @@ fn confines_the_slot_to_a_disposable_directory() {
     ] {
         assert!(slot_path(&root.0, invalid).is_none());
     }
+}
+
+#[cfg(feature = "p0-hosted-provider")]
+#[test]
+fn hosted_slot_cannot_open_a_loopback_record() {
+    let dir = TestDirectory::new();
+    let path = dir.path();
+    Slot::lock_with_context(&path, b"dev.klaxon.p0localprovider/session-v1/packaged")
+        .unwrap()
+        .seed(b"inert loopback record")
+        .unwrap();
+    assert!(lock_slot(&path).unwrap().read().is_err());
 }
 
 #[test]
