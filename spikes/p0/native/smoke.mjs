@@ -429,9 +429,9 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
   const extra = process.argv.slice(4);
   const reconnect = acceptance && extra.length === 1 && extra[0] === "--reconnect";
   const routeOutage = platform === "android-provider-preflight" && extra.length === 1 && extra[0] === "--network-outage";
-  const renewal = platform === "android-provider-preflight" && extra.length === 1 && extra[0] === "--renewal";
+  const renewal = (platform === "android-provider-preflight" || acceptance) && extra.length === 1 && extra[0] === "--renewal";
   if (provider && !hosted) assert.ok(extra.length === 0 || reconnect || routeOutage || renewal,
-    "Pass one disposable emulator serial with optional acceptance --reconnect or preflight --network-outage or --renewal");
+    "Pass one disposable emulator serial with --renewal, acceptance --reconnect or preflight --network-outage");
   const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
@@ -467,16 +467,19 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
     if (hosted) return hosted({ withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId });
     if (provider) {
       const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
-      if (renewal) {
+      if (renewal && !acceptance) {
         const { runAndroidRenewal } = await import("./local-provider/scripted-android-renewal.mjs");
         return { session: await runAndroidRenewal(target) };
       }
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
       const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance, exerciseAndroidRouteOutage } =
         await import("./local-provider/android-session-preflight.mjs");
-      const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect });
+      const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect, renewal });
       let session;
-      if (routeOutage) session = await exerciseAndroidRouteOutage(target);
+      if (renewal) {
+        const { runRealAndroidRenewal } = await import("./local-provider/real-android-renewal.mjs");
+        session = await runRealAndroidRenewal(target);
+      } else if (routeOutage) session = await exerciseAndroidRouteOutage(target);
       else if (acceptance) session = await exerciseAndroidProviderAcceptance(target, { reconnect });
       else session = await exerciseAndroidProviderSession(target);
       return { transport, session };

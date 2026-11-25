@@ -69,13 +69,25 @@ test("invalidates continuity after a task subscription is replaced or auth is re
   assert.equal(secondObservation.continued(), false);
 });
 
-test("the running observer waits for the SDK timer and preserves its socket through native revoke", { timeout: 22_000 },
+for (const realProvider of [false, true]) test(realProvider ?
+  "the running observer confirms fresh HTTP denial while the revoked successor is unexpired" :
+  "the running observer waits for the SDK timer and preserves its socket through native revoke", { timeout: 22_000 },
   async () => withScriptedAndroidProvider(async fixture => {
     const origin = `http://127.0.0.1:${fixture.port}`;
     const packagedOrigin = "http://tauri.localhost";
-    const fetchQuery = (url, options) => fetch(url, {
-      ...options, headers: { ...options.headers, Origin: packagedOrigin },
-    });
+    const revokedHttpQueries = [];
+    let revoked = false;
+    const fetchQuery = (url, options) => {
+      if (realProvider && revoked) {
+        assert.equal(url, `${origin}/api/query`);
+        assert.equal(new Headers(options.headers).get("Authorization"), `Bearer ${grant.accessToken}`);
+        const { path } = JSON.parse(options.body);
+        revokedHttpQueries.push(path);
+        return path === "auth:isAuthenticated" ? Response.json({ status: "success", value: false }) :
+          new Response(null, { status: 401 });
+      }
+      return fetch(url, { ...options, headers: { ...options.headers, Origin: packagedOrigin } });
+    };
     class PackagedSocket extends WebSocket {
       constructor(url) { super(url, { origin: packagedOrigin }); }
     }
@@ -112,19 +124,22 @@ test("the running observer waits for the SDK timer and preserves its socket thro
       assert.equal(command, "local_revoke");
       assert.equal(await post("auth:signOut", argsForGrant()), null);
       assert.deepEqual(await post("auth:refreshSession", argsForGrant()), { kind: "noSession" });
+      revoked = true;
       return "revoked";
     }
     const progress = [];
     const renders = [];
+    const waitTimeouts = [];
     const rendered = () => renders.at(-1);
     let subscribedAt;
     const report = await observeRunningRenewal({
-      origin, taskId: fixture.taskId, title: fixture.title, renewedTitle: fixture.renewedTitle, invoke,
+      origin, taskId: fixture.taskId, title: fixture.title, renewedTitle: fixture.renewedTitle, invoke, realProvider,
       webSocketConstructor: PackagedSocket, fetchQuery,
       renderTasks: tasks => renders.push(tasks),
       renderedTask: expectedTitle => rendered()?.some(task => task._id === fixture.taskId && task.title === expectedTitle),
       renderedRows: () => rendered()?.length,
       waitFor: async (condition, timeoutMs) => {
+        waitTimeouts.push(timeoutMs);
         const deadline = performance.now() + timeoutMs;
         while (!condition() && performance.now() < deadline) await delay(10);
         return condition();
@@ -139,6 +154,7 @@ test("the running observer waits for the SDK timer and preserves its socket thro
       },
     });
     assert.equal(report.status, "passed", JSON.stringify(report));
+    assert.ok(waitTimeouts[1] > 12_000 && waitTimeouts[1] <= 20_000);
     assert.deepEqual(progress, ["subscribed", "renewed", "updated", "revoked"]);
     assert.deepEqual(nativeCalls, [
       ["local_resume", undefined], ["local_access", false], ["local_access", true],
@@ -146,5 +162,17 @@ test("the running observer waits for the SDK timer and preserves its socket thro
     ]);
     assert.deepEqual(renders.map(rows => rows.map(row => row.title)), [[fixture.title], [fixture.renewedTitle], []]);
     assert.equal(report.forcedRefreshes, 1);
+    assert.equal(report.initialBearerTtlSeconds, 20);
+    assert.equal(report.successorBearerTtlSeconds, 900);
+    assert.ok(report.forcedRefreshAfterIssuedMs >= 8_000);
+    assert.ok(report.forcedRefreshBeforeExpiryMs > 0);
+    assert.ok(report.successorAcknowledgedBeforeExpiryMs > 0);
+    if (realProvider) {
+      assert.deepEqual(revokedHttpQueries.sort(), ["auth:isAuthenticated", "tasks:list"]);
+      assert.equal(report.revokedHttpDenied, true);
+      assert.ok(report.revokedHttpBeforeExpiryMs > 0);
+    } else {
+      assert.equal(report.revokedHttpDenied, undefined);
+    }
     fixture.verify();
   }, { renewal: true }));

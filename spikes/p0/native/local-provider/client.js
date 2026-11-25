@@ -18,6 +18,7 @@ let started = false;
 const fixture = {
   get origin() { return origin; },
   hostedProbeVersion: 1,
+  localRenewalVersion: 1,
   get signInResult() { return signInResult; },
   get result() { return result; },
   get renewalProgress() { return renewalProgress; },
@@ -34,13 +35,13 @@ const fixture = {
       result = { status: "failed", stage: "WebView observation" };
     });
   },
-  observeRenewal({ taskId, title, renewedTitle }) {
+  observeRenewal({ taskId, title, renewedTitle, realProvider }) {
     if (started) return;
     started = true;
     const reportProgress = phase => { renewalProgress = { phase }; };
     reportProgress("initial");
     void observeRunningRenewal({
-      origin, taskId, title, renewedTitle, invoke, renderTasks, waitFor, reportProgress,
+      origin, taskId, title, renewedTitle, realProvider, invoke, renderTasks, waitFor, reportProgress,
       renderedTask: expectedTitle => hasRenderedTask(taskId, expectedTitle),
       renderedRows: () => taskList.children.length,
     }).then(report => { renewalResult = report; }, () => {

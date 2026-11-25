@@ -87,7 +87,7 @@ async function matchesMutation(req) {
 }
 
 // Call inside the disposable install guard. withActivity supplies the verified app's CDP page and PID.
-export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect = false } = {}) {
+export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect = false, renewal = false } = {}) {
   const challenge = randomUUID();
   const httpPath = "/p0-android-provider/http?challenge=" + challenge;
   const webSocketPath = "/p0-android-provider/ws";
@@ -167,6 +167,10 @@ export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, 
       return location.origin === origin && markers.length === 1 && markers[0].content === "loopback-only" &&
         typeof window.__TAURI__?.core?.invoke === "function";
     }, productOrigin));
+    if (renewal) {
+      assert.ok(await page.evaluate(() => window.p0LocalProvider?.localRenewalVersion === 1 &&
+        typeof window.p0LocalProvider.observeRenewal === "function"));
+    }
 
     stage = "WebView HTTP round trip";
     allowance = "http";

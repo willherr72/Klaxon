@@ -131,7 +131,7 @@ function adapters({ existing, competing, lostAck, missingMarker, staleReceipt, d
 
   return {
     adb,
-    run: () => exerciseAndroidProviderPreflight(withActivity, adb, app),
+    run: options => exerciseAndroidProviderPreflight(withActivity, adb, app, options),
     counts: () => ({ mapped, removed, launches, fetched, invoked }),
     mapping: () => mapping,
     async assertClosed() {
@@ -183,6 +183,13 @@ test("checks the packaged marker before network traffic", async () => {
   const fixture = adapters({ missingMarker: true });
   await assert.rejects(fixture.run(), /packaged WebView verification/);
   assert.equal(fixture.counts().fetched, 0);
+  await fixture.assertClosed();
+});
+
+test("rejects a stale renewal client before traffic and releases the route", async () => {
+  const fixture = adapters();
+  await assert.rejects(fixture.run({ renewal: true }), /packaged WebView verification/);
+  assert.deepEqual(fixture.counts(), { mapped: 1, removed: 1, launches: 1, fetched: 0, invoked: 0 });
   await fixture.assertClosed();
 });
 

@@ -2,7 +2,14 @@ import { ConvexClient, ConvexHttpClient } from "convex/browser";
 import { anyApi as api } from "convex/server";
 
 const stageTimeoutMs = 12_000;
-const renewalTimeoutMs = 35_000;
+
+function confirmedBearerLifetime(client, bearer) {
+  const auth = client.getAuth();
+  if (auth?.token !== bearer) return undefined;
+  const { iat, exp } = auth.decoded;
+  if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp) || iat <= 0 || exp <= iat) return undefined;
+  return { issuedAt: iat * 1_000, expiresAt: exp * 1_000, ttlSeconds: exp - iat };
+}
 
 // The pinned SDK exposes the bearer it sent through getAuth(), but does not
 // report a second auth change when the server accepts a replacement bearer.
@@ -34,7 +41,7 @@ export function observeRenewalSocket(Socket) {
           if (frame?.type !== "Transition") return;
           const start = frame.startVersion?.identity;
           if (frame.endVersion?.identity === start + 1 && authenticates.has(start)) {
-            acknowledgments.push(authenticates.get(start));
+            acknowledgments.push({ bearer: authenticates.get(start), at: Date.now() });
             authenticates.delete(start);
           }
         });
@@ -59,13 +66,15 @@ export function observeRenewalSocket(Socket) {
     },
     get taskQueryId() { return queryReplaced ? undefined : taskQueryId; },
     continued: () => !authRejected && !queryReplaced && sockets === 1 && original.readyState === Socket.OPEN,
-    acknowledgedOrder: bearer => acknowledgments.indexOf(bearer) + 1,
+    acknowledgedOrder: bearer => acknowledgments.findIndex(ack => ack.bearer === bearer) + 1,
+    acknowledgedAt: (bearer, order) => acknowledgments[order - 1]?.bearer === bearer ?
+      acknowledgments[order - 1].at : undefined,
   };
 }
 
 export async function observeRunningRenewal({
   origin, taskId, title, renewedTitle, invoke, renderTasks, renderedTask, renderedRows, waitFor, reportProgress,
-  webSocketConstructor = WebSocket, fetchQuery = fetch,
+  realProvider = false, webSocketConstructor = WebSocket, fetchQuery = fetch,
 }) {
   let stage = "renewal observation input";
   const failure = () => ({ status: "failed", stage });
@@ -87,9 +96,11 @@ export async function observeRunningRenewal({
     let rows = [];
     let callbacks = 0;
     let initialObserved = false;
+    let initialLifetime;
     let initialConnectionCount;
     let initialQueryId;
     let forcedRefreshes = 0;
+    let forcedRefreshAt;
     let renewedBearer;
     let refreshFailed = false;
     let queryFailed = false;
@@ -109,7 +120,9 @@ export async function observeRunningRenewal({
       if (!forceRefreshToken) return initialBearer;
       // Reject startup fallback and auth-error retries. The running SDK must
       // ask for the forced grant after the original subscription is ready.
-      if (++forcedRefreshes !== 1 || !initialObserved || interrupted()) {
+      forcedRefreshAt = Date.now();
+      if (++forcedRefreshes !== 1 || !initialObserved || interrupted() ||
+          forcedRefreshAt <= initialLifetime.issuedAt || forcedRefreshAt >= initialLifetime.expiresAt) {
         refreshFailed = true;
         return null;
       }
@@ -135,6 +148,9 @@ export async function observeRunningRenewal({
     if (!await waitForHealthy(() => socket.continued() && Number.isSafeInteger(socket.taskQueryId) &&
       socket.acknowledgedOrder(initialBearer) === 1 && client.connectionState().isWebSocketConnected &&
       hasTask(rows, title) && renderedTask(title))) return failure();
+    stage = "confirmed cold-resumed bearer lifetime";
+    initialLifetime = confirmedBearerLifetime(client, initialBearer);
+    if (!initialLifetime || initialLifetime.expiresAt <= Date.now()) return failure();
     initialConnectionCount = client.connectionState().connectionCount;
     initialQueryId = socket.taskQueryId;
     const initialCallbacks = callbacks;
@@ -144,8 +160,13 @@ export async function observeRunningRenewal({
     reportProgress("subscribed");
 
     stage = "scheduled SDK renewal and socket acknowledgment";
-    if (!await waitForHealthy(() => renewedBearer !== undefined && socket.acknowledgedOrder(renewedBearer) === 2 &&
-      client.getAuth()?.token === renewedBearer, renewalTimeoutMs)) return failure();
+    let acknowledgedAt;
+    if (!await waitForHealthy(() => renewedBearer !== undefined &&
+      (acknowledgedAt = socket.acknowledgedAt(renewedBearer, 2)) !== undefined &&
+      client.getAuth()?.token === renewedBearer, initialLifetime.expiresAt - Date.now()) ||
+      acknowledgedAt >= initialLifetime.expiresAt) return failure();
+    const successorLifetime = confirmedBearerLifetime(client, renewedBearer);
+    if (!successorLifetime || successorLifetime.issuedAt <= initialLifetime.issuedAt) return failure();
     const renewalCallbacks = callbacks;
     reportProgress("renewed");
 
@@ -157,12 +178,17 @@ export async function observeRunningRenewal({
     stage = "explicit HTTP read with the successor bearer";
     const bearer = await invoke("local_access", { forceRefresh: false });
     if (bearer !== renewedBearer) return failure();
-    const http = new ConvexHttpClient(origin, {
+    const httpForBearer = inspectResponse => new ConvexHttpClient(origin, {
       auth: bearer, logger: false,
-      fetch: (input, options) => fetchQuery(input, {
-        ...options, redirect: "error", signal: AbortSignal.timeout(stageTimeoutMs),
-      }),
+      fetch: async (input, options) => {
+        const response = await fetchQuery(input, {
+          ...options, redirect: "error", signal: AbortSignal.timeout(stageTimeoutMs),
+        });
+        inspectResponse?.(response.status);
+        return response;
+      },
     });
+    const http = httpForBearer();
     const [authenticated, httpRows] = await Promise.all([
       http.query(api.auth.isAuthenticated, {}), http.query(api.tasks.list, {}),
     ]);
@@ -174,11 +200,34 @@ export async function observeRunningRenewal({
     if (await invoke("local_revoke") !== "revoked") return failure();
     reportProgress("revoked");
 
+    let revokedHttpBeforeExpiryMs;
+    if (realProvider) {
+      stage = "fresh HTTP denial with the revoked successor bearer";
+      if (successorLifetime.expiresAt <= Date.now()) return failure();
+      const queryDenied = async (reference, deniedValue) => {
+        let status;
+        const staleHttp = httpForBearer(value => { status = value; });
+        try { return deniedValue(await staleHttp.query(reference, {})); }
+        catch { return status === 401; }
+      };
+      const [authDenied, tasksDenied] = await Promise.all([
+        queryDenied(api.auth.isAuthenticated, value => value === false),
+        queryDenied(api.tasks.list, value => Array.isArray(value) && value.length === 0),
+      ]);
+      revokedHttpBeforeExpiryMs = successorLifetime.expiresAt - Date.now();
+      if (!authDenied || !tasksDenied || revokedHttpBeforeExpiryMs <= 0) return failure();
+    }
+
     stage = "cleared original subscription and task list";
     if (!await waitForHealthy(() => emptyCallback && rows.length === 0 && renderedRows() === 0)) return failure();
     return {
       status: "passed",
       forcedRefreshes,
+      initialBearerTtlSeconds: initialLifetime.ttlSeconds,
+      forcedRefreshAfterIssuedMs: forcedRefreshAt - initialLifetime.issuedAt,
+      forcedRefreshBeforeExpiryMs: initialLifetime.expiresAt - forcedRefreshAt,
+      successorAcknowledgedBeforeExpiryMs: initialLifetime.expiresAt - acknowledgedAt,
+      successorBearerTtlSeconds: successorLifetime.ttlSeconds,
       connectionCount: initialConnectionCount,
       taskQueryId: initialQueryId,
       uninterrupted: true,
@@ -187,6 +236,7 @@ export async function observeRunningRenewal({
       httpAuthenticated: authenticated,
       httpRows: httpRows.length,
       nativeRevoked: true,
+      ...(realProvider && { revokedHttpDenied: true, revokedHttpBeforeExpiryMs }),
       emptyCallback,
       initialSubscriptionRows,
       initialRenderedRows,

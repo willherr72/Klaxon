@@ -50,7 +50,7 @@ async function withControlView(token, taskId, action) {
   }
 }
 
-function client() {
+export function localProviderClient() {
   return new ConvexHttpClient(origin, {
     logger: false,
     fetch: (url, options) => {
@@ -60,23 +60,23 @@ function client() {
   });
 }
 
-async function enroll(issuer) {
+export async function enrollLocalProviderAccount(issuer) {
   const credentials = { username: "probe" + randomUUID().replaceAll("-", ""), password: randomUUID() };
   const result = await issuer.mutation(api.auth.signUpWithUsernamePassword, credentials);
   assert.ok(result.status === "complete" && result.tokens?.refreshToken && result.tokens?.accessToken,
     "Local signup did not produce a grant");
-  const http = client();
+  const http = localProviderClient();
   http.setAuth(result.tokens.accessToken);
   return { credentials, http, grant: result.tokens };
 }
 
 export async function withLocalProviderScenario(url, exercise) {
   assert.equal(url, origin);
-  const issuer = client();
+  const issuer = localProviderClient();
   const accounts = [];
   try {
-    accounts.push(await enroll(issuer));
-    accounts.push(await enroll(issuer));
+    accounts.push(await enrollLocalProviderAccount(issuer));
+    accounts.push(await enrollLocalProviderAccount(issuer));
     const [a, b] = accounts;
     assert.ok(a.grant.userId !== b.grant.userId, "Expected two distinct owners");
     for (const { http } of accounts) {
