@@ -14,7 +14,8 @@ def verify():
     entries = [line.removeprefix("Path = ") for line in listing.splitlines() if line.startswith("Path = ")]
     plugins = ["System.dll", "nsDialogs.dll", "nsis_tauri_utils.dll", "StartMenu.dll", "modern-wizard.bmp"]
     expected = [binary] + ["$PLUGINSDIR\\" + name for name in plugins]
-    if sorted(entries) != sorted(expected):
+    # 7-Zip can also enumerate the entry emitted by NSIS WriteUninstaller.
+    if sorted(entries) not in (sorted(expected), sorted([*expected, "uninstall.exe"])):
         raise ValueError(f"Unexpected NSIS payload inventory: {entries}")
 
     # Tauri CLI stamps the NSIS bundle type in the packaged PE and restores
@@ -27,6 +28,11 @@ def verify():
     if b"dev.klaxon.p0reminderfixture" not in packaged:
         raise ValueError("The fixture identifier is missing from the packaged executable")
     definitions = (debug / "nsis/x64/installer.nsi").read_text(encoding="utf-8-sig").splitlines()
+    section = definitions.index("Section Install") + 1
+    install = [line.strip() for line in definitions[section:definitions.index("SectionEnd", section)]]
+    payload = [line for line in install if line and line.split()[0].lower() in ("file", "writeuninstaller")]
+    if payload != ['File "${MAINBINARYSRCPATH}"', r'WriteUninstaller "$INSTDIR\uninstall.exe"']:
+        raise ValueError("Unexpected file or uninstaller instruction in the NSIS install section")
     for key, value in {
         "PRODUCTNAME": "Klaxon P0 Reminder Fixture", "MANUFACTURER": "klaxon",
         "MAINBINARYNAME": binary.removesuffix(".exe"),
