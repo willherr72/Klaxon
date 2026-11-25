@@ -199,3 +199,9 @@ The commands above used Node 24.12.0, Rust 1.97.1, Tauri CLI 2.11.0, JDK 21.0.8 
 | `.run/klaxon-p0-arm64-fixture.apk` | 29367666 | `e01763928c28f9b77fa70aae39c1f72c48383798aea9bc2eb60323301ad507ee` |
 
 Android Build Tools `aapt dump badging` identified each expected single ABI, the spike package, version 0.1.0 and the debuggable flag. `apksigner verify --print-certs` validated both APKs with the local Android Debug certificate. Each archived native library’s SHA-256 matched its compiled Rust library. The smoke removed the package and its debug forwards. The emulator was shut down and the Windows WebView2 profiles were removed. The stopped AVD’s temporary directory was retained.
+
+## Windows with a disposable local Convex provider
+
+From the repository root, run `node spikes/p0/native/local-provider/run.mjs` with Cargo on PATH, the spike's locked npm dependencies installed, Edge, WebView2 and the cached Windows backend `precompiled-2026-11-21-cf39368`. The command builds the unsigned `windows_local_provider` executable offline. The backend helper requires Git and free loopback ports 3210 and 3211. It copies the indexed backend functions into a temporary project. It skips the CLI's optional TypeScript check because the spike lacks Node types for `users.ts`.
+
+The command creates two disposable local identities and three independent logins. It opens the observed owner's task in a separate Edge control and in the restarted packaged WebView2 client. The native client submits its protected refresh grant for sign-out and checks that the same grant can no longer refresh. The original WebView keeps its cached access token and subscription open while measuring HTTP access, subscription callbacks and the rendered task. A second owner checks cross-owner read and rename denial. The command reports a nonzero exit for failed or inconclusive evidence. [Acceptance criteria](../README.md#local-provider-acceptance-for-an-open-subscription)
