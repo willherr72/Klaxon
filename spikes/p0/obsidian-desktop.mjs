@@ -16,7 +16,8 @@ assert(process.platform === "win32" && path.isAbsolute(executablePath ?? ""),
   "Pass the absolute path of the installed Obsidian.exe on Windows.");
 assert.equal(path.basename(executablePath).toLowerCase(), "obsidian.exe");
 
-const root = await mkdtemp(path.join(tmpdir(), "klaxon-p0-obsidian-"));
+const tempParent = path.resolve(tmpdir());
+const root = await mkdtemp(path.join(tempParent, "klaxon-p0-obsidian-"));
 const id = randomBytes(8).toString("hex");
 const vault = path.join(root, "P0 " + id);
 const profile = path.join(root, "profile");
@@ -35,7 +36,7 @@ Object.assign(env, {
   APPDATA: path.join(root, "roaming"), LOCALAPPDATA: path.join(root, "local"),
   USERPROFILE: path.join(root, "user"), TEMP: path.join(root, "temp"), TMP: path.join(root, "temp"),
 });
-let child, exited, browser;
+let child, browser;
 try {
   const directories = [env.APPDATA, env.LOCALAPPDATA, env.USERPROFILE, env.TEMP, profile,
     path.join(vault, ".obsidian"), path.join(vault, "Planning")];
@@ -47,7 +48,6 @@ try {
   await writeFile(path.join(vault, "Other.md"), "Synthetic control note");
   child = spawn(executablePath, [...flags, "--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
     { env, windowsHide: true, stdio: "ignore" });
-  exited = new Promise(resolve => child.once("close", resolve));
   await once(child, "spawn");
   let endpoint;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -86,12 +86,18 @@ try {
   try {
     if (browser) await browser.close();
   } finally {
-    if (child?.pid && child.exitCode === null && child.signalCode === null) {
-      child.kill(); // Only the process started with this disposable profile.
-      await exited;
+    try {
+      if (child?.pid && child.exitCode === null && child.signalCode === null) {
+        // Observe termination errors before asking this fixture process to exit.
+        await Promise.all([
+          once(child, "close", { signal: AbortSignal.timeout(5000) }),
+          Promise.resolve().then(() => child.kill()),
+        ]);
+      }
+    } finally {
+      assert.equal(path.dirname(root), tempParent);
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     }
-    assert.equal(path.dirname(root), tmpdir());
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   }
 }
 console.log("PASS: desktop URI opened the selected note before and after manual rename reconciliation. Fixture removed.");
