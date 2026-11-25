@@ -225,6 +225,17 @@ Will authorized one live Android run, which passed with this setup. The separate
 
 Append `--reconnect` to exercise revocation during a subscription outage. The account-free admission check first verifies a packaged WebSocket round trip on emulator loopback port 3212. During the live run that port maps to an ephemeral relay while native auth and HTTP use port 3210. The relay cuts the target socket, native code revokes the saved refresh grant and removes the protected slot, and then the original SDK subscription reconnects. A pass requires the empty callback on the new socket, denial of reads and renames with the cached bearer, and an empty target list through the surviving owner's independent rename. Cold sign-out and fixture cleanup are verified at the end.
 
+## Android pre-armed alarm rehearsal
+
+Use the cached Android 36 SDK, JDK and Gradle wrapper. From the repository root, build the standalone debug APK and run the probe against a freshly created, disposable API 36 x86_64 AVD named `KlaxonAlarmP0_<suffix>`. It must be booted with airplane mode on, Wi-Fi off, no active default network, no ADB mappings and no prior fixture install. Set `ADB` to the SDK's `adb.exe` and substitute the serial of that AVD.
+
+```powershell
+./src-tauri/gen/android/gradlew.bat --offline --console=plain -p spikes/p0/native/android-alarm assembleDebug
+node spikes/p0/native/android-alarm/check.mjs emulator-5588
+```
+
+The probe replaces one alarm and cancels a second, verifies the arming process exits before either original deadline without using Force Stop, and turns off the emulator display. The replacement is due 30 seconds after arming. A pass requires one private receipt for the replacement from a fresh process no more than 90 seconds after the due time, a noninteractive display at receipt, and ten more seconds without another callback. The runner reports keyguard, idle state and arming mode. The APK declares no permissions and never requests a notification. The runner verifies scoped uninstall, then the operator shuts down the selected AVD. If installation is unconfirmed, inspect the scoped install receipt before retrying. [Results and scope](../../../docs/klaxon-v2-progress.md#android-pre-armed-alarm-rehearsal)
+
 ## Hosted packaged native acceptance
 
 Select an owner-confirmed disposable Convex Free Development deployment. Use its exact `https://<deployment>.convex.cloud` origin and a fresh key scoped to that deployment. Before provisioning, verify that the pinned CLI's `function-spec` reports the selected origin and that `authFixtures:enrollDisposable` and `authFixtures:retireDisposable` are installed as internal fixture operations. If they need to be pushed, stage only the spike's Convex functions and pinned dependencies in a temporary project and verify the key's Development target before applying the push.
