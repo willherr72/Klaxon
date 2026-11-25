@@ -21,8 +21,8 @@ export function createTaskSession(core, render) {
       let reply;
       try {
         reply = await core.invoke("fixture_session", { operation });
-      } catch {
-        reply = "unavailable";
+      } catch (error) {
+        reply = error === "retry-required" ? "retry-required" : "unavailable";
       }
       if (generation === changing) {
         status = reply;

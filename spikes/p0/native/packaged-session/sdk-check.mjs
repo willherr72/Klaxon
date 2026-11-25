@@ -262,6 +262,7 @@ export async function exerciseWindowsSdkHandoff(launch, root, record) {
     },
   }, { initialGrantFailures: ["p0-signin-denied", "p0-signin-owner-mismatch"] });
   await exerciseWindowsRefreshRecord(launch, root, record);
+  await exerciseWindowsLostSignOutReply(launch, root, record);
   await checkProfile(join(root, "webview"));
 }
 
@@ -307,6 +308,88 @@ async function exerciseWindowsRefreshRecord(launch, root, record) {
   await assert.rejects(access(record), { code: "ENOENT" });
   await rm(requireSuccessor);
   assert.deepEqual(await readdir(root), ["webview"], "sign-out must retire any staged refresh material");
+}
+
+async function exerciseWindowsLostSignOutReply(launch, root, record) {
+  const exchange = join(root, "p0-provider-refresh");
+  const dropReply = join(root, "p0-signout-drop-reply");
+  const expectSuccessor = join(root, "p0-signout-expect-successor");
+  const issuerReceipt = join(root, "p0-issuer-revoked-successor");
+  const issuerAck = join(root, "p0-issuer-acknowledged-successor");
+  const unrelated = join(root, "p0-unrelated");
+  const unrelatedContents = "keep this fixture file";
+  let successor;
+
+  async function expectColdDenial(page, panel) {
+    assert.equal(await taskRows(panel).count(), 0);
+    await nativeDenies(page);
+    const opened = await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened);
+    assert.equal(opened, 0, "a cold denial must not open an SDK socket");
+    assert.ok(await page.evaluate(() => window.p0SdkFixture.accessRequests.length === 0 &&
+      !window.p0Replies.some(reply => String(reply).startsWith("sdk-access-"))),
+    "a cold denial must not request or receive SDK access");
+  }
+
+  await writeFile(unrelated, unrelatedContents, { flag: "wx" });
+  try {
+    await launch([async (page, panel) => {
+      await seed(page, panel);
+      const predecessor = await readFile(record);
+      await writeFile(exchange, "", { flag: "wx" });
+      await resume(page, panel, "A");
+      await rm(exchange);
+      successor = await readFile(record);
+      assert.ok(successor.length > 0 && !successor.equals(predecessor), "expected a rotated protected record");
+
+      await assert.rejects(access(issuerReceipt), { code: "ENOENT" });
+      await writeFile(expectSuccessor, "", { flag: "wx" });
+      await writeFile(dropReply, "", { flag: "wx" });
+      await click(panel, "Sign out");
+      await page.waitForFunction(() => {
+        const status = document.querySelector('[aria-label="SDK session status"]').textContent;
+        return ["retry-required", "signed-out", "unavailable"].includes(status);
+      });
+      assert.equal(await panel.getByLabel("SDK session status").textContent(), "retry-required",
+        "sign-out must require retry when the issuer commits and drops its reply");
+      await access(issuerReceipt);
+      assert.equal(await taskRows(panel).count(), 0);
+      assert.ok(await page.evaluate(() => {
+        const { socketsOpened, socketsClosed } = window.p0SdkFixture.evidence;
+        return socketsOpened > 0 && socketsOpened === socketsClosed;
+      }), "unacknowledged sign-out must close the SDK socket");
+      await nativeDenies(page);
+      assert.ok((await readFile(record)).equals(successor), "lost reply changed the protected record");
+    }]);
+
+    await launch([async (page, panel) => {
+      await click(panel, "Resume session");
+      await statusIs(page, "retry-required");
+      await expectColdDenial(page, panel);
+      assert.ok((await readFile(record)).equals(successor), "cold resume changed the unacknowledged protected record");
+
+      const previousReplies = await page.evaluate(() => window.p0Replies.length);
+      await click(panel, "Sign out");
+      await page.waitForFunction(start => window.p0Replies.slice(start).includes("retry-required"), previousReplies);
+      await statusIs(page, "retry-required");
+      await expectColdDenial(page, panel);
+      assert.ok((await readFile(record)).equals(successor), "repeated reply loss changed the protected record");
+      await assert.rejects(access(issuerAck), { code: "ENOENT" });
+      await rm(dropReply);
+      await signOut(page, panel);
+      assert.equal((await readFile(issuerAck)).length, 0, "the issuer never returned the retry acknowledgment");
+      await assert.rejects(access(record), { code: "ENOENT" });
+    }]);
+
+    await launch([async (page, panel) => {
+      await click(panel, "Resume session");
+      await statusIs(page, "signed-out");
+      await expectColdDenial(page, panel);
+      await assert.rejects(access(record), { code: "ENOENT" });
+    }]);
+    assert.equal(await readFile(unrelated, "utf8"), unrelatedContents, "sign-out changed an unrelated file");
+  } finally {
+    await Promise.all([exchange, dropReply, expectSuccessor, issuerReceipt, issuerAck, unrelated].map(path => rm(path, { force: true })));
+  }
 }
 
 // Inspect only regular files in the retired, harness-owned WebView profile.

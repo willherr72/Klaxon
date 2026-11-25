@@ -93,7 +93,8 @@ export async function signIn(origin, username, password, events) {
       try {
         await refreshing;
         if (!tokens) return;
-        await sessionClient.mutation(api.auth.signOut, { refreshToken: tokens.refreshToken });
+        const acknowledgment = await sessionClient.mutation(api.auth.signOut, { refreshToken: tokens.refreshToken });
+        if (acknowledgment !== null) throw new Error("Invalid sign-out acknowledgment");
       } catch {
         closing = false;
         if (!disposed) live.setAuth(fetchToken, authChanged);

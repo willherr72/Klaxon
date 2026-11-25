@@ -1,3 +1,4 @@
+use super::sign_out::run as sign_out;
 use super::*;
 use std::{
     fs,
@@ -10,6 +11,10 @@ const CHILD_TEST: &str = "windows_session::tests::refresh_child";
 const TEST_PATH: &str = "KLAXON_P0_TEST_SLOT";
 const TEST_ACTION: &str = "KLAXON_P0_TEST_ACTION";
 const TEST_CHECKPOINT: &str = "KLAXON_P0_TEST_CHECKPOINT";
+
+fn seed(slot: &Path, marker: &[u8]) -> io::Result<()> {
+    store::Slot::lock(slot)?.publish(marker, store::Publish::Seed)
+}
 
 struct TestSlot {
     path: PathBuf,
@@ -135,6 +140,16 @@ fn refresh_child() {
             assert!(provider.sdk_access(Some(&path)).unwrap() == "p0-inert-access-a");
         }
         Ok("sign-out") => assert_eq!(sign_out(&path), Ok("signed-out")),
+        Ok("retry-sign-out") => assert_eq!(sign_out(&path), Err("retry-required")),
+        Ok("sign-out-pending") => {
+            let mut provider = Provider::new();
+            assert!(provider.sdk_access(Some(&path)).is_err());
+            assert_eq!(confirm_session(&path, None).err(), Some("retry-required"));
+            for owner in [Owner::A, Owner::B] {
+                assert_eq!(seed_session(&path, owner), Err("retry-required"));
+            }
+            assert!(provider.sdk_access(Some(&path)).is_err());
+        }
         _ => panic!("invalid fixture child action"),
     }
 }
@@ -255,6 +270,195 @@ fn sign_out_after_interruption_removes_only_scoped_files() {
         slot.ciphertext() == peer,
         "the A refresh flag rewrote the peer record"
     );
+}
+
+#[test]
+fn native_task_peer_drops_its_subscription_after_another_process_starts_sign_out() {
+    let slot = TestSlot::new("peer-task-revocation");
+    seed(&slot.path, SUCCESSOR_MARKER).unwrap();
+    let mut peer = Provider::new();
+    peer.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    let path = Some(slot.path.as_path());
+    peer.active_tasks(path).unwrap().subscription = Some(Channel::new(|_| Ok(())));
+    assert_eq!(peer.active_tasks(path).unwrap().rows().unwrap().len(), 1);
+    slot.flag("p0-signout-drop-reply", true);
+    slot.child("retry-sign-out", "").expect_success();
+    assert_eq!(peer.active_tasks(path).err(), Some("retry-required"));
+    assert!(peer.owner.is_none() && peer.subscription.is_none());
+    assert_eq!(peer.publish(), Err("signed-out"));
+}
+
+#[test]
+fn offline_sign_out_blocks_cold_access_before_the_provider_commits() {
+    let slot = TestSlot::new("offline-sign-out");
+    seed(&slot.path, SUCCESSOR_MARKER).unwrap();
+    let ciphertext = slot.ciphertext();
+    let receipt = slot.path.with_file_name("p0-issuer-revoked-successor");
+    let pending = slot.path.with_extension("signout-pending");
+    let mut provider = Provider::new();
+    provider.owner = Some(confirm_session(&slot.path, None).unwrap().owner);
+    slot.flag("p0-provider-offline", true);
+    slot.flag("p0-signout-drop-reply", true);
+    slot.child("retry-sign-out", "").expect_success();
+
+    assert!(pending.is_file());
+    assert!(!receipt.exists());
+    assert!(slot.ciphertext() == ciphertext);
+    slot.flag("p0-provider-offline", false);
+    slot.child("sign-out-pending", "").expect_success();
+    assert_eq!(
+        provider.sdk_access(Some(&slot.path)).err(),
+        Some("retry-required")
+    );
+    assert!(provider.owner.is_none());
+    assert!(!receipt.exists(), "resume committed a pending sign-out");
+}
+
+#[test]
+fn lost_sign_out_reply_retries_the_rotated_marker_before_clearing() {
+    let slot = TestSlot::new("lost-sign-out");
+    seed(&slot.path, MARKER).unwrap();
+    slot.flag("p0-provider-refresh", true);
+    slot.child("resume", "").expect_success();
+    slot.flag("p0-provider-refresh", false);
+    let successor = slot.ciphertext();
+    let receipt = slot.path.with_file_name("p0-issuer-revoked-successor");
+    let pending = slot.path.with_extension("signout-pending");
+    slot.flag("p0-signout-expect-successor", true);
+    slot.flag("p0-signout-drop-reply", true);
+    slot.child("retry-sign-out", "").expect_success();
+
+    assert!(slot.ciphertext() == successor);
+    assert!(pending.is_file());
+    assert!(fs::read(&receipt).unwrap().is_empty());
+    slot.flag("p0-signout-drop-reply", false);
+    fs::remove_file(&slot.path).unwrap();
+    slot.child("retry-sign-out", "").expect_success();
+    assert_eq!(fs::read(&pending).unwrap(), b"pending");
+    assert!(!slot
+        .path
+        .with_file_name("p0-issuer-acknowledged-successor")
+        .exists());
+    fs::write(&slot.path, &successor).unwrap();
+    slot.child("sign-out-pending", "").expect_success();
+
+    {
+        let store = store::Slot::lock(&slot.path).unwrap();
+        store.publish(MARKER, store::Publish::Refresh).unwrap();
+    }
+    slot.child("retry-sign-out", "").expect_success();
+    assert!(pending.is_file() && slot.path.is_file());
+    fs::write(&slot.path, successor).unwrap();
+    // A broken observer cannot prevent an otherwise valid issuer acknowledgment.
+    fs::create_dir(slot.path.with_file_name("p0-issuer-acknowledged-successor")).unwrap();
+    slot.child("sign-out", "").expect_success();
+
+    assert!(!pending.exists() && !slot.path.exists() && !slot.staged().exists());
+    assert!(receipt.is_file());
+    slot.flag("p0-signout-expect-successor", false);
+    assert_eq!(confirm_session(&slot.path, None).err(), Some("signed-out"));
+    assert_eq!(seed_session(&slot.path, Owner::A), Ok("fixture-ready"));
+    assert!(confirm_session(&slot.path, None).is_ok());
+    assert_eq!(sign_out(&slot.path), Ok("signed-out"));
+    assert_eq!(seed_session(&slot.path, Owner::B), Ok("fixture-ready"));
+    assert!(confirm_session(&slot.path, None).unwrap().owner == Owner::B);
+}
+
+#[test]
+fn cold_retry_finishes_acknowledged_sign_out_after_record_deletion() {
+    let slot = TestSlot::new("partial-sign-out");
+    seed(&slot.path, SUCCESSOR_MARKER).unwrap();
+    let pending = slot.path.with_extension("signout-pending");
+    let mut writer = slot.child("sign-out", "after-sign-out-remove");
+    writer.wait_for_checkpoint(&slot);
+    assert!(!slot.path.exists());
+    assert_eq!(fs::read(&pending).unwrap(), b"acknowledged");
+    assert_eq!(sign_out(&slot.path), Err("unavailable"));
+    assert_eq!(seed_session(&slot.path, Owner::B), Err("unavailable"));
+    writer.terminate();
+
+    slot.flag("p0-provider-offline", true);
+    slot.child("sign-out-pending", "").expect_success();
+    slot.child("sign-out", "").expect_success();
+    assert!(!pending.exists() && !slot.staged().exists());
+    assert_eq!(seed_session(&slot.path, Owner::B), Ok("fixture-ready"));
+}
+
+#[test]
+fn sign_out_intent_survives_an_unreadable_record() {
+    let slot = TestSlot::new("unreadable-sign-out");
+    seed(&slot.path, MARKER).unwrap();
+    let original = slot.ciphertext();
+    fs::write(&slot.path, b"unreadable fixture").unwrap();
+    assert_eq!(sign_out(&slot.path), Err("retry-required"));
+    fs::write(&slot.path, original).unwrap();
+    assert_eq!(
+        confirm_session(&slot.path, None).err(),
+        Some("retry-required")
+    );
+    assert_eq!(sign_out(&slot.path), Ok("signed-out"));
+}
+
+#[test]
+fn missing_record_keeps_unacknowledged_sign_out_pending() {
+    let slot = TestSlot::new("missing-sign-out-record");
+    assert_eq!(sign_out(&slot.path), Ok("signed-out"));
+    seed(&slot.path, MARKER).unwrap();
+    let ciphertext = slot.ciphertext();
+    slot.flag("p0-provider-offline", true);
+    assert_eq!(sign_out(&slot.path), Err("retry-required"));
+    fs::remove_file(&slot.path).unwrap();
+    slot.flag("p0-provider-offline", false);
+
+    slot.child("sign-out-pending", "").expect_success();
+    slot.child("retry-sign-out", "").expect_success();
+    fs::write(&slot.path, ciphertext).unwrap();
+    slot.child("sign-out", "").expect_success();
+    assert_eq!(confirm_session(&slot.path, None).err(), Some("signed-out"));
+}
+
+#[test]
+fn only_success_with_an_explicit_null_acknowledges_sign_out() {
+    let slot = TestSlot::new("invalid-sign-out-reply");
+    seed(&slot.path, MARKER).unwrap();
+    let ciphertext = slot.ciphertext();
+    let pending = slot.path.with_extension("signout-pending");
+    slot.flag("p0-provider-offline", true);
+    assert_eq!(sign_out(&slot.path), Err("retry-required"));
+    let locked = store::Slot::lock(&slot.path).unwrap();
+    let success = br#"{"status":"success","value":null,"logLines":[]}"#;
+    let cases: &[(u16, &[u8])] = &[
+        (200, b"{"),
+        (200, b"null"),
+        (200, br#"["success",null,[]]"#),
+        (200, br#"{"status":"success"}"#),
+        (200, br#"{"status":"success","value":{}}"#),
+        (200, br#"{"status":"success","value":null,"value":false}"#),
+        (200, br#"{"status":"success","value":null} null"#),
+        (
+            200,
+            br#"{"status":"error","errorMessage":"fixture rejection","logLines":[]}"#,
+        ),
+        (200, br#"{"status":"error","value":null}"#),
+        (
+            200,
+            br#"{"status":"success","errorMessage":"fixture rejection","value":null}"#,
+        ),
+        (301, success),
+        (401, success),
+        (500, success),
+        (560, success),
+    ];
+    for (index, &(status, body)) in cases.iter().enumerate() {
+        assert_eq!(
+            sign_out::accept(&locked, status, body),
+            Err("retry-required"),
+            "accepted invalid response {index}"
+        );
+        assert!(slot.ciphertext() == ciphertext && pending.is_file());
+    }
+    assert_eq!(sign_out::accept(&locked, 200, success), Ok("signed-out"));
+    assert!(!slot.path.exists() && !pending.exists());
 }
 
 #[test]

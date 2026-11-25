@@ -226,6 +226,23 @@ test("a negative auth check after explicit token rotation ends the session", asy
   assert.equal(await page.getByRole("button", { name: "Read tasks" }).count(), 0);
 });
 
+test("portable sign-out retains the refresh token until the provider acknowledges with null", async t => {
+  const presented = [];
+  const { page, login } = await client(t, async (path, route, success) => {
+    assert.equal(path, "auth:signOut");
+    presented.push(route.request().postDataJSON().args);
+    await success(presented.length === 1 ? { unexpected: true } : null);
+  });
+  await login("synthetic-a");
+  const signOut = page.getByRole("button", { name: "Sign out" });
+  await signOut.click();
+  await page.getByText(/sign-out could not be confirmed|signed out\./i).waitFor();
+  assert.equal(await signOut.count(), 1, "a malformed success must leave sign-out retryable");
+  await signOut.click();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
+  assert.deepEqual(presented, [[{ refreshToken: "refresh-1" }], [{ refreshToken: "refresh-1" }]]);
+});
+
 test("socket auth loss during a failed revocation leaves sign-out retryable", { timeout: 20000 }, async t => {
   const revoking = Promise.withResolvers();
   const failRevocation = Promise.withResolvers();

@@ -20,6 +20,13 @@ const CONTEXT: &[u8] = b"dev.klaxon.p0native/session-v1/packaged";
 pub(super) enum Publish {
     Seed,
     Refresh,
+    SignOutState,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum SignOutState {
+    Pending,
+    Acknowledged,
 }
 
 pub(super) struct Slot<'a> {
@@ -49,15 +56,57 @@ impl<'a> Slot<'a> {
 
     pub(super) fn publish(&self, marker: &[u8], operation: Publish) -> io::Result<()> {
         let ciphertext = dpapi(marker, true)?;
+        self.publish_record(&ciphertext, self.path, operation)
+    }
+
+    pub(super) fn sign_out_state(&self) -> io::Result<Option<SignOutState>> {
+        match fs::read(self.path.with_extension("signout-pending")) {
+            Ok(state) => match state.as_slice() {
+                b"pending" => Ok(Some(SignOutState::Pending)),
+                b"acknowledged" => Ok(Some(SignOutState::Acknowledged)),
+                _ => Err(io::ErrorKind::InvalidData.into()),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn set_sign_out_state(&self, state: SignOutState) -> io::Result<()> {
+        let state: &[u8] = match state {
+            SignOutState::Pending => b"pending",
+            SignOutState::Acknowledged => b"acknowledged",
+        };
+        self.publish_record(
+            state,
+            &self.path.with_extension("signout-pending"),
+            Publish::SignOutState,
+        )
+    }
+
+    pub(super) fn finish_sign_out(&self) -> io::Result<()> {
+        self.remove()?;
+        #[cfg(test)]
+        super::tests::crash_checkpoint(self.path, "after-sign-out-remove");
+        remove_if_present(&self.path.with_extension("signout-pending"))
+    }
+
+    fn publish_record(
+        &self,
+        record: &[u8],
+        destination: &Path,
+        operation: Publish,
+    ) -> io::Result<()> {
         let staged = self.path.with_extension("staged");
         let mut file = File::create_new(&staged)?;
-        let written = file.write_all(&ciphertext).and_then(|()| file.sync_all());
+        let written = file.write_all(record).and_then(|()| file.sync_all());
         drop(file);
 
+        let seed = matches!(operation, Publish::Seed);
+        #[cfg(test)]
         let refresh = matches!(operation, Publish::Refresh);
         let published = written.and_then(|()| {
             #[cfg(test)]
-            if !refresh
+            if seed
                 && self
                     .path
                     .with_file_name("discard-initial-stage")
@@ -69,12 +118,7 @@ impl<'a> Slot<'a> {
             if refresh {
                 super::tests::crash_checkpoint(self.path, "before-replace");
             }
-            let flags = MOVEFILE_WRITE_THROUGH
-                | if refresh {
-                    MOVEFILE_REPLACE_EXISTING
-                } else {
-                    0
-                };
+            let flags = MOVEFILE_WRITE_THROUGH | if seed { 0 } else { MOVEFILE_REPLACE_EXISTING };
             // The staged file is on the same volume and the API can only rename it.
             // The seed operation omits replacement to protect an existing record.
             let wide = |path: &Path| {
@@ -84,7 +128,8 @@ impl<'a> Slot<'a> {
                     .collect::<Vec<_>>()
             };
             // Both paths are NUL-terminated and live for the duration of the call.
-            if unsafe { MoveFileExW(wide(&staged).as_ptr(), wide(self.path).as_ptr(), flags) } == 0
+            if unsafe { MoveFileExW(wide(&staged).as_ptr(), wide(destination).as_ptr(), flags) }
+                == 0
             {
                 return Err(io::Error::last_os_error());
             }

@@ -6,6 +6,7 @@ use std::{
 };
 use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
 
+mod sign_out;
 mod store;
 
 const OWNER_A_REFRESH: &str = "KLAXON-P0-INERT/packaged/1";
@@ -88,6 +89,12 @@ impl Provider {
         access
     }
 
+    fn active_tasks(&mut self, slot: Option<&Path>) -> Result<&mut Self, &'static str> {
+        // The comparison panel uses native task IPC. Another process may have begun sign-out.
+        self.sdk_access(slot)?;
+        Ok(self)
+    }
+
     fn rows(&self) -> Result<Rows, &'static str> {
         let owner = self.owner.ok_or("signed-out")?;
         Ok(self
@@ -126,8 +133,11 @@ fn slot() -> Option<PathBuf> {
     Some(directory.join("packaged.bin"))
 }
 
-fn seed(slot: &Path, marker: &[u8]) -> io::Result<()> {
-    store::Slot::lock(slot)?.publish(marker, store::Publish::Seed)
+fn require_no_pending_sign_out(slot: &store::Slot<'_>) -> Result<(), &'static str> {
+    match slot.sign_out_state() {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) | Err(_) => Err("retry-required"),
+    }
 }
 
 fn provider<'a>(
@@ -153,6 +163,8 @@ fn provider_flag(slot: &Path, flag: &str) -> Result<bool, &'static str> {
 
 // Model only the username/password mutation result. The fixture never accepts credentials.
 fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str> {
+    let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
+    require_no_pending_sign_out(&slot)?;
     let (id, access, refresh) = match owner {
         Owner::A => (OWNER_A_ID, OWNER_A_ACCESS, OWNER_A_REFRESH),
         Owner::B => ("p0-fixture-owner-b", "p0-inert-access-b", OWNER_B_REFRESH),
@@ -177,7 +189,8 @@ fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str>
     if grant.access_token != access || grant.refresh_token != refresh {
         return Err("unavailable");
     }
-    seed(path, grant.refresh_token.as_bytes()).map_err(|_| "unavailable")?;
+    slot.publish(grant.refresh_token.as_bytes(), store::Publish::Seed)
+        .map_err(|_| "unavailable")?;
     Ok("fixture-ready")
 }
 
@@ -202,6 +215,7 @@ fn confirm_session(
     expected_owner: Option<Owner>,
 ) -> Result<ConfirmedSession, &'static str> {
     let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
+    require_no_pending_sign_out(&slot)?;
     let marker = slot.read().map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => "signed-out",
         _ => "unavailable",
@@ -263,16 +277,9 @@ fn fixture_session(
             Err(status @ ("retry-required" | "signed-out")) => Ok(status),
             Err(error) => Err(error),
         },
-        "sign-out" => sign_out(&slot),
+        "sign-out" => sign_out::run(&slot),
         _ => Err("unavailable"),
     }
-}
-
-fn sign_out(slot: &Path) -> Result<&'static str, &'static str> {
-    store::Slot::lock(slot)
-        .and_then(|slot| slot.remove())
-        .map(|_| "signed-out")
-        .map_err(|_| "unavailable")
 }
 
 #[tauri::command]
@@ -288,9 +295,9 @@ fn fixture_task_list(
     window: WebviewWindow,
     state: State<'_, Mutex<Provider>>,
 ) -> Result<Rows, &'static str> {
-    let provider = provider(&window, &state)?;
-    slot().ok_or("unavailable")?;
-    provider.rows()
+    provider(&window, &state)?
+        .active_tasks(slot().as_deref())?
+        .rows()
 }
 
 #[tauri::command]
@@ -299,10 +306,9 @@ fn fixture_task_subscribe(
     state: State<'_, Mutex<Provider>>,
     on_rows: Channel<Rows>,
 ) -> Result<(), &'static str> {
-    let mut provider = provider(&window, &state)?;
-    slot().ok_or("unavailable")?;
-    provider.owner.ok_or("signed-out")?;
-    provider.subscription = Some(on_rows);
+    provider(&window, &state)?
+        .active_tasks(slot().as_deref())?
+        .subscription = Some(on_rows);
     Ok(())
 }
 
@@ -311,9 +317,9 @@ fn fixture_task_publish(
     window: WebviewWindow,
     state: State<'_, Mutex<Provider>>,
 ) -> Result<(), &'static str> {
-    let mut provider = provider(&window, &state)?;
-    slot().ok_or("unavailable")?;
-    provider.publish()
+    provider(&window, &state)?
+        .active_tasks(slot().as_deref())?
+        .publish()
 }
 
 pub fn install(builder: Builder<Wry>) -> Builder<Wry> {

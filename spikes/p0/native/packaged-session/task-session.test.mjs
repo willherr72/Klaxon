@@ -73,6 +73,15 @@ async function readNow({ core, tasks }) {
   await read;
 }
 
+test("a retryable native sign-out keeps the task view empty and shows the retry status", async () => {
+  let view, rejection = "retry-required";
+  const tasks = createTaskSession({ invoke: async () => { throw rejection; } }, state => { view = state; });
+  assert.equal(await tasks.change("sign-out"), "retry-required");
+  assert.deepEqual(view, { status: "retry-required", rows: [] });
+  rejection = "unexpected provider diagnostic";
+  assert.equal(await tasks.change("sign-out"), "unavailable");
+});
+
 test("resume permits a task read and a later pushed snapshot", async () => {
   const c = client();
   assert.deepEqual(c.view, { status: "unchecked", rows: [] });

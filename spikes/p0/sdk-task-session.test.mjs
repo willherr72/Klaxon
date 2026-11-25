@@ -71,7 +71,10 @@ async function openFixture(t) {
           if (run.accessGate) await run.accessGate(options);
           return token;
         },
-        signOut: () => { run.owner = null; },
+        signOut: () => {
+          run.owner = null;
+          return run.revoke ? run.revoke() : "signed-out";
+        },
       },
       accessDenied: denial => { run.denial = denial; },
       render: rows => { run.rows = rows; run.renders++; },
@@ -87,6 +90,37 @@ async function openFixture(t) {
   }, fixtureAccess);
   return page;
 }
+
+test("only an acknowledged native sign-out completes for concurrent callers", async t => {
+  const page = await openFixture(t);
+  await resume(page, "A");
+  const result = await page.evaluate(async () => {
+    let acknowledge, attempts = 0;
+    run.revoke = () => { attempts++; return new Promise(resolve => { acknowledge = resolve; }); };
+    const outcome = promise => promise.then(() => "completed", error => error);
+    const first = outcome(run.tasks.signOut());
+    const duplicate = outcome(run.tasks.signOut());
+    const resumeDuringSignOut = outcome(run.tasks.resume());
+    await Promise.resolve();
+    const rowsWhilePending = run.rows.length;
+    const accesses = run.accessRequests.length;
+    acknowledge("retry-required");
+    const denials = await Promise.all([first, duplicate, resumeDuringSignOut]);
+    const lateAccesses = run.accessRequests.length - accesses;
+    run.revoke = () => ({ unexpected: true });
+    const malformed = await outcome(run.tasks.signOut());
+    run.revoke = () => Promise.reject("signed-out");
+    const rejected = await outcome(run.tasks.signOut());
+    run.revoke = () => "signed-out";
+    return { attempts, rowsWhilePending, lateAccesses, denials, malformed, rejected, retry: await outcome(run.tasks.signOut()) };
+  });
+  assert.deepEqual(result, {
+    attempts: 1, rowsWhilePending: 0, lateAccesses: 0,
+    denials: ["retry-required", "retry-required", "retry-required"],
+    malformed: "unavailable", rejected: "unavailable", retry: "completed",
+  });
+  assert.equal(await page.evaluate(() => run.transport.update("A")), 0);
+});
 
 test("the SDK reauthenticates after A rotates and the verifier rejects A's revoked grant", { timeout: 20_000 }, async t => {
   const page = await openFixture(t);

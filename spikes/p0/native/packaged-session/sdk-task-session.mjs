@@ -96,14 +96,16 @@ export function createSdkTaskSession({
 
   async function signOut() {
     const closed = replace(undefined);
-    // A resume overlapping revocation must wait for the native operation.
-    signingOut ??= Promise.resolve().then(() => native.signOut());
-    const revocation = signingOut;
-    try {
-      await Promise.all([revocation, closed]);
-    } finally {
-      if (signingOut === revocation) signingOut = undefined;
+    // A resume overlapping revocation must wait for the native acknowledgment.
+    if (!signingOut) {
+      signingOut = Promise.resolve().then(async () => {
+        const status = await native.signOut();
+        if (status !== "signed-out") throw status;
+      }).catch(error => {
+        throw error === "retry-required" ? error : "unavailable";
+      }).finally(() => { signingOut = undefined; });
     }
+    await Promise.all([signingOut, closed]);
   }
 
   return { resume, read, signOut, clear: () => replace(undefined) };
