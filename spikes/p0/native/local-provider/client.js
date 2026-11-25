@@ -1,6 +1,7 @@
 import { ConvexClient, ConvexHttpClient } from "convex/browser";
 import { anyApi as api } from "convex/server";
 import { createSubscriptionGate, isCachedBearerRenameDenied, observeOutcome, subscriptionOrigin } from "./observation.mjs";
+import { observeRunningRenewal } from "./renewal-observation.mjs";
 
 const origin = typeof P0_PROVIDER_ORIGIN === "string" ? P0_PROVIDER_ORIGIN : "http://127.0.0.1:3210";
 const observationMs = 12_000;
@@ -11,12 +12,16 @@ document.body.append(taskList);
 
 let signInResult;
 let result;
+let renewalProgress;
+let renewalResult;
 let started = false;
 const fixture = {
   get origin() { return origin; },
   hostedProbeVersion: 1,
   get signInResult() { return signInResult; },
   get result() { return result; },
+  get renewalProgress() { return renewalProgress; },
+  get renewalResult() { return renewalResult; },
   signIn() {
     void invoke("local_sign_in").then(status => {
       signInResult = status === "fixture-ready" ? status : "failed";
@@ -27,6 +32,19 @@ const fixture = {
     started = true;
     void exercise(expected).then(report => { result = report; }, () => {
       result = { status: "failed", stage: "WebView observation" };
+    });
+  },
+  observeRenewal({ taskId, title, renewedTitle }) {
+    if (started) return;
+    started = true;
+    const reportProgress = phase => { renewalProgress = { phase }; };
+    reportProgress("initial");
+    void observeRunningRenewal({
+      origin, taskId, title, renewedTitle, invoke, renderTasks, waitFor, reportProgress,
+      renderedTask: expectedTitle => hasRenderedTask(taskId, expectedTitle),
+      renderedRows: () => taskList.children.length,
+    }).then(report => { renewalResult = report; }, () => {
+      renewalResult = { status: "failed", stage: "WebView renewal observation" };
     });
   },
 };
@@ -45,8 +63,12 @@ function renderTasks(tasks) {
   }));
 }
 
-async function waitFor(predicate) {
-  const deadline = performance.now() + observationMs;
+function hasRenderedTask(taskId, title) {
+  return [...taskList.children].some(row => row.dataset.taskId === taskId && row.textContent === title);
+}
+
+async function waitFor(predicate, timeoutMs = observationMs) {
+  const deadline = performance.now() + timeoutMs;
   while (!predicate() && performance.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 25));
   }
@@ -136,14 +158,11 @@ async function exercise({ taskId, title, reconnectPort, hostedReconnect, hostedP
       if (emptyAfterRestoreAt !== undefined && tasks.length > 0) postClearNonemptyCallbacks++;
     }, () => { queryErrors++; });
 
-    function hasRenderedTask() {
-      return [...taskList.children].some(row => row.dataset.taskId === taskId && row.textContent === title);
-    }
     function matchesBearer() {
       return client.getAuth()?.token === bearer;
     }
     const ready = await waitFor(() => queryErrors > 0 ||
-      (hasTask(rows) && hasRenderedTask() && client.connectionState().isWebSocketConnected && matchesBearer()));
+      (hasTask(rows) && hasRenderedTask(taskId, title) && client.connectionState().isWebSocketConnected && matchesBearer()));
     if (!ready || queryErrors > 0) return { status: "failed", stage };
 
     const before = client.connectionState();
@@ -174,7 +193,7 @@ async function exercise({ taskId, title, reconnectPort, hostedReconnect, hostedP
       offlineEvidence = {
         disconnectedBeforeRevoke: true,
         cachedBeforeRevoke: hasTask(rows),
-        renderedBeforeRevoke: hasRenderedTask(),
+        renderedBeforeRevoke: hasRenderedTask(taskId, title),
       };
     }
     stage = "native revoke";
@@ -190,7 +209,7 @@ async function exercise({ taskId, title, reconnectPort, hostedReconnect, hostedP
         nativeRevoked: true,
         disconnectedAfterRevoke: true,
         cachedAfterRevoke: hasTask(rows),
-        staleWhileOffline: hasRenderedTask(),
+        staleWhileOffline: hasRenderedTask(taskId, title),
       });
       stage = "restore subscription transport";
       // A server update can arrive as soon as the host opens the relay.

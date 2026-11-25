@@ -120,6 +120,72 @@ test("rotates the native grant and clears the real SDK's existing subscription o
 test("rotates on the first refresh in route-outage mode and counts HTTP requests and the WebSocket upgrade",
   { timeout: 10_000 }, () => verifyNativeLifecycle({ routeOutage: true }));
 
+test("renews through the live SDK and publishes through the original task subscription", { timeout: 10_000 },
+  async () => withScriptedAndroidProvider(async ({ port, input, taskId, title, renewedTitle, phase, publishRenewedTask, verify }) => {
+    const origin = `http://127.0.0.1:${port}`;
+    async function native(path, args) {
+      const response = await mutation(origin, path, args);
+      assert.equal(response.status, 200);
+      return (await response.json()).value;
+    }
+    const { username, password } = input;
+    const { tokens: signedIn } = await native("auth:signInWithUsernamePassword", { username, password });
+    const refresh = tokens => native("auth:refreshSession", { refreshToken: tokens.refreshToken });
+    const { tokens: cold } = await refresh(signedIn);
+    assert.ok(cold.refreshToken !== signedIn.refreshToken);
+
+    const client = new ConvexClient(origin, { webSocketConstructor: PackagedOriginSocket, logger: false,
+      expectAuth: true, initialAuthTokenReuse: true, authRefreshTokenLeewaySeconds: 19 });
+    try {
+      let renewed;
+      let forcedRefreshes = 0;
+      let initialRows;
+      let updateRows;
+      let revokedRows;
+      const initial = new Promise(resolve => { initialRows = resolve; });
+      const update = new Promise(resolve => { updateRows = resolve; });
+      const revoked = new Promise(resolve => { revokedRows = resolve; });
+      const received = [];
+      client.setAuth(async ({ forceRefreshToken }) => {
+        if (!forceRefreshToken) return cold.accessToken;
+        forcedRefreshes++;
+        const next = await refresh(cold);
+        renewed = next.tokens;
+        return renewed.accessToken;
+      });
+      client.onUpdate(api.tasks.list, {}, rows => {
+        received.push(rows);
+        if (rows[0]?.title === title) initialRows(rows);
+        if (rows[0]?.title === renewedTitle) updateRows(rows);
+        if (rows.length === 0) revokedRows(rows);
+      });
+      assert.deepEqual(await initial, [{ _id: taskId, title }]);
+      const { connectionCount } = client.connectionState();
+      assert.equal(forcedRefreshes, 0);
+      assert.throws(publishRenewedTask, /awaiting successor authentication/);
+
+      for (let attempt = 0; attempt < 80 && phase() !== "successor-authenticated"; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      publishRenewedTask();
+      assert.equal(forcedRefreshes, 1);
+      assert.ok(renewed.refreshToken !== cold.refreshToken);
+      assert.ok(renewed.accessToken !== cold.accessToken);
+      const expected = [{ _id: taskId, title: renewedTitle }];
+      assert.deepEqual(await update, expected);
+      const http = new ConvexHttpClient(origin, { auth: renewed.accessToken, logger: false,
+        fetch: (url, init) => fetch(url, { ...init, headers: { ...init.headers, Origin: packagedOrigin } }) });
+      assert.deepEqual(await Promise.all([http.query(api.auth.isAuthenticated), http.query(api.tasks.list)]), [true, expected]);
+      assert.equal(await native("auth:signOut", { refreshToken: renewed.refreshToken }), null);
+      assert.deepEqual(await refresh(renewed), { kind: "noSession" });
+      assert.deepEqual(await revoked, []);
+      assert.equal(received.length, 3);
+      assert.equal(client.connectionState().connectionCount, connectionCount);
+      assert.equal(forcedRefreshes, 1);
+      verify();
+    } finally { await client.close(); }
+  }, { renewal: true }));
+
 test("counts a TCP connection before any provider request is sent", { timeout: 10_000 }, async () => {
   await withScriptedAndroidProvider(async ({ port, providerConnections, providerRequests }) => {
     assert.equal(providerConnections(), 0);

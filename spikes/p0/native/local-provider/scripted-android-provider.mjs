@@ -15,22 +15,25 @@ const input = Object.freeze({
 });
 const taskId = "p0-inert-android-task";
 const title = "Scripted Android fixture task";
+const renewedTitle = "Scripted Android task after renewal";
 const taskPath = "tasks:list";
 const authPath = "auth:isAuthenticated";
 const format = "convex_encoded_json";
 const maxPayload = 4096;
 const refreshA1 = "p0-inert-android-refresh-a1";
 const refreshA2 = "p0-inert-android-refresh-a2";
+const refreshA3 = "p0-inert-android-refresh-a3";
+const coldAccessLifetimeSeconds = 20;
 const noSession = { kind: "noSession" };
 const queryHeaders = ["authorization", "content-type", "convex-client"];
 const cors = { "Access-Control-Allow-Origin": packagedOrigin, Vary: "Origin" };
 
-function grant(refreshToken, generation) {
+function grant(refreshToken, generation, lifetimeSeconds = 900) {
   const now = Math.floor(Date.now() / 1000);
   const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url");
   const header = encode({ alg: "RS256", typ: "JWT" });
   const claims = encode({ sub: "p0-inert-android-session", iss: "http://127.0.0.1:3210/components/auth", aud: "convex-auth",
-    iat: now, exp: now + 900, jti: generation });
+    iat: now, exp: now + lifetimeSeconds, jti: generation });
   // JWT shape for the SDK's auth state machine. There is no signing key.
   const signature = Buffer.from("p0-inert-android-signature").toString("base64url");
   return { accessToken: `${header}.${claims}.${signature}`, refreshToken,
@@ -59,14 +62,17 @@ function timestamp(tick) {
   return bytes.toString("base64");
 }
 
-export async function withScriptedAndroidProvider(action, { routeOutage = false } = {}) {
-  const rows = [{ _id: taskId, title }];
+export async function withScriptedAndroidProvider(action, { routeOutage = false, renewal = false } = {}) {
+  assert.ok(!routeOutage || !renewal, "Scripted Android provider modes are mutually exclusive");
+  let rows = [{ _id: taskId, title }];
   const sockets = new Set();
   const peers = new WebSocketServer({ noServer: true, maxPayload, perMessageDeflate: false });
   const initialReads = new Set();
   const revokedReads = new Set();
+  const renewedReads = new Set();
   let phase = "sign-in";
   let accessA2;
+  let accessA3;
   let subscription;
   let unexpected = false;
   let connectionCount = 0;
@@ -87,7 +93,7 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
   function mutate(res, body) {
     if (phase === "sign-in" && matchesCall(body, "auth:signInWithUsernamePassword",
       { username: input.username, password: input.password })) {
-      phase = routeOutage ? "retry-refresh" : "first-refresh";
+      phase = routeOutage || renewal ? "retry-refresh" : "first-refresh";
       return reply(res, 200, { status: "complete", tokens: grant(refreshA1, "a1") });
     }
     if (matchesCall(body, "auth:refreshSession", { refreshToken: refreshA1 })) {
@@ -97,21 +103,31 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
         return reply(res, 202, noSession);
       }
       if (phase === "retry-refresh") {
-        const tokens = grant(refreshA2, "a2");
+        const tokens = grant(refreshA2, "a2", renewal ? coldAccessLifetimeSeconds : undefined);
         accessA2 = tokens.accessToken;
         phase = "rotated";
         return reply(res, 200, { kind: "rotated", tokens });
       }
     }
-    if (phase === "rotated" && subscription?.peer.readyState === WebSocket.OPEN &&
+    if (renewal && phase === "rotated" && subscription?.peer.readyState === WebSocket.OPEN &&
+        subscription.authenticated && subscription.initialRowsSent &&
+        matchesCall(body, "auth:refreshSession", { refreshToken: refreshA2 })) {
+      const tokens = grant(refreshA3, "a3");
+      accessA3 = tokens.accessToken;
+      phase = "successor-issued";
+      return reply(res, 200, { kind: "rotated", tokens });
+    }
+    const canRevoke = renewal ? phase === "renewed-task-published" && renewedReads.size === 2 : phase === "rotated";
+    const currentRefresh = renewal ? refreshA3 : refreshA2;
+    if (canRevoke && subscription?.peer.readyState === WebSocket.OPEN &&
         subscription.authenticated && subscription.queryId !== undefined &&
-        matchesCall(body, "auth:signOut", { refreshToken: refreshA2 })) {
+        matchesCall(body, "auth:signOut", { refreshToken: currentRefresh })) {
       phase = "revoked";
       // Publish on the existing query without advancing the socket's identity version.
       subscription.transition([subscription.result([])]);
       return reply(res, 200, null);
     }
-    if (phase === "revoked" && matchesCall(body, "auth:refreshSession", { refreshToken: refreshA2 })) {
+    if (phase === "revoked" && matchesCall(body, "auth:refreshSession", { refreshToken: currentRefresh })) {
       phase = "confirmed-revoked";
       return reply(res, 200, noSession);
     }
@@ -134,8 +150,9 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
     }
 
     const native = req.url === "/api/mutation" && origin === undefined && authorization === undefined;
-    const query = req.url === "/api/query" && origin === packagedOrigin && accessA2 &&
-      authorization === `Bearer ${accessA2}`;
+    const queryBearer = renewal ? accessA3 : accessA2;
+    const query = req.url === "/api/query" && origin === packagedOrigin && queryBearer &&
+      authorization === `Bearer ${queryBearer}`;
     if (cookie || req.method !== "POST" || req.headers["content-type"] !== "application/json" ||
         Number(contentLength) > maxPayload || (!native && !query)) {
       return rejectRequest(res);
@@ -144,9 +161,9 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
       const body = await readCall(req);
       if (native) return mutate(res, body);
       const path = body?.path;
-      const authenticated = phase === "rotated";
-      const reads = authenticated ? initialReads : revokedReads;
-      if ((!authenticated && phase !== "confirmed-revoked") || (path !== authPath && path !== taskPath) ||
+      const authenticated = phase === (renewal ? "renewed-task-published" : "rotated");
+      const reads = renewal ? renewedReads : authenticated ? initialReads : revokedReads;
+      if ((!authenticated && (renewal || phase !== "confirmed-revoked")) || (path !== authPath && path !== taskPath) ||
           !matchesCall(body, path, {}) || reads.has(path)) return rejectRequest(res);
       reads.add(path);
       const queryRows = authenticated ? rows : [];
@@ -176,7 +193,7 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
   server.on("upgrade", (req, socket, head) => {
     requestCount++;
     if (req.url !== syncPath || req.headers.origin !== packagedOrigin || req.headers.authorization || req.headers.cookie ||
-        subscription || phase !== "rotated" || initialReads.size !== 2) return rejectSocket(socket);
+        subscription || phase !== "rotated" || (!renewal && initialReads.size !== 2)) return rejectSocket(socket);
     peers.handleUpgrade(req, socket, head, peer => {
       let connected = false;
       let tick = 0;
@@ -184,9 +201,10 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
       let added = false;
       subscription = {
         peer, authenticated: false, queryId: undefined,
-        initialRowsSent: false, emptyRowsSent: false,
+        initialRowsSent: false, renewedRowsSent: false, emptyRowsSent: false,
         result(value) {
-          if (value.length) this.initialRowsSent = true;
+          if (value[0]?.title === renewedTitle) this.renewedRowsSent = true;
+          else if (value.length) this.initialRowsSent = true;
           else this.emptyRowsSent = true;
           return { type: "QueryUpdated", queryId: this.queryId, value, logLines: [], journal: null };
         },
@@ -219,6 +237,13 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
           subscription.transition(modifications, { identity: state.identity + 1 });
           return;
         }
+        if (renewal && message?.type === "Authenticate" && phase === "successor-issued" &&
+            subscription.initialRowsSent && message.baseVersion === state.identity && message.tokenType === "User" &&
+            message.value === accessA3) {
+          phase = "successor-authenticated";
+          subscription.transition([], { identity: state.identity + 1 });
+          return;
+        }
         if (message?.type !== "ModifyQuerySet" || message.baseVersion !== state.querySet ||
             message.newVersion !== state.querySet + 1 || !Array.isArray(message.modifications) ||
             message.modifications.length > 1) return reject();
@@ -241,13 +266,26 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
     });
   });
 
+  function publishRenewedTask() {
+    assert.ok(phase === "successor-authenticated" && subscription?.peer.readyState === WebSocket.OPEN &&
+      subscription.queryId !== undefined, "Provider awaiting successor authentication on the original subscription");
+    rows = [{ _id: taskId, title: renewedTitle }];
+    phase = "renewed-task-published";
+    subscription.transition([subscription.result(rows)]);
+  }
+
   function verify() {
     assert.ok(!unexpected, "Unexpected scripted Android provider request or transport failure");
     assert.equal(phase, "confirmed-revoked", "Expected sign-in, refresh rotation, sign-out and refresh denial");
-    assert.equal(initialReads.size, 2, "Expected authenticated HTTP reads");
-    assert.equal(revokedReads.size, 2, "Expected HTTP reads with the revoked bearer");
     assert.ok(subscription?.authenticated && subscription.initialRowsSent && subscription.emptyRowsSent,
       "Expected initial rows and an empty update on the same authenticated socket");
+    if (renewal) {
+      assert.ok(subscription.renewedRowsSent, "Expected the renewed task on the original subscription");
+      assert.equal(renewedReads.size, 2, "Expected authenticated HTTP reads with the exact successor bearer");
+    } else {
+      assert.equal(initialReads.size, 2, "Expected authenticated HTTP reads");
+      assert.equal(revokedReads.size, 2, "Expected HTTP reads with the revoked bearer");
+    }
   }
 
   try {
@@ -255,6 +293,7 @@ export async function withScriptedAndroidProvider(action, { routeOutage = false 
     server.listen({ host: loopback, port: 0, exclusive: true });
     await listening;
     return await action({ port: server.address().port, input, taskId, title, verify, phase: () => phase,
+      ...(renewal && { renewedTitle, publishRenewedTask }),
       providerConnections: () => connectionCount, providerRequests: () => requestCount });
   } finally {
     for (const peer of peers.clients) peer.terminate();

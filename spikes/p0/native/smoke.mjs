@@ -429,8 +429,9 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
   const extra = process.argv.slice(4);
   const reconnect = acceptance && extra.length === 1 && extra[0] === "--reconnect";
   const routeOutage = platform === "android-provider-preflight" && extra.length === 1 && extra[0] === "--network-outage";
-  if (provider && !hosted) assert.ok(extra.length === 0 || reconnect || routeOutage,
-    "Pass one disposable emulator serial with optional acceptance --reconnect or preflight --network-outage");
+  const renewal = platform === "android-provider-preflight" && extra.length === 1 && extra[0] === "--renewal";
+  if (provider && !hosted) assert.ok(extra.length === 0 || reconnect || routeOutage || renewal,
+    "Pass one disposable emulator serial with optional acceptance --reconnect or preflight --network-outage or --renewal");
   const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
@@ -465,11 +466,15 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
     const withActivity = action => withAndroidActivity(deviceAdb, serial, appId, action);
     if (hosted) return hosted({ withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId });
     if (provider) {
+      const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
+      if (renewal) {
+        const { runAndroidRenewal } = await import("./local-provider/scripted-android-renewal.mjs");
+        return { session: await runAndroidRenewal(target) };
+      }
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
       const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance, exerciseAndroidRouteOutage } =
         await import("./local-provider/android-session-preflight.mjs");
       const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect });
-      const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
       let session;
       if (routeOutage) session = await exerciseAndroidRouteOutage(target);
       else if (acceptance) session = await exerciseAndroidProviderAcceptance(target, { reconnect });

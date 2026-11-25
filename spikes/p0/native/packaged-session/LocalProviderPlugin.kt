@@ -137,13 +137,13 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
 
     private fun digest(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
-    private fun publish(store: FixtureStore, grant: Grant, initial: Boolean) {
+    private fun publish(store: FixtureStore, grant: Grant, initial: Boolean): Active {
         val bytes = grant.stored.encode()
         try {
             require(bytes.size in 1..MAX_RECORD_BYTES)
             val next = Active(digest(bytes), grant.access, grant.expiresAt)
             if (initial) store.seed(slot, bytes) else store.rotate(slot, bytes)
-            active = next
+            return next
         } finally {
             bytes.fill(0)
         }
@@ -168,7 +168,7 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
             require(store.recoverUnpublishedSeed(slot))
             active = null
             val granted = grant(providerSignIn(input ?: fail(UNAVAILABLE))) ?: fail(UNAVAILABLE)
-            publish(store, granted, initial = true)
+            active = publish(store, granted, initial = true)
             arrayOf("fixture-ready")
         } finally {
             input?.fill(0)
@@ -186,7 +186,11 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         }
         ensureOpen(store)
         if (store.recoverUnpublishedSeed(slot)) fail(SIGNED_OUT)
-        val current = readStored(store.read(slot))
+        active = refresh(store, readStored(store.read(slot)))
+        arrayOf("authenticated")
+    }
+
+    private fun refresh(store: FixtureStore, current: StoredGrant): Active {
         val next = grant(providerRefresh(current.refresh))
         if (next == null) {
             store.persistSignOutState(slot, SignOutState.ACKNOWLEDGED)
@@ -196,25 +200,31 @@ class LocalProviderPlugin(private val host: Activity) : Plugin(host) {
         }
         require(next.stored.owner == current.owner && next.stored.subject == current.subject &&
             next.stored.refresh != current.refresh && next.access != current.refresh)
-        publish(store, next, initial = false)
-        arrayOf("authenticated")
+        return publish(store, next, initial = false)
     }
 
     @Command
-    fun access(invoke: Invoke) = dispatch(invoke) {
+    fun access(invoke: Invoke) = accessGrant(invoke, forceRefresh = false)
+
+    @Command
+    fun refreshAccess(invoke: Invoke) = accessGrant(invoke, forceRefresh = true)
+
+    private fun accessGrant(invoke: Invoke, forceRefresh: Boolean) = dispatch(invoke) {
         val store = FixtureStore(host)
         ensureOpen(store)
         val current = active ?: fail(SIGNED_OUT)
         active = null
-        if (current.expiresAt <= now()) fail(SIGNED_OUT)
+        if (!forceRefresh && current.expiresAt <= now()) fail(SIGNED_OUT)
         val bytes = store.read(slot) ?: fail(UNAVAILABLE)
-        try {
+        val stored = try {
             require(digest(bytes).contentEquals(current.recordDigest))
+            if (forceRefresh) storedGrant(bytes) else null
         } finally {
             bytes.fill(0)
         }
-        active = current
-        arrayOf("access", current.access)
+        val next = if (stored != null) refresh(store, stored) else current
+        active = next
+        arrayOf("access", next.access)
     }
 
     @Command

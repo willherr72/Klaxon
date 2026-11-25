@@ -198,10 +198,12 @@ async fn local_access(
     plugin: State<'_, LocalProviderPlugin>,
     force_refresh: bool,
 ) -> Result<String, &'static str> {
-    if force_refresh {
-        return Err(UNAVAILABLE);
-    }
-    match call(window, plugin, "access").await?.as_mut_slice() {
+    let command = if force_refresh {
+        "refreshAccess"
+    } else {
+        "access"
+    };
+    match call(window, plugin, command).await?.as_mut_slice() {
         [status, access] if status == "access" => Ok(std::mem::take(access)),
         [status] if status == SIGNED_OUT => Err(SIGNED_OUT),
         _ => Err(UNAVAILABLE),
