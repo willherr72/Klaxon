@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { exerciseAndroidRefreshProcessDeath, exerciseInterruptedSignIn } from "./android-refresh-process-death.mjs";
+import { exerciseAndroidSignOut } from "./android-signout-check.mjs";
 import { checkSessionPage, containsMarker, containsSdkAccess } from "./web-check.mjs";
 import { exerciseSdkHandoff } from "./sdk-check.mjs";
 import { readFixtureFile } from "./adb-file.mjs";
@@ -44,6 +45,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     expiry: expired => runAs(expired ? "touch" : "rm", "cache/p0-provider-expired"),
     assertEmpty: () => assert.equal(runAs("ls", "-A", "no_backup"), "", "expected an empty Keystore record directory"),
   };
+  await exerciseAndroidSignOut(launch, slot, { adb, app, record, runAs, read: path => readFixtureFile(adbBytes, app, path), write });
   await exerciseInterruptedSignIn(launch, slot, () => readSealed(record + ".new"), adb, app);
   await exerciseSdkHandoff(launch, slot, {
     verifyAndroidKeystore: true,
@@ -62,7 +64,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     logLines += count;
   }
   console.log("PASS packaged Android Keystore-to-SDK", pids.size, "fresh app processes and WebViews,", logLines,
-    "app log lines; SDK handoff, interrupted refresh recovery, successor-only cold resume and scoped cleanup checked;", webview);
+    "app log lines; SDK handoff, interrupted refresh and sign-out recovery, successor-only cold resume and scoped cleanup checked;", webview);
 }
 
 async function exerciseDurableRefresh(launch, slot, runAs, stage) {

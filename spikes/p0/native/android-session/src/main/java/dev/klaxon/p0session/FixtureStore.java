@@ -3,15 +3,22 @@ package dev.klaxon.p0session;
 import android.content.Context;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
+import android.system.Os;
+import android.system.OsConstants;
 import android.util.AtomicFile;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.util.Arrays;
@@ -22,6 +29,15 @@ import javax.crypto.spec.GCMParameterSpec;
 
 public final class FixtureStore {
     public enum PublishBoundary { BEFORE_PUBLISH, AFTER_PUBLISH }
+    public enum SignOutState {
+        PENDING("pending"), ACKNOWLEDGED("acknowledged");
+
+        private final byte[] bytes;
+
+        SignOutState(String text) {
+            bytes = text.getBytes(StandardCharsets.US_ASCII);
+        }
+    }
 
     @FunctionalInterface
     public interface PublishCheckpoint {
@@ -82,6 +98,76 @@ public final class FixtureStore {
         Files.deleteIfExists(file.toPath());
         Files.deleteIfExists(file.toPath().resolveSibling(file.getName() + ".new"));
         Files.deleteIfExists(file.toPath().resolveSibling(file.getName() + ".bak"));
+    }
+
+    private Path signOutPath(String owner) {
+        return new File(context.getNoBackupFilesDir(), owner + ".signout").toPath();
+    }
+
+    private Path signOutStage(Path path) {
+        return path.resolveSibling(path.getFileName() + ".new");
+    }
+
+    private boolean regularFileOrAbsent(Path path) throws IOException {
+        if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) return true;
+        if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) return false;
+        throw new IOException("Unexpected fixture file");
+    }
+
+    // The packaged plugin serializes operations on this slot. A writer killed before the first
+    // rename may leave just the stage, which reserves the slot until sign-out is retried.
+    public SignOutState signOutState(String owner) throws IOException {
+        Path path = signOutPath(owner);
+        boolean staged = regularFileOrAbsent(signOutStage(path));
+        if (!regularFileOrAbsent(path)) return staged ? SignOutState.PENDING : null;
+        if (Files.size(path) > SignOutState.ACKNOWLEDGED.bytes.length) {
+            throw new IOException("Invalid sign-out state");
+        }
+        byte[] bytes = Files.readAllBytes(path);
+        for (SignOutState state : SignOutState.values()) {
+            if (Arrays.equals(bytes, state.bytes)) return state;
+        }
+        throw new IOException("Invalid sign-out state");
+    }
+
+    public void persistSignOutState(String owner, SignOutState state) throws Exception {
+        Path path = signOutPath(owner);
+        Path stage = signOutStage(path);
+        // Keep an existing stage in place until rename so an orphaned initial intent always
+        // blocks access, even if another process death interrupts the retry.
+        try (FileChannel out = FileChannel.open(stage, StandardOpenOption.CREATE,
+            StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
+            ByteBuffer data = ByteBuffer.wrap(state.bytes);
+            while (data.hasRemaining()) out.write(data);
+            out.force(true);
+        }
+        Files.move(stage, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        syncNoBackupDirectory();
+    }
+
+    public void finishSignOut(String owner) throws Exception {
+        if (signOutState(owner) != SignOutState.ACKNOWLEDGED) {
+            throw new IOException("Missing sign-out acknowledgment");
+        }
+        // A previously visible rename may have failed its directory sync. Require durability
+        // before touching the key or ciphertext, and make their removal durable before clearing intent.
+        syncNoBackupDirectory();
+        forget(owner);
+        if (store.containsAlias(alias(owner))) throw new IOException("Fixture key was not removed");
+        Files.deleteIfExists(signOutStage(signOutPath(owner)));
+        syncNoBackupDirectory();
+        Files.delete(signOutPath(owner));
+        syncNoBackupDirectory();
+    }
+
+    private void syncNoBackupDirectory() throws Exception {
+        FileDescriptor directory = Os.open(context.getNoBackupFilesDir().getAbsolutePath(),
+            OsConstants.O_RDONLY | OsConstants.O_CLOEXEC, 0);
+        try {
+            Os.fsync(directory);
+        } finally {
+            Os.close(directory);
+        }
     }
 
     private void save(String owner, SecretKey key, byte[] plaintext) throws Exception {
@@ -168,7 +254,20 @@ public final class FixtureStore {
     public byte[] read(String owner) throws Exception {
         SecretKey key = (SecretKey) store.getKey(alias(owner), null);
         if (key == null) return null;
-        byte[] record = new AtomicFile(slot(owner)).readFully();
+        return decrypt(key, new AtomicFile(slot(owner)).readFully());
+    }
+
+    /** Read the published token without AtomicFile's recovery writes during pending sign-out. */
+    public byte[] readForSignOut(String owner) throws Exception {
+        SecretKey key = (SecretKey) store.getKey(alias(owner), null);
+        if (key == null) return null;
+        Path record = slot(owner).toPath();
+        Path backup = record.resolveSibling(record.getFileName() + ".bak");
+        Path published = regularFileOrAbsent(backup) ? backup : record;
+        return regularFileOrAbsent(published) ? decrypt(key, Files.readAllBytes(published)) : null;
+    }
+
+    private byte[] decrypt(SecretKey key, byte[] record) {
         if (record.length < IV_BYTES + 16) return null;
         try {
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");

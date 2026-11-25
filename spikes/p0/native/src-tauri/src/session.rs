@@ -1,13 +1,27 @@
 use crate::refresh_response::{self, Grant};
 use jni::{
     objects::{JObject, JObjectArray, JString},
-    sys::jobjectArray,
+    sys::{jboolean, jint, jobjectArray},
     JNIEnv,
 };
 use std::collections::BTreeMap;
 use tauri::{plugin::PluginHandle, Builder, Manager, State, WebviewWindow, Wry};
 
 struct FixturePlugin(PluginHandle<Wry>);
+
+#[no_mangle]
+pub extern "system" fn Java_dev_klaxon_p0native_SessionPlugin_acknowledgedSignOut(
+    mut env: JNIEnv<'_>,
+    _plugin: JObject<'_>,
+    http_status: jint,
+    body: JString<'_>,
+) -> jboolean {
+    let Ok(response) = env.get_string(&body) else {
+        return 0;
+    };
+    let text: String = response.into();
+    refresh_response::acknowledged_sign_out(http_status, text.as_bytes()).into()
+}
 
 // Called only by the native fixture plugin. Null is invalid, an empty array is definitive noSession.
 #[no_mangle]

@@ -3,7 +3,6 @@ use super::{
     store::{SignOutState, Slot},
     MARKER, PEER_MARKER, SUCCESSOR_MARKER,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{fs, io, path::Path, str};
 
@@ -86,28 +85,12 @@ fn simulated_response(path: &Path, request: &Value) -> Result<(u16, &'static [u8
     Ok((200, REVOKED))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MutationResponse {
-    status: String,
-    #[serde(rename = "value")]
-    _explicit_null: (),
-    #[serde(rename = "logLines")]
-    _log_lines: Option<Vec<String>>,
-}
-
 pub(super) fn accept(
     slot: &Slot<'_>,
     status: u16,
     body: &[u8],
 ) -> Result<&'static str, &'static str> {
-    if !(200..300).contains(&status)
-        || body.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{')
-    {
-        return Err(RETRY);
-    }
-    let response: MutationResponse = serde_json::from_slice(body).map_err(|_| RETRY)?;
-    if response.status != "success" {
+    if !crate::refresh_response::acknowledged_sign_out(status.into(), body) {
         return Err(RETRY);
     }
     // Persist the acknowledgment before deleting the only local copy of the request marker.

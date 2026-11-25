@@ -8,8 +8,16 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import dev.klaxon.p0session.FixtureStore
 import dev.klaxon.p0session.FixtureStore.PublishBoundary
+import dev.klaxon.p0session.FixtureStore.SignOutState
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.nio.channels.FileChannel
+import java.nio.file.FileAlreadyExistsException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.StandardOpenOption
 
 // JWT-shaped fixture value for the SDK's refresh state machine, with a fake signature.
 private const val ROTATED_OWNER_A_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
@@ -19,6 +27,11 @@ private const val ROTATED_OWNER_A_ACCESS = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
 /** Available only in the offline x86_64 session fixture. The WebView has no marker API. */
 @TauriPlugin
 class SessionPlugin(private val host: Activity) : Plugin(host) {
+    private companion object {
+        val sessionLock = Any()
+        var signOutRequested = false
+    }
+
     private enum class RefreshPause(val flag: String, val boundary: PublishBoundary) {
         BEFORE("refresh-pause-before-publish", PublishBoundary.BEFORE_PUBLISH),
         AFTER("refresh-pause-after-publish", PublishBoundary.AFTER_PUBLISH),
@@ -34,11 +47,14 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
         data class Denied(val status: String) : Confirmation
     }
 
+    private data class SignOutReply(val status: Int, val body: String)
+
     private val slot = "packaged"
     private var activeOwner: Owner? = null
 
     private external fun decodeRefresh(body: String): Array<String>?
     private external fun decodeSignIn(body: String, expectedOwner: String): Array<String>?
+    private external fun acknowledgedSignOut(httpStatus: Int, body: String): Boolean
 
     private fun providerFlag(name: String) = File(host.cacheDir, "p0-$name").isFile
 
@@ -77,6 +93,87 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
         return if (store.inventory(slot) == "no-key/no-file") "signed-out" else "unavailable"
     }
 
+    private fun signOutBlocked(store: FixtureStore): Boolean {
+        // Also fail closed in this process if storage failed before publishing the first intent.
+        if (signOutRequested) return true
+        return try {
+            store.signOutState(slot) != null
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun signOutFlag(name: String): Boolean {
+        val path = File(host.cacheDir, "p0-$name").toPath()
+        if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) return true
+        if (Files.notExists(path, LinkOption.NOFOLLOW_LINKS)) return false
+        throw IOException("Unexpected sign-out fixture flag")
+    }
+
+    private fun recordIssuerRevocation() {
+        val receipt = File(host.cacheDir, "p0-issuer-revoked-successor").toPath()
+        try {
+            FileChannel.open(receipt, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use {
+                it.force(true)
+            }
+        } catch (e: FileAlreadyExistsException) {
+            if (!Files.isRegularFile(receipt, LinkOption.NOFOLLOW_LINKS) || Files.size(receipt) != 0L) {
+                throw e
+            }
+        }
+    }
+
+    private fun signOutResponse(store: FixtureStore, request: JSONObject): SignOutReply? {
+        if (signOutFlag("provider-offline")) return null
+        val args = request.getJSONArray("args")
+        val token = args.getJSONObject(0).getString("refreshToken")
+        val successor = token == store.marker(slot, 3).toString(Charsets.UTF_8)
+        val knownToken = successor || Owner.entries.any {
+            token == store.marker(slot, it.generation).toString(Charsets.UTF_8)
+        }
+        val dropReply = signOutFlag("signout-drop-reply")
+        val observeSuccessor = dropReply || signOutFlag("signout-expect-successor")
+        if (request.getString("path") != "auth:signOut" ||
+            request.getString("format") != "convex_encoded_json" ||
+            args.length() != 1 || args.getJSONObject(0).length() != 1 ||
+            !knownToken || (observeSuccessor && !successor)) {
+            return SignOutReply(560, """{"status":"error","errorMessage":"Fixture rejected sign-out","logLines":[]}""")
+        }
+        if (observeSuccessor) recordIssuerRevocation()
+        if (dropReply) return null
+        if (signOutFlag("signout-invalid-reply")) {
+            return SignOutReply(200, """{"status":"success","value":[]}""")
+        }
+        if (observeSuccessor) {
+            try {
+                File(host.cacheDir, "p0-issuer-acknowledged-successor").createNewFile()
+            } catch (_: IOException) {
+                // The optional observer does not change the issuer's acknowledgment.
+            }
+        }
+        return SignOutReply(200, """{"status":"success","value":null,"logLines":[]}""")
+    }
+
+    private fun signOut(store: FixtureStore, pauseBeforeCleanup: Boolean): String {
+        val state = store.signOutState(slot)
+        if (state != SignOutState.ACKNOWLEDGED) {
+            if (state == null && store.recoverUnpublishedSeed(slot)) return "signed-out"
+            store.persistSignOutState(slot, SignOutState.PENDING)
+            val marker = store.readForSignOut(slot) ?: return "retry-required"
+            // Convex's pinned mutation request carries the currently persisted token.
+            val request = JSONObject()
+                .put("path", "auth:signOut")
+                .put("format", "convex_encoded_json")
+                .put("args", JSONArray().put(JSONObject().put("refreshToken", marker.toString(Charsets.UTF_8))))
+            val reply = signOutResponse(store, request) ?: return "retry-required"
+            if (!acknowledgedSignOut(reply.status, reply.body)) return "retry-required"
+            store.persistSignOutState(slot, SignOutState.ACKNOWLEDGED)
+            if (pauseBeforeCleanup) awaitCheckpoint("signout-pause-before-cleanup")
+        }
+        store.finishSignOut(slot)
+        return "signed-out"
+    }
+
     private fun acceptRefresh(store: FixtureStore, owner: Owner, successor: ByteArray, body: String): Confirmation {
         val fields = decodeRefresh(body) ?: return Confirmation.Denied("unavailable")
         if (fields.isEmpty()) return Confirmation.Denied(clearSession(store))
@@ -90,6 +187,7 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
     }
 
     private fun confirm(store: FixtureStore, expectedOwner: Owner?): Confirmation {
+        if (signOutBlocked(store)) return Confirmation.Denied("retry-required")
         if (store.recoverUnpublishedSeed(slot)) return Confirmation.Denied("signed-out")
         if (!store.hasRecord(slot)) return Confirmation.Denied("unavailable")
         val marker = store.read(slot) ?: return Confirmation.Denied("unavailable")
@@ -135,25 +233,47 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
         }
 
     @Command
-    @Synchronized
     fun change(invoke: Invoke) {
-        activeOwner = null
-        val status = try {
-            val operation = invoke.getArgs().getString("operation")
-            val store = if (operation == "seed" && providerFlag("seed-pause-before-publish")) {
-                checkpointStore("seed-pause-before-publish", PublishBoundary.BEFORE_PUBLISH)
-            } else FixtureStore(host)
-            when (operation) {
-                "seed" -> seed(store, Owner.A)
-                "seed-peer" -> seed(store, Owner.B)
-                "resume" -> authorize(store)
-                "sign-out" -> clearSession(store)
-                else -> "unavailable"
+        synchronized(sessionLock) {
+            activeOwner = null
+            val operation = try {
+                invoke.getArgs().getString("operation")
+            } catch (_: Exception) {
+                invoke.resolveObject("unavailable")
+                return
             }
-        } catch (_: Exception) {
-            "unavailable"
+            if (operation == "sign-out") {
+                signOutRequested = true
+                if (providerFlag("signout-pause-before-cleanup")) {
+                    // Keep the WebView observable while the tester force-stops the writer.
+                    Thread({ replyChange(invoke, operation, true) }, "p0-signout-writer").start()
+                    return
+                }
+            }
+            replyChange(invoke, operation)
         }
-        invoke.resolveObject(status)
+    }
+
+    private fun replyChange(invoke: Invoke, operation: String, pauseBeforeCleanup: Boolean = false) {
+        synchronized(sessionLock) {
+            val status = try {
+                val store = if (operation == "seed" && providerFlag("seed-pause-before-publish")) {
+                    checkpointStore("seed-pause-before-publish", PublishBoundary.BEFORE_PUBLISH)
+                } else FixtureStore(host)
+                when (operation) {
+                    "seed", "seed-peer" -> if (signOutBlocked(store)) "retry-required" else
+                        seed(store, if (operation == "seed") Owner.A else Owner.B)
+                    "resume" -> authorize(store)
+                    "sign-out" -> signOut(store, pauseBeforeCleanup).also {
+                        if (it == "signed-out") signOutRequested = false
+                    }
+                    else -> "unavailable"
+                }
+            } catch (_: Exception) {
+                if (operation == "sign-out") "retry-required" else "unavailable"
+            }
+            invoke.resolveObject(status)
+        }
     }
 
     @Command
@@ -168,27 +288,30 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
         }
     }
 
-    @Synchronized
     private fun replySdkAccess(invoke: Invoke, pause: RefreshPause? = null) {
-        val owner = activeOwner
-        activeOwner = null
-        val reply = try {
-            if (owner == null) "signed-out" else {
-                val store = if (pause == null) FixtureStore(host) else checkpointStore(pause.flag, pause.boundary)
-                authorize(store, owner)
-            }
-        } catch (_: Exception) {
+        synchronized(sessionLock) {
+            val owner = activeOwner
             activeOwner = null
-            "unavailable"
+            val reply = try {
+                if (owner == null) "signed-out" else {
+                    val store = if (pause == null) FixtureStore(host) else checkpointStore(pause.flag, pause.boundary)
+                    authorize(store, owner)
+                }
+            } catch (_: Exception) {
+                activeOwner = null
+                "unavailable"
+            }
+            invoke.resolveObject(reply)
         }
-        invoke.resolveObject(reply)
     }
 
     private fun checkpointStore(flag: String, expected: PublishBoundary) = FixtureStore(host) { boundary ->
-        if (boundary == expected) {
-            File(host.cacheDir, "p0-$flag-reached").writeText(Process.myPid().toString())
-            Thread.sleep(60_000)
-            throw IOException("Fixture checkpoint timed out")
-        }
+        if (boundary == expected) awaitCheckpoint(flag)
+    }
+
+    private fun awaitCheckpoint(flag: String) {
+        File(host.cacheDir, "p0-$flag-reached").writeText(Process.myPid().toString())
+        Thread.sleep(60_000)
+        throw IOException("Fixture checkpoint timed out")
     }
 }

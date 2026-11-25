@@ -13,11 +13,15 @@ pub(super) struct Grant {
 #[serde(deny_unknown_fields, bound(deserialize = "T: Deserialize<'de>"))]
 struct MutationResponse<T> {
     status: String,
-    #[serde(deserialize_with = "object")]
     value: T,
     #[serde(rename = "logLines")]
     _log_lines: Option<Vec<String>>,
 }
+
+// Sign-in and refresh return objects; sign-out acknowledges with an explicit null.
+#[derive(Deserialize)]
+#[serde(transparent, bound(deserialize = "T: Deserialize<'de>"))]
+struct ObjectValue<T>(#[serde(deserialize_with = "object")] T);
 
 // Auth 2.1.0 vRefreshResult.
 #[derive(Deserialize)]
@@ -100,7 +104,8 @@ fn decode_success<'de, T: Deserialize<'de>>(body: &'de [u8]) -> Result<T, ()> {
 }
 
 pub(super) fn decode(body: &[u8]) -> Result<Option<Grant>, ()> {
-    match decode_success(body)? {
+    let ObjectValue(result) = decode_success(body)?;
+    match result {
         RefreshResult::Rotated { tokens } => tokens.into_grant().map(Some),
         RefreshResult::NoSession {} => Ok(None),
     }
@@ -109,11 +114,15 @@ pub(super) fn decode(body: &[u8]) -> Result<Option<Grant>, ()> {
 // Available for native fixture integration.
 #[allow(dead_code)]
 pub(super) fn decode_sign_in(body: &[u8], expected_owner: &str) -> Result<Grant, ()> {
-    let SignInResult::Complete { tokens } = decode_success(body)?;
+    let ObjectValue(SignInResult::Complete { tokens }) = decode_success(body)?;
     if tokens.user_id != expected_owner {
         return Err(());
     }
     tokens.into_grant()
+}
+
+pub(super) fn acknowledged_sign_out(status: i32, body: &[u8]) -> bool {
+    (200..300).contains(&status) && decode_success::<()>(body).is_ok()
 }
 
 #[cfg(test)]
