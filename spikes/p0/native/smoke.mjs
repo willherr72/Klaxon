@@ -14,6 +14,7 @@ import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.
 import { exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
 import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
 import { readFixtureFile } from "./packaged-session/adb-file.mjs";
+import { observeWindowsBrowsers, windowsProcessIdentity } from "./windows-process.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
@@ -82,19 +83,21 @@ function windowsListenerPid(port) {
   return listeners.length === 1 ? listeners[0].pid : undefined;
 }
 
-function windowsProfilePids(hostPid, profile) {
-  // Query only WebView2 children of the fixture host. Return PIDs for this profile
-  // without exposing their command lines.
+function windowsFixtureProcesses(hostPid, profile) {
+  // Inspect only the host and its WebView2 children. Emit process identities and
+  // profile matches without exposing the child command lines.
   const script = String.raw`
     $ErrorActionPreference = 'Stop'
     $ProgressPreference = 'SilentlyContinue'
     $fixtureProfile = [IO.Path]::GetFullPath($env:KLAXON_P0_WEBVIEW_PROFILE)
     $browserProfile = Join-Path $fixtureProfile 'EBWebView'
-    Get-CimInstance Win32_Process -Filter "ParentProcessId = ${hostPid} AND Name = 'msedgewebview2.exe'" | ForEach-Object {
-      if ($_.CommandLine -match '(?i)(?:^|\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^"\s]+))(?=\s|$)') {
+    Get-CimInstance Win32_Process -Filter "ProcessId = ${hostPid} OR (ParentProcessId = ${hostPid} AND Name = 'msedgewebview2.exe')" | ForEach-Object {
+      $matchesProfile = 0
+      if ($_.ProcessId -ne ${hostPid} -and $_.CommandLine -match '(?i)(?:^|\s)(?:"--user-data-dir=([^"]+)"|--user-data-dir="([^"]+)"|--user-data-dir=([^"\s]+))(?=\s|$)') {
         $path = [IO.Path]::GetFullPath($Matches[1] + $Matches[2] + $Matches[3])
-        if ($path -eq $fixtureProfile -or $path -eq $browserProfile) { $_.ProcessId }
+        if ($path -eq $fixtureProfile -or $path -eq $browserProfile) { $matchesProfile = 1 }
       }
+      "{0} {1} {2}" -f $_.ProcessId, $_.CreationDate.ToUniversalTime().Ticks, $matchesProfile
     }
   `;
   const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
@@ -102,12 +105,13 @@ function windowsProfilePids(hostPid, profile) {
     encoding: "utf8", timeout: 10000, windowsHide: true,
     env: { ...process.env, KLAXON_P0_WEBVIEW_PROFILE: profile },
   });
-  return output.trim().split(/\r?\n/).map(Number).filter(pid => Number.isSafeInteger(pid) && pid > 0);
-}
-
-function windowsPidIsRunning(pid) {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { if (error.code === "ESRCH") return false; throw error; }
+  const rows = output.trim();
+  if (!rows) return new Map();
+  return new Map(rows.split(/\r?\n/).map(row => {
+    const match = /^([1-9]\d*) ([1-9]\d*) ([01])$/.exec(row);
+    assert.ok(match && Number.isSafeInteger(Number(match[1])), "invalid Windows fixture process identity");
+    return [Number(match[1]), { created: match[2], matchesProfile: match[3] === "1" }];
+  }));
 }
 
 async function withWindowsHost(exe, profile, action, capture) {
@@ -136,25 +140,43 @@ async function withWindowsHost(exe, profile, action, capture) {
   host.once("error", error => { spawnError = error; });
   const closed = new Promise(resolve => host.once("close", resolve));
   const observations = new Map(portFiles.map(file => [file, "missing"]));
-  const ownedPids = new Set();
+  const ownedBrowsers = new Map();
+  let hostCreated;
   function assertHostRunning() {
     if (spawnError) throw spawnError;
     assert.ok(host.pid && host.exitCode === null && host.signalCode === null,
       "Windows fixture host exited (PID " + host.pid + ", exit " + host.exitCode + ", signal " + host.signalCode + ")");
   }
-  function observeOwnedPids() {
-    const pids = windowsProfilePids(host.pid, profile);
-    for (const pid of pids) ownedPids.add(pid);
-    return pids;
+  function observeRunningHost() {
+    assertHostRunning();
+    const processes = windowsFixtureProcesses(host.pid, profile);
+    assertHostRunning();
+    const created = processes.get(host.pid)?.created;
+    assert.ok(created, "could not verify the running Windows fixture host");
+    if (hostCreated === undefined) {
+      const identity = windowsProcessIdentity(host.pid, created);
+      assert.ok(!capture.hosts.has(identity), "expected a new native Windows host process");
+      capture.hosts.add(identity);
+      hostCreated = created;
+    }
+    assert.equal(created, hostCreated, "the Windows fixture host changed during attachment");
+    return observeWindowsBrowsers(processes, { pid: host.pid, created: hostCreated }, ownedBrowsers);
+  }
+  function runningOwnedBrowsers() {
+    if (!host.pid) return [];
+    const processes = windowsFixtureProcesses(host.pid, profile);
+    if (hostCreated === undefined && host.exitCode === null && host.signalCode === null) {
+      hostCreated = processes.get(host.pid)?.created;
+    }
+    return [...observeWindowsBrowsers(processes, { pid: host.pid, created: hostCreated }, ownedBrowsers, true).keys()];
   }
 
   let browser;
   let browserPid;
+  let browserCreated;
   let attachedPort;
   try {
     assertHostRunning();
-    assert.ok(!capture.hostPids.has(host.pid), "expected a new native Windows host PID");
-    capture.hostPids.add(host.pid);
     for (let attempt = 0; attempt < 150 && !browser; attempt++) {
       assertHostRunning();
       for (const file of portFiles) {
@@ -177,11 +199,13 @@ async function withWindowsHost(exe, profile, action, capture) {
           observations.set(file, "port " + port + " has no unique IPv4 loopback listener");
           continue;
         }
-        if (!observeOwnedPids().includes(pid)) {
+        const created = observeRunningHost().get(pid);
+        if (!created) {
           observations.set(file, "port " + port + " listener PID " + pid + " is outside the fixture host/profile");
           continue;
         }
-        assert.ok(!capture.browserPids.has(pid), "expected a new WebView2 browser PID, got " + pid);
+        assert.ok(!capture.browsers.has(windowsProcessIdentity(pid, created)),
+          "expected a new WebView2 browser process, got PID " + pid);
         assertHostRunning();
         const currentPid = windowsListenerPid(port);
         if (currentPid !== pid) {
@@ -192,6 +216,7 @@ async function withWindowsHost(exe, profile, action, capture) {
         try {
           browser = await chromium.connectOverCDP(endpoint, { timeout: 2000 });
           browserPid = pid;
+          browserCreated = created;
           attachedPort = port;
           break;
         } catch (error) {
@@ -203,11 +228,11 @@ async function withWindowsHost(exe, profile, action, capture) {
     }
     if (!browser) {
       assertHostRunning();
-      const current = observeOwnedPids();
-      const listeners = windowsLoopbackListeners().filter(listener => current.includes(listener.pid));
+      const current = observeRunningHost();
+      const listeners = windowsLoopbackListeners().filter(listener => current.has(listener.pid));
       const details = [...observations].map(([file, status]) => file + ": " + status).join(", ");
       throw new Error("WebView2 attach timed out after " + (Date.now() - started) + "ms, host PID " + host.pid +
-        ", profile browser PIDs: " + (current.join(", ") || "none") +
+        ", profile browser PIDs: " + ([...current.keys()].join(", ") || "none") +
         ", profile listeners: " + (listeners.map(({ port, pid }) => port + " (PID " + pid + ")").join(", ") || "none") +
         ", retired files removed: " + (removed.join(", ") || "none") + ", " + details);
     }
@@ -220,9 +245,10 @@ async function withWindowsHost(exe, profile, action, capture) {
     } finally {
       await debuggerSession.detach();
     }
-    assertHostRunning();
+    assert.equal(observeRunningHost().get(browserPid), browserCreated,
+      "WebView2 browser process changed during CDP attachment");
     assert.equal(windowsListenerPid(attachedPort), browserPid, "WebView2 listener changed during CDP attachment");
-    capture.browserPids.add(browserPid);
+    capture.browsers.add(windowsProcessIdentity(browserPid, browserCreated));
 
     const context = browser.contexts()[0];
     assert.ok(context, "WebView2 reported no fixture browser context");
@@ -233,16 +259,21 @@ async function withWindowsHost(exe, profile, action, capture) {
   } finally {
     try { await browser?.close(); }
     finally {
-      host.kill();
-      await closed;
-      // Closing the debugger connection can precede WebView2 exit. Wait for
-      // the verified profile processes before clearing their debugger files.
-      let running = [...ownedPids].filter(windowsPidIsRunning);
-      for (let attempt = 0; attempt < 100 && running.length; attempt++) {
-        await delay(200);
-        running = running.filter(windowsPidIsRunning);
+      try {
+        // Discover profile children created after the last successful attachment check.
+        runningOwnedBrowsers();
+      } finally {
+        host.kill();
+        await closed;
+        // A previously verified child may outlive the host and lose readable command-line details.
+        const deadline = Date.now() + 20_000;
+        let running = runningOwnedBrowsers();
+        while (running.length && Date.now() < deadline) {
+          await delay(200);
+          running = runningOwnedBrowsers();
+        }
+        assert.equal(running.length, 0, "fixture WebView2 browser PIDs still active after host exit: " + running.join(", "));
       }
-      assert.equal(running.length, 0, "fixture WebView2 browser PIDs still active after host exit: " + running.join(", "));
     }
   }
 }
@@ -251,7 +282,7 @@ async function windows() {
   const exe = join(nativeDir, "src-tauri/target/debug/klaxon-p0-native.exe");
   await access(exe);
   const profile = await mkdtemp(join(tmpdir(), "klaxon-p0-native-webview-"));
-  const capture = { hostPids: new Set(), browserPids: new Set() };
+  const capture = { hosts: new Set(), browsers: new Set() };
   try {
     const saved = await withWindowsHost(exe, profile, exercise, capture);
     await withWindowsHost(exe, profile, page => verifyRestart(page, saved, exe), capture);
@@ -294,8 +325,7 @@ async function windowsSession(sdk = false) {
   const root = await mkdtemp(join(tmpdir(), "klaxon-p0-session-"));
   const profile = join(root, "webview");
   const record = join(root, "packaged.bin");
-  const pids = new Set();
-  const capture = { runName: basename(root), hostPids: pids, browserPids: new Set(), stdout: [], stderr: [] };
+  const capture = { runName: basename(root), hosts: new Set(), browsers: new Set(), stdout: [], stderr: [] };
   let replies = 0;
   let webviewVersion;
   async function launch(actions) {
@@ -322,17 +352,18 @@ async function windowsSession(sdk = false) {
           "session material in native host output");
       }
     }
-    assert.equal(Buffer.concat(capture.stdout).toString("utf8").split("P0 Windows session fixture ready").length - 1, pids.size);
+    assert.equal(Buffer.concat(capture.stdout).toString("utf8").split("P0 Windows session fixture ready").length - 1,
+      capture.hosts.size);
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
   }
   await assert.rejects(access(root), { code: "ENOENT" });
   if (sdk) {
-    console.log("PASS packaged Windows DPAPI-to-SDK:", pids.size,
+    console.log("PASS packaged Windows DPAPI-to-SDK:", capture.hosts.size,
       "fresh hosts and WebViews; SDK read, subscription, simulated access cutover and sign-out checked; fixture removed; WebView2", webviewVersion);
     return;
   }
-  console.log("PASS packaged Windows session:", pids.size, "host PIDs and fresh WebViews,", replies,
+  console.log("PASS packaged Windows session:", capture.hosts.size, "fresh hosts and WebViews,", replies,
     "isolated session replies plus owner-filtered native reads, live channel updates and late delivery across sign-out/owner switch;",
     "native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
 }
