@@ -19,9 +19,9 @@ const androidProviderPreflight = values["android-provider-preflight"];
 const androidProviderHosted = values["android-provider-hosted"];
 const androidProvider = androidProviderPreflight || androidProviderHosted;
 const androidProviderMode = androidProviderHosted ? "android-provider-hosted" : "android-provider-preflight";
-if (androidProviderHosted && (values.target !== "x86_64" || !values.session || signOutHttp ||
+if (androidProviderHosted && (!["x86_64", "aarch64"].includes(values.target) || !values.session || signOutHttp ||
     androidProviderPreflight || !convexDevelopmentOriginPattern.test(values.origin))) {
-  throw Error("Android hosted provider requires --target x86_64 --session and a plain HTTPS Convex --origin");
+  throw new Error("Android hosted provider requires an x86_64 or aarch64 target, --session and a plain HTTPS Convex --origin");
 }
 if (androidProviderPreflight && (values.target !== "x86_64" || !values.session || values.origin !== undefined || signOutHttp)) {
   throw new Error("Android provider preflight requires --target x86_64 --session without --origin or --sign-out-http");

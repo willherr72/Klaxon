@@ -86,6 +86,8 @@ for (const { name, options, invalid, message } of [
       ["--target", "x86_64", "--session"],
       ["--target", "x86_64", "--session", "--origin", "https://fixture.convex.cloud/"],
       ["--target", "x86_64", "--session", "--origin", "https://fixture.convex.cloud", "--android-provider-preflight"],
+      ["--target", "aarch64", "--origin", "https://fixture.convex.cloud"],
+      ["--target", "aarch64", "--session"],
       ["--target", "windows", "--session", "--origin", "https://fixture.convex.cloud"],
     ],
     message: /Android hosted provider requires/,
@@ -144,7 +146,11 @@ for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore
 const preflightConnections = "connect-src ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:3210 ws://127.0.0.1:3212";
 const preflightMarker = '<meta name="p0-android-provider-preflight" content="loopback-only">';
 
-test("Android provider preflight writes a dedicated native policy and forwards the frontend flag", async t => {
+for (const { target, mode, origin, connect } of [
+  { target: "x86_64", mode: "android-provider-preflight", connect: preflightConnections },
+  { target: "aarch64", mode: "android-provider-hosted", origin: "https://fixture.convex.cloud",
+    connect: "connect-src ipc: http://ipc.localhost https://fixture.convex.cloud wss://fixture.convex.cloud" },
+]) test(`${mode} for ${target} writes a dedicated native policy and forwards the frontend flag`, async t => {
   const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const native = join(root, "native");
@@ -158,18 +164,18 @@ test("Android provider preflight writes a dedicated native policy and forwards t
     'await writeFile("frontend-args.json", JSON.stringify(process.argv.slice(2)));',
   ].join("\n"));
   const result = spawnSync(process.execPath, [
-    join(native, "package.mjs"), "--target", "x86_64", "--session", "--android-provider-preflight",
+    join(native, "package.mjs"), "--target", target, "--session", "--" + mode, ...(origin ? ["--origin", origin] : []),
   ], { cwd: root, encoding: "utf8", timeout: 10000 });
   assert.ifError(result.error);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /(?:EEXIST|ENOTDIR).*android-user/);
-  const overlay = JSON.parse(await readFile(join(run, "android-provider-preflight.json"), "utf8"));
+  const overlay = JSON.parse(await readFile(join(run, mode + ".json"), "utf8"));
   assert.equal(overlay.app.withGlobalTauri, true);
-  assert.equal(overlay.app.security.csp.split("; ").find(rule => rule.startsWith("connect-src ")), preflightConnections);
+  assert.equal(overlay.app.security.csp.split("; ").find(rule => rule.startsWith("connect-src ")), connect);
   assert.deepEqual(JSON.parse(await readFile(join(root, "frontend-args.json"), "utf8")), [
-    "--outdir", "native/.run/android-provider-preflight-frontend", "--session", "--android-provider-preflight",
+    "--outdir", "native/.run/" + mode + "-frontend", "--session", "--" + mode,
   ]);
-  assert.equal(overlay.build.frontendDist, "../.run/android-provider-preflight-frontend");
+  assert.equal(overlay.build.frontendDist, "../.run/" + mode + "-frontend");
 });
 
 test("portable builds isolate the Android provider preflight marker and loopback CSP", async t => {

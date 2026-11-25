@@ -19,6 +19,11 @@ fn main() {
                 .is_ok_and(|origin| hosted_origin::is_canonical_origin(&origin)),
             "p0-hosted-provider requires KLAXON_P0_HOSTED_ORIGIN to be a canonical https://slug.convex.cloud origin"
         );
+        if android_provider && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+            // The pinned NDK r27 otherwise links the fixture with 4 KiB load alignment.
+            println!("cargo:rustc-link-arg-cdylib=-Wl,-z,max-page-size=16384");
+            println!("cargo:rustc-link-arg-cdylib=-Wl,-z,common-page-size=16384");
+        }
     }
     println!("cargo:rerun-if-changed=../.frontend/index.html");
     if windows && std::env::var_os("CARGO_FEATURE_P0_SESSION").is_some() {

@@ -246,3 +246,23 @@ node native/local-provider/hosted-provision.mjs --origin $env:KLAXON_P0_BUILD_OR
 Check the exit status, the result for each client and the retirement counts. Retirement removes the temporary app users, task and username mappings and revokes any remaining sessions for those registered owners. Auth 2.1 retains its inaccessible password hashes and created-user bookkeeping. If retirement cannot be confirmed, keep the reported nonsecret receipt and pass it back with `--retire-receipt` and the same Deployment scope. Finish by retiring the fresh key and shutting down the disposable emulator.
 
 Use `--platform windows` or `--platform android` to verify one client independently. The default exercises both clients.
+
+### Android ARM64 package rehearsal
+
+From `spikes/p0`, use the [Android build prerequisites](#packaged-offline-client) and an installed `aarch64-linux-android` Rust target. The build-only example pins a synthetic origin and uses no provider account.
+
+```powershell
+$env:CARGO_NET_OFFLINE = 'true'
+node native/package.mjs --target aarch64 --session --android-provider-hosted --origin https://p0-arm64-build-only.convex.cloud
+$apk = 'native/.run/klaxon-p0-arm64-provider-hosted.apk'
+Get-FileHash -Algorithm SHA256 -LiteralPath $apk
+& "$env:ANDROID_HOME/build-tools/36.0.0/aapt.exe" dump badging $apk
+& "$env:ANDROID_HOME/build-tools/36.0.0/apksigner.bat" verify --verbose --print-certs $apk
+& "$env:ANDROID_HOME/build-tools/36.0.0/zipalign.exe" -c -P 16 4 $apk
+```
+
+Expect one `arm64-v8a` ABI and the debug package `dev.klaxon.p0native`. The APK shares its package ID with the other P0 Android fixtures. Keep it on the build host for inspection. Verify the archived library matches the compiled `aarch64-linux-android` output and has ELF load alignment of at least 16 KiB. ZIP alignment checks the archive layout separately. The ordinary ARM64 account build uses a different mode and requires sign-in after reload. [Android page-size requirements](https://developer.android.com/guide/practices/page-sizes)
+
+The existing hosted runner admits only the disposable x86_64 emulator and its APK. The hosted WebView exposes automation hooks, and native sign-in consumes a one-use private input written by the runner. Physical acceptance requires a separate owner-assisted test entry point that verifies the selected phone, package hash and absence of a prior P0 install before touching the device. Rebuild for an owner-confirmed disposable Development origin and attest the HTML, SDK and native pins before staging a synthetic login. Keep the Development key off-device.
+
+On the phone's own network, record native sign-in, cold Keystore resume and rotation, authenticated HTTP and WSS, exact-grant revocation, stale-bearer denial and signed-out cold launch. Use the existing control expectations for same-owner continuity and cross-owner denial. A device-wide outage needs a distinct cold-resume check that observes denial, protected-record preservation and recovery after reconnect. Verify test identity retirement and remove only the fixture and its debug connection afterward.
