@@ -3,6 +3,11 @@ import { open } from "node:fs/promises";
 import { join } from "node:path";
 
 const defaultTargets = ["windows-edge", "android-chrome"];
+const targetModes = new Map([
+  ["both", { targets: defaultTargets, expected: "the two target subscriptions" }],
+  ["windows-only", { targets: ["windows-edge"], expected: "the Windows Edge subscription" }],
+  ["android-only", { targets: ["android-chrome"], expected: "the Android Chrome subscription" }],
+]);
 const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function mockInput() {
@@ -21,12 +26,12 @@ function preflight(input, rehearsal) {
     throw Error("Expected a new lowercase UUID v4 occurrence");
   }
   const { subscriptions, vapidDetails, targetMode = "both" } = input;
-  const windowsOnly = targetMode === "windows-only";
-  if (!windowsOnly && targetMode !== "both") throw Error("Unsupported target mode");
-  const targets = windowsOnly ? ["windows-edge"] : defaultTargets;
+  const selection = targetModes.get(targetMode);
+  if (!selection) throw Error("Unsupported target mode");
+  const { targets, expected } = selection;
   if (!subscriptions || typeof subscriptions !== "object" || Reflect.ownKeys(subscriptions).length !== targets.length ||
       !targets.every(target => Object.hasOwn(subscriptions, target))) {
-    throw Error(windowsOnly ? "Expected exactly the Windows Edge subscription" : "Expected exactly the two target subscriptions");
+    throw Error("Expected exactly " + expected);
   }
   const endpoints = new Set();
   for (const target of targets) {

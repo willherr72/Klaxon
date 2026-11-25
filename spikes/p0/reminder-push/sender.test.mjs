@@ -114,10 +114,48 @@ test("Windows-only mode rejects every subscription set except the single Windows
     await assert.rejects(attempt({ ...input, subscriptions }), /exactly the Windows Edge subscription/);
   }
   await assert.rejects(attempt({ ...input, targetMode: undefined }), /two target/);
-  await assert.rejects(attempt({ ...input, targetMode: "android-only" }), /target mode/);
+  await assert.rejects(attempt({ ...input, targetMode: "linux-only" }), /target mode/);
   await assert.rejects(readFile(join(runDirectory, "attempted.json")), { code: "ENOENT" });
   assert.equal(prepared, 0);
   assert.equal(sent, 0);
+});
+
+test("Android-only mode claims exactly one Android attempt and keeps an uncertain send spent", async t => {
+  const run = await fixture(t);
+  const android = run.input.subscriptions["android-chrome"];
+  android.endpoint = "https://fcm.googleapis.com/test-fixture";
+  run.rehearsal = false;
+  run.input.targetMode = "android-only";
+  run.input.subscriptions = { "android-chrome": android };
+  const calls = [];
+  const attempt = () => dispatchOnce({
+    ...run,
+    prepareNotification: () => calls.push("prepared"),
+    async sendNotification(subscription, json) {
+      assert.equal(subscription, android);
+      assert.equal(JSON.parse(json).target, "android-chrome");
+      const ledger = JSON.parse(await readFile(join(run.runDirectory, "attempted.json"), "utf8"));
+      assert.deepEqual(ledger.targets, ["android-chrome"]);
+      calls.push("sent");
+      throw Error("simulated lost response");
+    },
+  });
+  const report = await attempt();
+  assert.deepEqual(report.targets.map(row => [row.target, row.transportStatus]), [["android-chrome", "unknown"]]);
+  await assert.rejects(attempt(), /claimed/);
+  assert.deepEqual(calls, ["prepared", "sent", "prepared"]);
+});
+
+test("Android-only mode refuses a Windows export or endpoint before claiming", async t => {
+  const run = await fixture(t);
+  const android = run.input.subscriptions["android-chrome"];
+  const noCall = () => assert.fail("ran before valid target admission");
+  run.input.targetMode = "android-only";
+  const attempt = () => dispatchOnce({ ...run, rehearsal: false, prepareNotification: noCall, sendNotification: noCall });
+  await assert.rejects(attempt(), /exactly the Android Chrome subscription/);
+  run.input.subscriptions = { "android-chrome": { ...android, endpoint: "https://fixture.notify.windows.com/test" } };
+  await assert.rejects(attempt(), /endpoint/);
+  await assert.rejects(readFile(join(run.runDirectory, "attempted.json")), { code: "ENOENT" });
 });
 
 test("a malformed Windows-only wire request leaves the run unclaimed", async t => {

@@ -15,7 +15,7 @@
 3. Keep both tabs focused, screens unlocked and devices online. Tell the operator to send. Watch for **Klaxon P0 test** for five minutes, including Windows Notification Center and the Android notification shade. Record the target and ID from each OS notification, first-seen UTC time and copy count. Record “none seen” at cutoff and any later sighting separately.
 4. Select **Read worker receipt**. Record the matching worker time or “none recorded.” Select **Remove test subscription** and delete the downloads. The operator deletes the private inputs and retires the test key and origin. Reset only the test site’s permission if approved.
 
-## Current physical run: Windows Edge, screen locked
+## Windows Edge locked-screen run
 
 The owner approved one new synthetic reminder on Windows Edge. Android is outside this run. The operator staged a Windows-only receiver on a fresh disposable HTTPS origin, verified its five public resources and restricted file serving, and gave the setup link to the owner. The live URL and private exports stay outside the repository.
 
@@ -27,6 +27,16 @@ The owner approved one new synthetic reminder on Windows Edge. Android is outsid
 For this run, the operator must set `targetMode` to `windows-only` in the private sender input and include only `subscriptions["windows-edge"]`. The sender rejects any extra subscription before claiming the run. Use the same private run directory throughout so the one-shot ledger covers every attempt.
 
 **November 24 result.** Will reported Windows locked before the send. The sender attempted delivery at 23:49:00.400 UTC and recorded HTTP 201 at 23:49:00.660 UTC. Will read one matching Edge worker row, timestamped 23:49:00.689 UTC, with the display request resolved. He did not see a notification and reported a gap in observation. Visible delivery during the five-minute window is inconclusive. The single attempt is spent. The operator removed the matching export, sender input and test key file. Will confirmed Edge cleared the subscription, fixture worker and local receipts. The operator stopped the tunnel and server, verified the listener, run directory and matching export were absent, and received HTTP 530 from the former receiver URL.
+
+## Android Chrome locked-screen procedure
+
+Will approved preparing a fresh Android-only receiver and one synthetic send after enrollment and timing confirmation. Use regular Chrome on the phone. Enable test reminders on the supplied HTTPS page, allow the test origin's notification prompt, and save `android-chrome-subscription.json`. Hand it to the operator through the private channel. Keep the tab open until cleanup.
+
+Agree on the occurrence ID, send time and earliest unlock time before the operator claims the run. Return to the home screen and lock the phone before the agreed send time. Observe for five minutes after the attempt while the phone stays locked. Record the matching notification's first-seen time and copy count. Record hidden identifying text, observation gaps or any first sighting after unlock separately.
+
+After unlocking, use **Read worker receipt** before removing the subscription. Record the matching row count, worker time and display-request result. Select **Remove test subscription**, verify the page confirms cleanup, and delete the downloaded export. The operator records transport acceptance, the worker result and visible delivery separately, then retires the temporary receiver and private artifacts.
+
+Use explicit `targetMode: "android-only"` and exactly `subscriptions["android-chrome"]` in the private sender input. The sender refuses other targets and unsupported endpoints before claiming the run. A claimed attempt is spent even if its transport result is uncertain.
 
 ## Two-device background procedure (requires separate approval)
 
