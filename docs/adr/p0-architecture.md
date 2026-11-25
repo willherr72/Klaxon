@@ -18,6 +18,8 @@ Convex Auth 2.1.0 lets a client retry the presented refresh token until its succ
 
 The Android fixture uses a single packaged app process, serialized plugin calls, a non-exportable Keystore key and an encrypted `AtomicFile` in app-private storage. Android can log a failed rename and return from `finishWrite`. The client therefore compares the published ciphertext with the staged bytes before issuing access. A new process still has to obtain provider confirmation. [Android fixture procedure](../../spikes/p0/native/README.md#packaged-android-sdk-handoff)
 
+On Android, initial sign-in can die after key creation but before the encrypted record is published. Under the fixture's single-writer assumption, resume or a fresh validated sign-in may discard that slot's staging file and key only when both the published record and its legacy backup are verifiably absent. A backup blocks cleanup even when the base file is missing. The [initial sign-in evidence](../klaxon-v2-progress.md#android-initial-sign-in-to-keystore) covers these two recovery paths.
+
 ## Shared client and backend
 
 Accepted for the spike on 2026-11-23. Retain the existing shared static Svelte/Vite build. Keep native OS services behind Tauri commands. Place the spike in its own package so its dependency graph and generated configuration cannot enter a v1 release. Start with client routing that works with a static host and Tauri asset URLs; test direct task-detail navigation before choosing history fallback or hash routes in P1.

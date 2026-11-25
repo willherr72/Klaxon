@@ -72,7 +72,7 @@ The packager stages the native plugin and shared Keystore helper only while comp
 
 The harness requires a clean fixture install. After seeding one record, it places an empty `cache/p0-provider-offline` file under the debug app UID. Two fresh app processes attempt the same WebView resume. Each must return only `retry-required` and leave the encrypted record byte-for-byte intact. The harness removes the flag and retries in another fresh process without reseeding. Resume must return `authenticated`.
 
-The harness then sets `cache/p0-provider-expired` to simulate definitive expiry. Cold resume must clear the scoped Keystore alias and encrypted record before returning `signed-out`. The harness checks the private record directory, removes the expiry flag, and starts another process. Resume must still require sign-in. An explicit fresh seed must succeed (seeding refuses an existing alias or file) and restore access on cold resume. Sign-out must survive the final relaunch. The harness checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the artifacts and observations.
+The harness then sets `cache/p0-provider-expired` to simulate definitive expiry. Cold resume must clear the scoped Keystore alias and encrypted record before returning `signed-out`. The harness checks the private record directory, removes the expiry flag, and starts another process. Resume must still require sign-in. An explicit fresh seed must succeed and restore access on cold resume. Sign-out must survive the final relaunch. The harness checks raw callbacks, WebView stores and app logs, then uninstalls. The [P0 register](../../../docs/klaxon-v2-progress.md#packaged-android-session-evidence) records the artifacts and observations.
 
 ### Packaged Android SDK handoff
 
@@ -82,6 +82,10 @@ Use the same offline x86_64 session APK on a booted, disposable API 36 emulator 
 node native/package.mjs --target x86_64 --session
 node native/smoke.mjs android-sdk emulator-5576
 ```
+
+The installer reserves `/data/local/tmp/klaxon-p0-install-active` on the selected disposable emulator until uninstall finishes. If it reports an uncertain outcome, preserve that directory and inspect its `status` and `result` files before another run. A second caller cannot claim the same reservation. The offline installer regression tests run under `npm run test:portable`.
+
+The initial sign-in check force-stops the app twice before first publication. Cold resume must retire the orphan key, and a separate cold sign-in must recover without a preceding resume. The test also restores an encrypted backup and resumes its original owner to verify the backup and its key survived.
 
 The SDK panel selects its owner only after the plugin reopens the Keystore-protected record. The runner checks real SDK reads and subscriptions with an intercepted provider. It exercises corruption, refresh denial during an outage, cold recovery, owner switching, definitive expiry, and sign-out. It observes the Android IPC command and matching callback, checks the visible rows and browser stores, and scans logcat for the fixture process IDs. It verifies scoped alias and file cleanup, uninstalls the APK and removes its own ADB mappings. Shut down the test emulator after the run. [Test evidence and limits](../../../docs/klaxon-v2-progress.md#packaged-android-keystore-to-sdk-handoff)
 
