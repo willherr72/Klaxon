@@ -94,6 +94,21 @@ jobs:
       - name: Run the fixture in the Windows executable
         working-directory: spikes/p0
         run: node native/smoke.mjs windows
+      - name: Verify the installed reminder fixture shortcut and uninstall on the disposable runner
+        if: github.event.repository.private == false
+        working-directory: spikes/p0/native
+        env:
+          KLAXON_P0_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          npm.cmd ci --prefix ../../.. --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node ../../../node_modules/@tauri-apps/cli/tauri.js build --debug --ci --bundles nsis --config windows-reminder-identity.json -- --locked --offline --bin klaxon-p0-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
+            $env:PATH += ";$env:ProgramFiles\7-Zip"
+          }
+          ../ci/windows-reminder-install.ps1
       - name: Build the offline Windows session fixture
         working-directory: spikes/p0
         run: node native/package.mjs --target windows --session

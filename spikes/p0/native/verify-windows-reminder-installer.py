@@ -1,5 +1,7 @@
 """Inspect the pinned debug NSIS fixture without installing or launching it."""
+import argparse
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 
@@ -26,15 +28,27 @@ def verify():
         raise ValueError("The fixture identifier is missing from the packaged executable")
     definitions = (debug / "nsis/x64/installer.nsi").read_text(encoding="utf-8-sig").splitlines()
     for key, value in {
-        "PRODUCTNAME": "Klaxon P0 Reminder Fixture", "MAINBINARYNAME": binary.removesuffix(".exe"),
+        "PRODUCTNAME": "Klaxon P0 Reminder Fixture", "MANUFACTURER": "klaxon",
+        "MAINBINARYNAME": binary.removesuffix(".exe"),
         "BUNDLEID": "dev.klaxon.p0reminderfixture", "INSTALLMODE": "currentUser",
+        "STARTMENUFOLDER": "", "DISPLAYLANGUAGESELECTOR": "false", "UNINSTALLERSIGNCOMMAND": "",
         "INSTALLWEBVIEW2MODE": "", "WEBVIEW2BOOTSTRAPPERPATH": "", "WEBVIEW2INSTALLERPATH": "",
     }.items():
         if f'!define {key} "{value}"' not in definitions:
             raise ValueError(f"Unexpected rendered installer setting for {key}")
-    print("Verified installer settings, app executable and NSIS resources.")
-    print("Installer SHA-256", hashlib.sha256(installer.read_bytes()).hexdigest())
+    return {
+        "installerSha256": hashlib.sha256(installer.read_bytes()).hexdigest(),
+        "executableSha256": hashlib.sha256(packaged).hexdigest(),
+    }
 
 
 if __name__ == "__main__":
-    verify()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="emit verified installer and payload hashes")
+    args = parser.parse_args()
+    evidence = verify()
+    if args.json:
+        print(json.dumps(evidence))
+    else:
+        print("Verified installer settings, app executable and NSIS resources.")
+        print("Installer SHA-256", evidence["installerSha256"])

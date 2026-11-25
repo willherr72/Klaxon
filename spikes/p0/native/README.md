@@ -22,6 +22,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Installer inspection failed' }
 
 The verifier compares the archived executable with the build output, allowing the pinned CLI’s NSIS type marker, and checks the complete file inventory and rendered installer settings. The shell requires an existing WebView2 runtime. Keep the unsigned installer on the build host until there is a disposable Windows environment. Registration of the installed shortcut, scheduling under its identity and delivery after process exit each require runtime evidence. [Windows scheduling decision](../../../docs/adr/platform-capabilities.md#ordinary-reminder-delivery)
 
+The public repository’s unsigned Windows CI job builds this fixture on the disposable runner and invokes the installation check there. The check verifies the installer before silent installation, inspects the installed executable and shortcut identity, then uninstalls the fixture. A passing step establishes installer behavior on that runner. Queue persistence, cancellation and visible delivery require separate tests.
+
 ### Synthetic secure-session probe
 
 From the repository root on Windows with Node 24 and Windows PowerShell 5.1, run `node --test spikes/p0/native/session.test.mjs`. The test starts a new PowerShell process for every operation. It uses current-user DPAPI with the application and fixture owner as context. Only the encrypted synthetic refresh markers cross the process boundary in a temporary directory. The runner checks worker output and stored files for plaintext markers and removes the directory afterward.
