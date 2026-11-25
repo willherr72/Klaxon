@@ -501,6 +501,14 @@ During development an earlier debugger attachment timed out before the new stora
 
 These interruption tests used actual Windows processes and files. The response came from an in-process fixture. Power interruption, a live issuer, refresh-token replacement on Android and hosted reconnect remain open. [Windows reproduction](../spikes/p0/native/README.md#packaged-windows-sdk-handoff)
 
+### Portable browser session grants
+
+P0-03, November 25, 2026. Tested source `773eb16e1e5ae73a85afdf8b462d6ed2a7f58e7c`. The previous portable client accepted incomplete sign-in grants and treated unknown refresh outcomes as expiry. The browser now checks the four-field Convex Auth 2.1.0 grant before handing either token to the SDK. An explicit rotation must retain the signed-in owner and supply a new refresh token. The expiry field must be a finite positive timestamp. The provider decides whether the session has expired.
+
+Headless Edge ran the bundled Convex 1.51.0 SDK with synthetic HTTP and WebSocket responses. Incomplete sign-ins left the form usable without opening a socket or reading tasks. After an unknown refresh outcome, invalid grant, malformed `noSession`, reused refresh token or wrong owner, manual retry used the original refresh token and accepted a valid rotation. After a valid rotation followed by a malformed authentication check, retry used the successor. An exact `noSession` cleared cached rows. A wrong-owner reply to SDK-forced rotation returned to sign-in, and the socket never presented the rejected token.
+
+The initial-grant case and five explicit refresh cases reproduced failures against the previous client. One intermediate concurrent browser run timed out in the existing sign-out overlap test. That case passed on the isolated rerun and in the final suite. From the repository root, `npm.cmd --prefix spikes/p0 run build` succeeded and `npm.cmd --prefix spikes/p0 run test:portable` passed 164/164. Coverage here is browser response handling with intercepted transports. Scheduled JWT renewal and the physical-device session gate require separate evidence. [Portable procedure](../spikes/p0/portable.md) · [Installed package pins](../spikes/p0/package.json)
+
 ### Portable account task freshness
 
 At `9d0238fcd1d3897ed975330820fac82b332a8801`, a browser regression held a manual HTTP read open while the same account's SDK subscription delivered a changed task title. Before the fix, completing the HTTP read restored the old title. The client now compares the active session and the version of its displayed rows before applying the read. The regression checks the visible title after the read completes. From `spikes/p0`, `node --test --test-name-pattern="a manual read cannot replace" account-session.test.mjs` passed, and the full portable suite passed 31/31. The browser ran the bundled Convex SDK with intercepted HTTP and WebSocket traffic.
