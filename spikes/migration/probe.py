@@ -34,11 +34,16 @@ def seed_fixture(path):
         for version, sql in enumerate(schema_scripts(), start=1):
             db.executescript(f"BEGIN;{sql}; INSERT INTO schema_version VALUES({version}); COMMIT;")
         db.executescript("""
+            INSERT INTO task_lanes(id,name,order_index,is_default,created_at,updated_at)
+            VALUES ('work','Work',2,0,1,2);
             INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,task_lane_id)
             SELECT 't','task',0,2,'completed',1,2,1,id FROM task_lanes WHERE is_default=1;
+            INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,task_lane_id)
+            VALUES ('u','task without steps',0,1,'pending',1,2,1,'work');
             INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,repeat_rule)
             VALUES ('r','alarm',100,1,'pending',1,2,'{"kind":"daily"}');
             INSERT INTO task_steps VALUES ('s','t','step',1,10,1,2);
+            INSERT INTO task_steps VALUES ('s2','t','earlier step',0,5,1,2);
             INSERT INTO thoughts(id,body,tags,created_at,updated_at) VALUES ('c','capture','[]',1,2);
             INSERT INTO day_notes VALUES ('2026-11-23','note',1,2);
         """)
@@ -59,14 +64,38 @@ def verify_projection(path):
         """).fetchone()[0]
         if unresolved:
             raise ValueError(f"{unresolved} step(s) without a task parent")
+        unresolved_lanes = db.execute("""
+            SELECT COUNT(*) FROM reminders r
+            WHERE r.silent=1 AND NOT EXISTS (
+                SELECT 1 FROM task_lanes l WHERE l.id=r.task_lane_id
+            )
+        """).fetchone()[0]
+        if unresolved_lanes:
+            raise ValueError(f"{unresolved_lanes} task(s) without a resolved lane")
         assert db.execute("""
-            SELECT r.id, r.state, s.id, s.completed, l.is_default
-            FROM reminders r JOIN task_steps s ON s.task_id=r.id
-            JOIN task_lanes l ON l.id=r.task_lane_id WHERE r.silent=1
-        """).fetchall() == [("t", "completed", "s", 1, 1)]
+            SELECT r.id, r.state, l.name, l.is_default, s.id, s.completed
+            FROM reminders r JOIN task_lanes l ON l.id=r.task_lane_id
+            LEFT JOIN task_steps s ON s.task_id=r.id
+            WHERE r.silent=1 ORDER BY r.id, s.sort_key, s.id
+        """).fetchall() == [
+            ("t", "completed", "Todo", 1, "s2", 0),
+            ("t", "completed", "Todo", 1, "s", 1),
+            ("u", "pending", "Work", 0, None, None),
+        ]
         assert db.execute("SELECT repeat_rule FROM reminders WHERE silent=0").fetchall() == [('{"kind":"daily"}',)]
         assert db.execute("SELECT body FROM thoughts").fetchall() == [("capture",)]
         assert db.execute("SELECT day FROM day_notes").fetchall() == [("2026-11-23",)]
+    assert hashlib.sha256(path.read_bytes()).digest() == before
+
+
+def expect_projection_error(path, message):
+    before = hashlib.sha256(path.read_bytes()).digest()
+    try:
+        verify_projection(path)
+    except ValueError as error:
+        assert str(error) == message
+    else:
+        raise AssertionError(f"Expected snapshot diagnostic: {message}")
     assert hashlib.sha256(path.read_bytes()).digest() == before
 
 
@@ -77,14 +106,19 @@ def check_unresolved_steps(directory):
         seed_fixture(path)
         with closing(sqlite3.connect(path)) as writer, writer:
             writer.execute("INSERT INTO task_steps VALUES ('extra', ?, 'step', 0, 20, 1, 2)", (parent,))
-        before = hashlib.sha256(path.read_bytes()).digest()
-        try:
-            verify_projection(path)
-        except ValueError as error:
-            assert str(error) == "1 step(s) without a task parent"
-        else:
-            raise AssertionError("Snapshot with an unresolved task step passed validation")
-        assert hashlib.sha256(path.read_bytes()).digest() == before
+        expect_projection_error(path, "1 step(s) without a task parent")
+
+
+def check_unresolved_lanes(directory):
+    for label, lane in (("null", None), ("dangling", "absent")):
+        path = directory / f"lane-{label}.db"
+        seed_fixture(path)
+        with closing(sqlite3.connect(path)) as writer, writer:
+            writer.execute("""
+                INSERT INTO reminders(id,title,due_at,priority,state,created_at,updated_at,silent,task_lane_id)
+                VALUES ('extra','unresolved task',0,1,'pending',1,2,1,?)
+            """, (lane,))
+        expect_projection_error(path, "1 task(s) without a resolved lane")
 
 
 def check_snapshot_recovery(directory):
@@ -144,5 +178,7 @@ if __name__ == "__main__":
         verify_projection(fixture)
         check_snapshot_recovery(Path(tmp))
         check_unresolved_steps(Path(tmp))
-    print("Schema 17 projection and step-parent checks passed. Main-only copy passed integrity but missed the "
+        check_unresolved_lanes(Path(tmp))
+    print("Schema 17 projection, childless task, step-parent and task-lane checks passed. "
+          "Main-only copy passed integrity but missed the "
           "committed WAL edit. Online backup preserved it. Interrupted edit, truncated copy and retry checks passed.")
