@@ -462,6 +462,153 @@ fn only_success_with_an_explicit_null_acknowledges_sign_out() {
 }
 
 #[test]
+fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
+    let slot = TestSlot::new("http-sign-out");
+    seed(&slot.path, SUCCESSOR_MARKER).unwrap();
+    let ciphertext = slot.ciphertext();
+    let pending = slot.path.with_extension("signout-pending");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let attempt = |reply| {
+        sign_out::run_with_provider(&slot.path, |request| {
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), loopback_sign_out(request, reply))
+                    .await
+                    .expect("sign-out exchange timed out")
+            })
+        })
+    };
+
+    let success: &[u8] = br#"{"status":"success","value":null,"logLines":[]}"#;
+    for (label, reply) in [
+        ("lost reply", None),
+        ("malformed JSON", Some((200, &b"{"[..]))),
+        (
+            "missing explicit null",
+            Some((200, &br#"{"status":"success","logLines":[]}"#[..])),
+        ),
+        ("HTTP error with a success envelope", Some((503, success))),
+    ] {
+        assert_eq!(attempt(reply), Err("retry-required"), "{label}");
+        assert!(
+            slot.ciphertext() == ciphertext,
+            "{label} changed ciphertext"
+        );
+        assert_eq!(fs::read(&pending).unwrap(), b"pending", "{label}");
+        assert_eq!(
+            confirm_session(&slot.path, None).err(),
+            Some("retry-required")
+        );
+    }
+
+    assert_eq!(attempt(Some((200, success))), Ok("signed-out"));
+    assert!(!slot.path.exists() && !pending.exists());
+    assert_eq!(confirm_session(&slot.path, None).err(), Some("signed-out"));
+}
+
+async fn loopback_sign_out(
+    request: &serde_json::Value,
+    reply: Option<(u16, &'static [u8])>,
+) -> Result<(u16, hyper::body::Bytes), &'static str> {
+    use http_body_util::{BodyExt, Full};
+    use hyper::{
+        body::{Bytes, Incoming},
+        header::CONTENT_TYPE,
+        server::conn::http1,
+        service::service_fn,
+        Method, Request, Response,
+    };
+    use hyper_util::rt::TokioIo;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let checked = AtomicBool::new(false);
+        let (stream, _) = listener.accept().await.unwrap();
+        let service = service_fn(|request: Request<Incoming>| async {
+            let (parts, body) = request.into_parts();
+            assert!(parts.method == Method::POST, "expected POST");
+            assert!(
+                parts
+                    .uri
+                    .path_and_query()
+                    .is_some_and(|uri| uri.as_str() == "/api/mutation"),
+                "unexpected mutation target"
+            );
+            assert!(
+                parts
+                    .headers
+                    .get(CONTENT_TYPE)
+                    .is_some_and(|value| value == "application/json"),
+                "expected JSON content type"
+            );
+            let body = body
+                .collect()
+                .await
+                .expect("unreadable request body")
+                .to_bytes();
+            let expected = serde_json::json!({
+                "path": "auth:signOut",
+                "format": "convex_encoded_json",
+                "args": [{ "refreshToken": std::str::from_utf8(SUCCESSOR_MARKER).unwrap() }]
+            });
+            assert!(
+                body.as_ref() == serde_json::to_vec(&expected).unwrap(),
+                "unexpected mutation body"
+            );
+            checked.store(true, Ordering::Relaxed);
+            let (status, body) =
+                reply.ok_or_else(|| io::Error::other("fixture dropped its reply"))?;
+            Ok::<_, io::Error>(
+                Response::builder()
+                    .status(status)
+                    .body(Full::new(Bytes::from_static(body)))
+                    .unwrap(),
+            )
+        });
+        let served = http1::Builder::new()
+            .keep_alive(false)
+            .serve_connection(TokioIo::new(stream), service)
+            .await;
+        assert!(
+            checked.load(Ordering::Relaxed),
+            "fixture did not validate a request"
+        );
+        assert_eq!(served.is_err(), reply.is_none());
+    });
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .build()
+        .unwrap();
+    let received = client
+        .post(format!("http://{address}/api/mutation"))
+        .json(request)
+        .send()
+        .await;
+    server.await.expect("loopback fixture failed");
+    assert_eq!(
+        received.is_err(),
+        reply.is_none(),
+        "unexpected HTTP outcome"
+    );
+    match received {
+        Ok(response) => {
+            let status = response.status().as_u16();
+            Ok((status, response.bytes().await.expect("unreadable reply")))
+        }
+        Err(_) => Err("retry-required"),
+    }
+}
+
+#[test]
 fn initial_grant_must_publish_without_overwriting_an_existing_owner() {
     let slot = TestSlot::new("initial-grant");
     // The test removes the synced stage so the actual atomic publication must fail.

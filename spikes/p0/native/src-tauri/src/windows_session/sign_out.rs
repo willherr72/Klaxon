@@ -16,6 +16,13 @@ const REJECTED: &[u8] =
     br#"{"status":"error","errorMessage":"Fixture rejected the sign-out request","logLines":[]}"#;
 
 pub(super) fn run(path: &Path) -> Result<&'static str, &'static str> {
+    run_with_provider(path, |request| simulated_response(path, request))
+}
+
+pub(super) fn run_with_provider<B: AsRef<[u8]>>(
+    path: &Path,
+    send: impl FnOnce(&Value) -> Result<(u16, B), &'static str>,
+) -> Result<&'static str, &'static str> {
     let slot = Slot::lock(path).map_err(|_| "unavailable")?;
     let state = slot.sign_out_state().map_err(|_| RETRY)?;
     if state == Some(SignOutState::Acknowledged) {
@@ -43,8 +50,8 @@ pub(super) fn run(path: &Path) -> Result<&'static str, &'static str> {
         "format": "convex_encoded_json",
         "args": [{ "refreshToken": token }]
     });
-    let (status, body) = simulated_response(path, &request)?;
-    accept(&slot, status, body)
+    let (status, body) = send(&request)?;
+    accept(&slot, status, body.as_ref())
 }
 
 fn simulated_response(path: &Path, request: &Value) -> Result<(u16, &'static [u8]), &'static str> {
