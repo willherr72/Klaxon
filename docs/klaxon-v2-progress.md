@@ -232,6 +232,12 @@ Tested source `b9df6fe3a111b6d92fac1fd2fd833ca049a531cf`, November 25, 2026 UTC.
 
 Next offline P0-03 check: exercise the native Convex mutation request over loopback HTTP with inert input, including a lost reply and a malformed acknowledgment. Hosted native sign-in, authenticated reconnect and provider-side revocation of an already-open subscription still need disposable Development session evidence. Physical-device and reminder gates are unchanged.
 
+### Windows CI process identity
+
+The [Windows rehearsal on `452f74b`](https://github.com/willherr72/Klaxon/actions/runs/45518698895/job/138885211138) reached the SDK smoke and rejected a new WebView2 instance whose PID Windows had reused. The frontend and migration job passed. The harness now matches PID and OS creation time, checks the current host, fixture profile and loopback listener, and verifies the browser PID through CDP. Its final inventory includes fixture children started late in the run.
+
+Tested source `ab0f36206c6bfc841892b1e03ed2eb256270138b` on WebView2 158.0.4370.33. From `spikes/p0`, `npm run test:portable` passed 47/47, including three process-identity regressions. An older plain executable failed the expected frontend-hash check. Rebuilding with `node native/package.mjs --target windows` and running `node native/smoke.mjs windows` passed. With the offline session executable, `node native/smoke.mjs windows-session` passed across six fresh hosts and `node native/smoke.mjs windows-sdk` passed across eleven, scanning 177 retired profile files.
+
 ### Windows refresh-record recovery
 
 Tested native source `092bbe3c5402505e3397a24561a9cd67eab5da51` on November 24, 2026. A Windows test process consumed an inert response matching the pinned Convex Auth 2.1.0 refresh contract. It encrypted the successor with current-user DPAPI, flushed a staging file and published it by same-directory replacement. An exclusive Windows file handle serialized refresh, seed and sign-out for the slot.
