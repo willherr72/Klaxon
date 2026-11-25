@@ -38,8 +38,39 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
     private var activeOwner: Owner? = null
 
     private external fun decodeRefresh(body: String): Array<String>?
+    private external fun decodeSignIn(body: String, expectedOwner: String): Array<String>?
 
     private fun providerFlag(name: String) = File(host.cacheDir, "p0-$name").isFile
+
+    // In-process response for the pinned Convex auth:signInWithUsernamePassword mutation.
+    private fun signInResponse(store: FixtureStore, requested: Owner): String {
+        if (providerFlag("signin-denied")) {
+            return """{"status":"success","value":{
+                "status":"error","userError":{"error":"INVALID_CREDENTIALS"}
+            }}"""
+        }
+        val issuedId = if (providerFlag("signin-owner-mismatch")) {
+            Owner.entries.first { it != requested }.id
+        } else requested.id
+        val refresh = store.marker(slot, requested.generation).toString(Charsets.UTF_8)
+        return """{"status":"success","value":{"status":"complete","tokens":{
+            "accessToken":"${requested.access}",
+            "refreshToken":"$refresh",
+            "refreshTokenExpiresAt":4102444800000,
+            "userId":"$issuedId"
+        }}}"""
+    }
+
+    private fun seed(store: FixtureStore, requested: Owner): String {
+        val (access, refresh) = decodeSignIn(signInResponse(store, requested), requested.id) ?: return "unavailable"
+        val marker = refresh.toByteArray(Charsets.UTF_8)
+        if (access != requested.access || !marker.contentEquals(store.marker(slot, requested.generation))) {
+            return "unavailable"
+        }
+        store.recoverUnpublishedSeed(slot)
+        store.seed(slot, marker)
+        return "fixture-ready"
+    }
 
     private fun clearSession(store: FixtureStore): String {
         store.forget(slot)
@@ -59,7 +90,7 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
     }
 
     private fun confirm(store: FixtureStore, expectedOwner: Owner?): Confirmation {
-        if (store.inventory(slot) == "no-key/no-file") return Confirmation.Denied("signed-out")
+        if (store.recoverUnpublishedSeed(slot)) return Confirmation.Denied("signed-out")
         if (!store.hasRecord(slot)) return Confirmation.Denied("unavailable")
         val marker = store.read(slot) ?: return Confirmation.Denied("unavailable")
         val successor = store.marker(slot, 3)
@@ -108,16 +139,13 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
     fun change(invoke: Invoke) {
         activeOwner = null
         val status = try {
-            val store = FixtureStore(host)
-            when (invoke.getArgs().getString("operation")) {
-                "seed" -> {
-                    store.seed(slot, Owner.A.generation)
-                    "fixture-ready"
-                }
-                "seed-peer" -> {
-                    store.seed(slot, Owner.B.generation)
-                    "fixture-ready"
-                }
+            val operation = invoke.getArgs().getString("operation")
+            val store = if (operation == "seed" && providerFlag("seed-pause-before-publish")) {
+                checkpointStore("seed-pause-before-publish", PublishBoundary.BEFORE_PUBLISH)
+            } else FixtureStore(host)
+            when (operation) {
+                "seed" -> seed(store, Owner.A)
+                "seed-peer" -> seed(store, Owner.B)
                 "resume" -> authorize(store)
                 "sign-out" -> clearSession(store)
                 else -> "unavailable"
@@ -146,14 +174,7 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
         activeOwner = null
         val reply = try {
             if (owner == null) "signed-out" else {
-                val store = if (pause == null) FixtureStore(host) else FixtureStore(host) { boundary ->
-                    if (boundary == pause.boundary) {
-                        File(host.cacheDir, "p0-${pause.flag}-reached").writeText(Process.myPid().toString())
-                        // Fail closed if the controlling runner disappears before force-stop.
-                        Thread.sleep(60_000)
-                        throw IOException("Fixture checkpoint timed out")
-                    }
-                }
+                val store = if (pause == null) FixtureStore(host) else checkpointStore(pause.flag, pause.boundary)
                 authorize(store, owner)
             }
         } catch (_: Exception) {
@@ -161,5 +182,13 @@ class SessionPlugin(private val host: Activity) : Plugin(host) {
             "unavailable"
         }
         invoke.resolveObject(reply)
+    }
+
+    private fun checkpointStore(flag: String, expected: PublishBoundary) = FixtureStore(host) { boundary ->
+        if (boundary == expected) {
+            File(host.cacheDir, "p0-$flag-reached").writeText(Process.myPid().toString())
+            Thread.sleep(60_000)
+            throw IOException("Fixture checkpoint timed out")
+        }
     }
 }

@@ -1,3 +1,4 @@
+use crate::refresh_response::{self, Grant};
 use jni::{
     objects::{JObject, JObjectArray, JString},
     sys::jobjectArray,
@@ -15,9 +16,34 @@ pub extern "system" fn Java_dev_klaxon_p0native_SessionPlugin_decodeRefresh(
     _plugin: JObject<'_>,
     body: JString<'_>,
 ) -> jobjectArray {
+    decode_response(&mut env, body, refresh_response::decode)
+}
+
+// Called only by the native fixture plugin. Null means sign-in did not produce a grant.
+#[no_mangle]
+pub extern "system" fn Java_dev_klaxon_p0native_SessionPlugin_decodeSignIn(
+    mut env: JNIEnv<'_>,
+    _plugin: JObject<'_>,
+    body: JString<'_>,
+    expected_owner: JString<'_>,
+) -> jobjectArray {
+    let expected_owner: String = match env.get_string(&expected_owner) {
+        Ok(owner) => owner.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    decode_response(&mut env, body, |body| {
+        refresh_response::decode_sign_in(body, &expected_owner).map(Some)
+    })
+}
+
+fn decode_response(
+    env: &mut JNIEnv<'_>,
+    body: JString<'_>,
+    decode: impl FnOnce(&[u8]) -> Result<Option<Grant>, ()>,
+) -> jobjectArray {
     let reply = (|| {
         let body: String = env.get_string(&body).ok()?.into();
-        let grant = crate::refresh_response::decode(body.as_bytes()).ok()?;
+        let grant = decode(body.as_bytes()).ok()?;
         let fields: &[&str] = match grant.as_ref() {
             Some(grant) => &[&grant.access_token, &grant.refresh_token, &grant.user_id],
             None => &[],

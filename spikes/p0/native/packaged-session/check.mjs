@@ -39,7 +39,7 @@ export async function exerciseSession(withActivity, adb, app) {
   } finally {
     adb("shell", "run-as", app, "rm", "-f", expiry);
   }
-  // A new seed refuses to overwrite either a stale Keystore alias or a stale file.
+  // Explicit fresh sign-in must work after definitive expiry.
   await launch([["Resume session", "signed-out"], ["Start synthetic session", "fixture-ready"]]);
   await launch([["Resume session", "authenticated"], ["Sign out", "signed-out"]]);
   await launch([["Resume session", "signed-out"]]);

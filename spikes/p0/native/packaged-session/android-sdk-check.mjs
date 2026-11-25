@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { exerciseAndroidRefreshProcessDeath } from "./android-refresh-process-death.mjs";
+import { exerciseAndroidRefreshProcessDeath, exerciseInterruptedSignIn } from "./android-refresh-process-death.mjs";
 import { checkSessionPage, containsMarker, containsSdkAccess } from "./web-check.mjs";
 import { exerciseSdkHandoff } from "./sdk-check.mjs";
 import { readFixtureFile } from "./adb-file.mjs";
@@ -36,6 +36,7 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     return bytes;
   };
   const slot = {
+    signInFlag: (name, enabled) => runAs(enabled ? "touch" : "rm", "cache/" + name),
     read: () => readSealed(record),
     write: bytes => write(record, bytes),
     outage: offline => offline ? runAs("touch", outage) : runAs("rm", outage),
@@ -43,7 +44,11 @@ export async function exerciseAndroidSdkHandoff(withActivity, adb, adbBytes, app
     expiry: expired => runAs(expired ? "touch" : "rm", "cache/p0-provider-expired"),
     assertEmpty: () => assert.equal(runAs("ls", "-A", "no_backup"), "", "expected an empty Keystore record directory"),
   };
-  await exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore: true });
+  await exerciseInterruptedSignIn(launch, slot, () => readSealed(record + ".new"), adb, app);
+  await exerciseSdkHandoff(launch, slot, {
+    verifyAndroidKeystore: true,
+    initialGrantFailures: ["p0-signin-denied", "p0-signin-owner-mismatch", "p0-discard-synced-stage"],
+  });
   await exerciseDurableRefresh(launch, slot, runAs, bytes => write(record + ".new", bytes));
   await exerciseAndroidRefreshProcessDeath(launch, slot, () => readSealed(record + ".new"), adb, app);
   adb("shell", "am", "force-stop", app);
@@ -150,7 +155,7 @@ async function exerciseDurableRefresh(launch, slot, runAs, stage) {
   runAs("rm", "no_backup/unrelated.bin");
   await launch([async page => {
     assert.equal(await change(page, "resume"), "signed-out");
-    // Seeding refuses to replace an existing alias as well as an existing file.
+    // A confirmed expiry must permit a fresh grant.
     assert.equal(await change(page, "seed"), "fixture-ready");
     assert.equal(await change(page, "sign-out"), "signed-out");
   }]);

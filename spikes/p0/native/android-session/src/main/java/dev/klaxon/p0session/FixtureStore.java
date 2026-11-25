@@ -10,6 +10,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyStore;
 import java.util.Arrays;
@@ -46,6 +48,25 @@ public final class FixtureStore {
     private String alias(String owner) { return context.getPackageName() + ".v1." + owner; }
     private File slot(String owner) { return new File(context.getNoBackupFilesDir(), owner + ".bin"); }
     public boolean hasRecord(String owner) { return slot(owner).exists(); }
+
+    // A killed initial writer can leave a key and .new before AtomicFile publishes.
+    // Keep any published or recoverable record, including a legacy AtomicFile backup.
+    public boolean recoverUnpublishedSeed(String owner) throws Exception {
+        Path record = slot(owner).toPath();
+        Path backup = record.resolveSibling(record.getFileName() + ".bak");
+        if (!Files.notExists(record, LinkOption.NOFOLLOW_LINKS)
+            || !Files.notExists(backup, LinkOption.NOFOLLOW_LINKS)) return false;
+        Path stage = record.resolveSibling(record.getFileName() + ".new");
+        if (!Files.notExists(stage, LinkOption.NOFOLLOW_LINKS)) {
+            if (!Files.isRegularFile(stage, LinkOption.NOFOLLOW_LINKS)) {
+                throw new IOException("Unexpected staging file");
+            }
+            Files.delete(stage);
+        }
+        if (store.containsAlias(alias(owner))) store.deleteEntry(alias(owner));
+        return true;
+    }
+
     public byte[] marker(String owner, int generation) {
         return ("KLAXON-P0-INERT/" + owner + "/" + generation).getBytes(StandardCharsets.UTF_8);
     }
@@ -82,7 +103,7 @@ public final class FixtureStore {
                 Files.delete(slot(owner).toPath().resolveSibling(slot(owner).getName() + ".new"));
             }
             checkpoint.reached(PublishBoundary.BEFORE_PUBLISH);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             file.failWrite(out);
             throw e;
         }
@@ -93,20 +114,44 @@ public final class FixtureStore {
     }
 
     public void seed(String owner) throws Exception {
-        seed(owner, 1);
+        seed(owner, marker(owner, 1));
     }
 
-    public void seed(String owner, int generation) throws Exception {
-        if (store.containsAlias(alias(owner)) || slot(owner).exists()) {
+    public void seed(String owner, byte[] marker) throws Exception {
+        String keyAlias = alias(owner);
+        Path record = slot(owner).toPath();
+        Path stage = record.resolveSibling(record.getFileName() + ".new");
+        Path backup = record.resolveSibling(record.getFileName() + ".bak");
+        if (store.containsAlias(keyAlias)
+            || !Files.notExists(record, LinkOption.NOFOLLOW_LINKS)
+            || !Files.notExists(stage, LinkOption.NOFOLLOW_LINKS)
+            || !Files.notExists(backup, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalStateException("Clear the previous fixture before signing in");
         }
         KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, PROVIDER);
-        generator.init(new KeyGenParameterSpec.Builder(alias(owner),
+        generator.init(new KeyGenParameterSpec.Builder(keyAlias,
             KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256).build());
-        save(owner, generator.generateKey(), marker(owner, generation));
+        try {
+            save(owner, generator.generateKey(), marker);
+        } catch (Exception failure) {
+            // The slot was empty before this write. Roll back only its new files and key.
+            for (Path path : new Path[] {stage, record}) {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (Exception cleanupFailure) {
+                    failure.addSuppressed(cleanupFailure);
+                }
+            }
+            try {
+                store.deleteEntry(keyAlias);
+            } catch (Exception cleanupFailure) {
+                failure.addSuppressed(cleanupFailure);
+            }
+            throw failure;
+        }
     }
 
     public void rotate(String owner, int generation) throws Exception {

@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
+import { withAndroidFixture } from "./android-install.mjs";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkProfileBytes, checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
@@ -341,7 +342,7 @@ async function android() {
   const sdk = platform === "android-sdk";
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(sdk ? ["-H", "127.0.0.1"] : []), "-s", serial, ...args,
-  ], { input, timeout: args[0] === "install" ? 120000 : 30000, maxBuffer: 16 * 1024 * 1024 });
+  ], { input, stdio: ["pipe", "pipe", "pipe"], timeout: args[0] === "push" ? 120000 : 30000, maxBuffer: 16 * 1024 * 1024 });
   const deviceAdb = (...args) => deviceAdbBytes(args).toString("utf8").trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
   const session = platform === "android-session" || sdk;
@@ -349,7 +350,6 @@ async function android() {
   assert.equal(deviceAdb("shell", "getprop", "sys.boot_completed"), "1");
   assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
   assert.match(deviceAdb("shell", "dumpsys", "connectivity"), /Active default network:\s*none/i);
-  assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "", "Use an AVD without a previous probe installation");
   function assertNoMappings() {
     assert.ok(!deviceAdb("forward", "--list").split(/\r?\n/).some(line => line.split(/\s+/)[0] === serial),
       "Require an AVD without ADB forwards");
@@ -362,8 +362,7 @@ async function android() {
   }
   const apk = join(nativeDir, session ? ".run/klaxon-p0-x86_64-session.apk" : ".run/klaxon-p0-x86_64-fixture.apk");
   await access(apk);
-  try {
-    assert.match(deviceAdb("install", apk), /Success/);
+  await withAndroidFixture(deviceAdb, apk, appId, async () => {
     async function withActivity(action) {
       deviceAdb("shell", "am", "start", "-W", "-n", appId + "/.MainActivity");
       const pid = deviceAdb("shell", "pidof", appId);
@@ -411,16 +410,10 @@ async function android() {
     const saved = await withActivity(exercise);
     deviceAdb("shell", "am", "force-stop", appId);
     await withActivity(page => verifyRestart(page, saved, apk));
-  } finally {
-    // The host can lose the install acknowledgment after Android has committed the APK.
-    if (deviceAdb("shell", "pm", "list", "packages", appId) === "package:" + appId) {
-      assert.match(deviceAdb("uninstall", appId), /Success/);
-    }
-    assert.equal(deviceAdb("shell", "pm", "list", "packages", appId), "");
-    if (sdk) {
-      assertNoMappings();
-      console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
-    }
+  });
+  if (sdk) {
+    assertNoMappings();
+    console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
   }
 }
 

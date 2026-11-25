@@ -226,7 +226,7 @@ export async function exerciseSdkHandoff(launch, slot, { verifyAndroidKeystore =
     await nativeDenies(page);
     assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened), 0);
     if (verifyAndroidKeystore) {
-      // The Keystore fixture refuses a seed if either its alias or its file exists.
+      // Sign-out must allow a fresh grant for a different session.
       await seed(page, panel);
       await resume(page, panel, "A");
       await slot.expiry(true);

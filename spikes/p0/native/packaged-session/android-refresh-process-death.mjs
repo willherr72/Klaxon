@@ -121,13 +121,79 @@ export async function exerciseAndroidRefreshProcessDeath(launch, slot, readStagi
   }
   await launch([async page => {
     assert.equal(await change(page, "resume"), "signed-out");
-    // A fresh seed requires the previous alias and slot to both be absent.
+    // Sign-out must survive process death and permit a fresh grant.
     assert.equal(await change(page, "seed"), "fixture-ready");
     assert.equal(await change(page, "sign-out"), "signed-out");
   }]);
   slot.assertEmpty();
   console.log(`PASS Android refresh process death. Before publish PID ${beforePid} recovered a1 in PID ${oldRecoveryPid}. ` +
     `After publish PID ${afterPid} recovered a2 in PID ${newRecoveryPid}. Both in-flight invokes ended without a reply.`);
+}
+
+export async function exerciseInterruptedSignIn(launch, slot, readStaging, adb, app) {
+  const runAs = (...args) => adb("shell", "run-as", app, ...args);
+  const flag = "cache/p0-seed-pause-before-publish";
+  const reached = flag + "-reached";
+  const unrelated = "no_backup/unrelated.bin";
+  const base = "no_backup/" + record;
+  const denied = (page, operation) => page.evaluate(operation =>
+    window.__TAURI__.core.invoke("fixture_session", { operation })
+      .then(() => false, status => status === "unavailable"), operation);
+  async function interruptSeed() {
+    await launch([], async (page, pid) => {
+      runAs("mkdir", "-p", "no_backup");
+      runAs("touch", flag, unrelated);
+      // The plugin pauses on its UI thread. Observe the flushed stage out of process.
+      const pending = page.evaluate(() => window.__TAURI__.core.invoke("fixture_session", { operation: "seed" })
+        .then(() => "replied", () => "replied")).catch(() => "disconnected");
+      await waitFor(() => runAs("ls", "-A", "cache").split(/\r?\n/).includes(reached.slice(6)) &&
+        runAs("cat", reached) === pid, "initial sign-in writer never reached the publication checkpoint");
+      assert.deepEqual(runAs("ls", "-A", "no_backup").split(/\r?\n/), [staging, "unrelated.bin"]);
+      assertSealed(readStaging());
+      adb("shell", "am", "force-stop", app);
+      assert.equal(await pending, "disconnected", "the interrupted initial sign-in sent an IPC reply");
+      assert.ok(!adb("shell", "ps", "-A", "-o", "PID,NAME").split(/\r?\n/).some(line =>
+        line.trim().split(/\s+/)[0] === pid), "initial writer is still alive");
+    });
+    runAs("rm", flag, reached);
+    return readStaging();
+  }
+  try {
+    const orphan = await interruptSeed();
+    await launch([async page => {
+      assert.equal(await sdkAccess(page), "signed-out");
+      assert.equal(await change(page, "resume"), "signed-out");
+      assert.deepEqual(runAs("ls", "-A", "no_backup").split(/\r?\n/), ["unrelated.bin"]);
+      // Replay the exact staged ciphertext before another grant can replace the original key.
+      slot.write(orphan);
+      assert.ok(await denied(page, "resume"), "an orphan record still decrypted after cold recovery");
+      runAs("rm", base);
+    }]);
+    await interruptSeed();
+    await launch([async page => {
+      // This path gets a fresh grant without first asking resume to clean up the orphan.
+      assert.equal(await change(page, "seed-peer"), "fixture-ready");
+      const sealed = slot.read();
+      const backup = base + ".bak";
+      runAs("mv", base, backup);
+      try {
+        for (const operation of ["resume", "seed-peer"]) {
+          assert.ok(await denied(page, operation), "a backup must prevent unpublished-slot cleanup");
+        }
+        assert.deepEqual(runAs("ls", "-A", "no_backup").split(/\r?\n/), [record + ".bak", "unrelated.bin"]);
+      } finally {
+        runAs("mv", backup, base);
+      }
+      assert.ok(slot.read().equals(sealed), "backup ciphertext changed");
+      await resume(page, "b1");
+      assert.equal(await change(page, "sign-out"), "signed-out");
+      assert.deepEqual(runAs("ls", "-A", "no_backup").split(/\r?\n/), ["unrelated.bin"]);
+    }]);
+    console.log("PASS two interrupted initial sign-ins: cold resume retired the orphan key; direct peer sign-in recovered; backup restored");
+  } finally {
+    runAs("rm", "-f", flag, reached, unrelated);
+  }
+  slot.assertEmpty();
 }
 
 function assertSealed(bytes) {
