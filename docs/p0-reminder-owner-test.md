@@ -44,6 +44,8 @@ The receiver now attempts display while it writes the receipt. A cache failure c
 
 ## Android native locked-screen comparison
 
+**November 25 phone result.** The owner-supplied screenshots show the native notification and a display request within the window. Android recorded the keyguard unlocked at callback. Lock-screen visibility remains unverified. The one-time run has been used. [Timing and observations](klaxon-v2-progress.md#android-native-visible-alarm-fixture)
+
 This is a separate P0-06 run. Obtain approval for one owner-armed synthetic notification on the phone before handing off the debug APK. Use a verified build of `dev.klaxon.p0alarmvisible` with its SHA-256 and package ID. The operator records the hash. Will installs the fixture by opening the supplied file on Android. Keep the phone's current lock-screen preview, Do Not Disturb and battery settings. No browser enrollment, account or server is involved. [Fixture build and preflight](../spikes/p0/native/README.md#android-native-visible-alarm-fixture)
 
 1. **Prepare.** Open **Klaxon P0 native alarm**. Use **Allow notifications** if the fixture asks. The first opening can show the channel as “not created” because arming creates it. Stop before arming if permission is denied, the channel is blocked, or the device already has a spent fixture run. Record the Android version and settings as found. Agree when Will can observe the locked phone for the whole window. The APK requests no exact-alarm access.
