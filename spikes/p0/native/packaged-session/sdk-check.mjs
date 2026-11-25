@@ -338,26 +338,34 @@ export async function exerciseWindowsLoopbackRefresh(launch, root, record) {
       await launch([async (page, panel) => {
         await expectColdDenial(page, panel);
         const start = await page.evaluate(() => window.p0Replies.length);
+        const resumeReply = start + 2; // The two in-flight denial probes settle before HTTP responds.
         loopback.allowNext(async () => {
           assert.ok((await readFile(record)).equals(before), "protected record changed before the provider replied");
           assert.ok(await page.evaluate(start => window.p0Replies.length === start &&
             window.p0SdkFixture.accessRequests.length === 0 &&
             window.p0SdkFixture.evidence.socketsOpened === 0, start),
           "unexpected reply or SDK activity before the provider replied");
+          for (const command of ["fixture_sdk_access", "fixture_task_list"]) {
+            const denied = await page.evaluate(command => window.__TAURI__.core.invoke(command)
+              .then(() => false, error => error === "unavailable"), command);
+            assert.ok(denied, "native access must settle while the refresh response is withheld");
+          }
+          assert.deepEqual(await page.evaluate(start => window.p0Replies.slice(start), start),
+            ["sdk-denial-unavailable", "unavailable"]);
         });
 
         await click(panel, "Resume session");
-        await page.waitForFunction(start => window.p0Replies.length > start, start);
+        await page.waitForFunction(index => window.p0Replies.length > index, resumeReply);
         loopback.assertAttempts(attempt);
-        assert.ok(await page.evaluate(({ start, expected }) => window.p0Replies[start] === expected,
-          { start, expected }), "cold resume must return " + expected + " through native IPC");
+        assert.ok(await page.evaluate(({ index, expected }) => window.p0Replies[index] === expected,
+          { index: resumeReply, expected }), "cold resume must return " + expected + " through native IPC");
         // Check storage at the first observed native reply, before waiting for SDK authentication.
         await checkRecord();
         await statusIs(page, expected);
         if (expected === "authenticated") {
           await expectAuthenticated(page, panel, "A");
         } else {
-          assert.equal(await page.evaluate(() => window.p0Replies.length), start + 1,
+          assert.equal(await page.evaluate(() => window.p0Replies.length), resumeReply + 1,
             "cold denial must return exactly one native status");
           await expectColdDenial(page, panel);
         }

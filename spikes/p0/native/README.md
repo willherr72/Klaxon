@@ -74,6 +74,10 @@ The native command posts the inert marker to `/api/mutation` with the `auth:sign
 
 The smoke seeds and rotates an inert grant before clicking Sign out. The server validates the request and pending journal, then drops the reply. A second host must preserve the ciphertext and deny resume before it can retry. After the server acknowledges that retry, a third host must remain signed out. The runner scans the retired profile for known canaries and cleans up the listener and fixture files.
 
+### Packaged Windows cold refresh over HTTP
+
+From `spikes/p0`, run `node native/smoke.mjs windows-sdk-refresh-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe` with the HTTP fixture built above. The runner supplies a disposable loopback port through `KLAXON_P0_REFRESH_PORT`. A fresh process must deny access and preserve the encrypted record after HTTP 503, even when the body contains `noSession`. The next process must publish a rotated record before reporting authentication. A final process must send the successor and clear its slot on HTTP 200 with `noSession`. The issuer responses use inert markers.
+
 ## Android emulator fixture
 
 ### Packaged Android session
