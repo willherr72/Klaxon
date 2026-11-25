@@ -236,6 +236,26 @@ node spikes/p0/native/android-alarm/check.mjs emulator-5588
 
 The probe replaces one alarm and cancels a second, verifies the arming process exits before either original deadline without using Force Stop, and turns off the emulator display. The replacement is due 30 seconds after arming. A pass requires one private receipt for the replacement from a fresh process no more than 90 seconds after the due time, a noninteractive display at receipt, and ten more seconds without another callback. The runner reports keyguard, idle state and arming mode. The APK declares no permissions and never requests a notification. The runner verifies scoped uninstall, then the operator shuts down the selected AVD. If installation is unconfirmed, inspect the scoped install receipt before retrying. [Results and scope](../../../docs/klaxon-v2-progress.md#android-pre-armed-alarm-rehearsal)
 
+## Android native visible alarm fixture
+
+The standalone `dev.klaxon.p0alarmvisible` debug APK uses one inexact `AlarmManager` delivery and the owner's explicit **Arm test reminder** action. It declares only `POST_NOTIFICATIONS`, with its own notification channel and private evidence file. A persisted claim prevents a second display request for the same synthetic run. After the observation cutoff it can record an expired callback without requesting display. See the [owner procedure](../../../docs/p0-reminder-owner-test.md#android-native-locked-screen-comparison) before any phone test.
+
+From the repository root with the cached Android 36 SDK, JDK and Gradle wrapper:
+
+```powershell
+./src-tauri/gen/android/gradlew.bat --offline --console=plain -p spikes/p0/native/android-alarm-visible assembleDebug
+node spikes/p0/native/android-alarm-visible/check.mjs emulator-5586
+```
+
+The APK is `spikes/p0/native/android-alarm-visible/build/outputs/apk/debug/android-alarm-visible-debug.apk`. Set `ADB` to the SDK executable and substitute the serial of a freshly created API 36 x86_64 `KlaxonAlarmVisibleP0_` AVD. It must have airplane mode on, Wi-Fi off, no active default network, no previous fixture install and no ADB mappings. The smoke opens the real permission prompt, denies it, verifies arming is disabled and checks the same state after a fresh launch. It verifies scoped uninstall before the operator shuts down the selected AVD.
+
+The host test substitutes a display request and checks the one-shot claim, cutoff and write failures. From `spikes/p0/native/android-alarm-visible` with the JDK on `Path`:
+
+```powershell
+javac --release 17 -d build/host-test-classes src/main/java/dev/klaxon/p0alarmvisible/AlarmRun.java src/test/java/dev/klaxon/p0alarmvisible/AlarmRunTest.java
+java -cp build/host-test-classes dev.klaxon.p0alarmvisible.AlarmRunTest
+```
+
 ## Hosted packaged native acceptance
 
 Select an owner-confirmed disposable Convex Free Development deployment. Use its exact `https://<deployment>.convex.cloud` origin and a fresh key scoped to that deployment. Before provisioning, verify that the pinned CLI's `function-spec` reports the selected origin and that `authFixtures:enrollDisposable` and `authFixtures:retireDisposable` are installed as internal fixture operations. If they need to be pushed, stage only the spike's Convex functions and pinned dependencies in a temporary project and verify the key's Development target before applying the push.

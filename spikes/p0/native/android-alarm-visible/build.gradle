@@ -1,0 +1,26 @@
+buildscript {
+    repositories { google(); mavenCentral() }
+    dependencies { classpath 'com.android.tools.build:gradle:8.11.0' }
+}
+apply plugin: 'com.android.application'
+repositories { google(); mavenCentral() }
+
+android {
+    namespace 'dev.klaxon.p0alarmvisible'
+    compileSdk 36
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    defaultConfig {
+        applicationId 'dev.klaxon.p0alarmvisible'
+        minSdk 28
+        targetSdk 36
+    }
+}
+
+androidComponents {
+    beforeVariants(selector().withBuildType('release')) { variant ->
+        variant.enable = false
+    }
+}
