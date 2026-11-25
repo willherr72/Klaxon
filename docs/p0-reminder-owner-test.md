@@ -40,6 +40,8 @@ Use explicit `targetMode: "android-only"` and exactly `subscriptions["android-ch
 
 **November 25 result.** Will confirmed enrollment and agreed to the lock window. The sender attempted delivery at 16:04:00.488 UTC and recorded HTTP 201 at 16:04:00.884 UTC. Will saw no notification while the phone was locked or after unlocking. Chrome showed zero worker receipts, so there is no recorded display request. The single attempt is spent. Will confirmed removal of the test subscription. The operator retired the receiver, removed the private run directory and matching Windows export, and verified the former receiver returned HTTP 530. Deletion of the Android Downloads copy was not separately confirmed.
 
+The receiver now attempts display while it writes the receipt. A cache failure can leave an empty receipt list, so record the worker result alongside the owner's actual observation. The November 25 run used the earlier receiver, which could stop before display if receipt storage failed. The cause of that missed notification remains unknown.
+
 ## Two-device background procedure (requires separate approval)
 
 The November 24 Windows-only run recorded one worker receipt and inconclusive lock-screen visibility. The November 25 Android-only run recorded push-service acceptance, and the owner saw no notification. A future two-device run needs separate approval for the fresh receiver, two enrollments, a five-minute observation window, one send per device and cleanup.

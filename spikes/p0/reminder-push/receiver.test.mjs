@@ -19,14 +19,13 @@ function fixture() {
       } };
     } },
     async showNotification(title, options) {
-      assert.ok([...rows.values()].some(r => r.displayRequest === "pending"));
       requests.push({ title, ...options });
     },
   };
   return { rows, requests, deps };
 }
 
-test("the worker entry records receipt before the fake display request and preserves duplicate observations", async () => {
+test("the worker entry records display results and preserves duplicate observations", async () => {
   const { rows, requests, deps } = fixture();
   let push;
   const previous = globalThis.self;
@@ -60,6 +59,41 @@ test("the receiver preserves worker receipt if the simulated display request fai
   await handlePush(payload, deps);
   assert.equal(rows.size, 1);
   assert.equal([...rows.values()][0].displayRequest, "rejected");
+});
+
+for (const failure of ["open", "put"]) {
+  test(`receipt cache ${failure} failure does not suppress a display request`, async () => {
+    const { requests, deps } = fixture();
+    const reject = async () => { throw Error("mock storage failure"); };
+    deps.caches.open = failure === "open" ? reject : async () => ({ put: reject });
+    await handlePush(payload, deps);
+    assert.deepEqual(requests, [{ title: payload.title, body: payload.body }]);
+  });
+}
+
+test("a pending receipt write neither delays display nor overwrites the final result", async () => {
+  const { requests, deps } = fixture();
+  const writingPending = Promise.withResolvers();
+  const finishPending = Promise.withResolvers();
+  const writes = [];
+  deps.caches.open = async () => ({ async put(_key, response) {
+    const { displayRequest } = await response.json();
+    if (displayRequest === "pending") {
+      writingPending.resolve();
+      await finishPending.promise;
+    }
+    writes.push(displayRequest);
+  } });
+  const handling = handlePush(payload, deps);
+  try {
+    await writingPending.promise;
+    assert.deepEqual([...requests], [{ title: payload.title, body: payload.body }]);
+    assert.deepEqual([...writes], []);
+  } finally {
+    finishPending.resolve();
+    await handling;
+  }
+  assert.deepEqual(writes, ["pending", "resolved"]);
 });
 
 test("other targets, arbitrary text, unsupported revisions and malformed IDs produce no fixture evidence", async () => {

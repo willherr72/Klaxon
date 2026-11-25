@@ -1,8 +1,10 @@
 # Free-tier deployment gate
 
-Reviewed 2026-11-23. Use a disposable project in a confirmed Convex Free team. Starter can bill overages. Check plan in the team dashboard before hosted setup and record the plan, region and date without credentials. Use provider subdomains and a static Cloudflare Pages Free project. No Workers, paid identity provider or metered AI is needed for the spike.
+Public allowances rechecked 2026-11-25. Use a disposable project in a confirmed Convex Free team. Starter can bill overages. Check the plan in the team dashboard before hosted setup and record the plan, region and date without credentials. Use provider subdomains and a static Cloudflare Pages Free project. The spike needs only static web hosting and the Free backend.
 
-The published Convex allowances include 1M function calls, 20 GB-hours of action compute, 0.5 GB database storage, 1 GB database I/O and 1 GB egress. Recheck terms and actual dashboard usage before cutover. Track subscription updates and retries alongside scheduled jobs. Pause noncritical polling first on quota pressure, show stale integration timestamps and preserve queued work. Test quota degradation with synthetic limits. [Convex pricing](https://www.convex.dev/pricing)
+The published Convex Free allowances include 1M monthly function calls, 20 GB-hours of monthly action compute, 0.5 GB database storage, 1 GB monthly database I/O, 1 GB file storage and 1 GB monthly data egress. Function calls include subscription updates and scheduled jobs. Recheck terms and actual dashboard usage before cutover. Pause noncritical polling first on quota pressure, show stale integration timestamps and preserve queued work. Test quota degradation with synthetic limits. [Convex resource limits](https://docs.convex.dev/production/state/limits)
+
+Convex also supports per-deployment thresholds. Exceeding a configured disable threshold blocks new requests until the UTC window resets or an administrator changes the limit. Development deployments lack threshold emails. The team's actual region, usage and headroom still require dashboard verification. [Convex usage limits](https://docs.convex.dev/production/usage-limits)
 
 Pages Free allows 500 builds per month, one concurrent build, 20 minutes per build and 25 MiB per asset. Keep native installers in GitHub releases. [Pages limits](https://developers.cloudflare.com/pages/platform/limits/)
 

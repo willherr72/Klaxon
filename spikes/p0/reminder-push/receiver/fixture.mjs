@@ -12,16 +12,23 @@ export async function handlePush(payload, { target, scope, caches, showNotificat
   // Separate rows preserve evidence if the worker receives the same occurrence twice.
   const key = new URL("receipt/" + crypto.randomUUID(), scope).href;
   const receipt = { target, occurrenceId: payload.occurrenceId, receivedAt: new Date().toISOString() };
-  const cache = await caches.open(receiptCache(scope));
-  const record = displayRequest => cache.put(key, Response.json({ ...receipt, displayRequest }));
-  await record("pending");
+  const cache = caches.open(receiptCache(scope));
+  const record = async displayRequest => {
+    try {
+      await (await cache).put(key, Response.json({ ...receipt, displayRequest }));
+    } catch {
+      // Receipt storage is best effort and must not prevent display.
+    }
+  };
+  const pending = record("pending");
+  let outcome = "resolved";
   try {
     await showNotification(title, { body: target + " " + payload.occurrenceId });
   } catch {
-    await record("rejected");
-    return;
+    outcome = "rejected";
   }
-  await record("resolved");
+  await pending;
+  await record(outcome);
 }
 
 export function publicKeyBytes(value) {
