@@ -202,8 +202,23 @@ Android Build Tools `aapt dump badging` identified each expected single ABI, the
 
 ## Windows with a disposable local Convex provider
 
+For the Android build, emulator guard and two test modes, see [Android local provider](#android-local-provider).
+
 From the repository root, run `node spikes/p0/native/local-provider/run.mjs` with Cargo on PATH, the spike's locked npm dependencies installed, Edge, WebView2 and the cached Windows backend `precompiled-2026-11-21-cf39368`. The command builds the unsigned `windows_local_provider` executable offline. The backend helper requires Git and free loopback ports 3210 and 3211. It copies the indexed backend functions into a temporary project. It skips the CLI's optional TypeScript check because the spike lacks Node types for `users.ts`.
 
 The command creates two disposable local identities and three independent logins. It opens the observed owner's task in a separate Edge control and in the restarted packaged WebView2 client. The native client submits its protected refresh grant for sign-out and checks that the same grant can no longer refresh. The original WebView keeps its cached access token and subscription open while measuring HTTP access, subscription callbacks and the rendered task. A second owner checks cross-owner read and rename denial. The command reports a nonzero exit for failed or inconclusive evidence. [Acceptance criteria](../README.md#local-provider-acceptance-for-an-open-subscription)
 
 To test revocation during a subscription outage, run `node spikes/p0/native/local-provider/run.mjs --reconnect`. The runner assigns the target WebSocket a temporary loopback relay, then cuts its active connection and blocks reconnects. The native client can still reach the issuer to revoke the exact session. The same WebView and SDK subscription reconnect after revocation. The runner records any cached row visible during the cut, the callback after reconnection, the subsequent rendered list and the server's response to the old bearer. The independent control and backend stay online throughout.
+
+## Android local provider
+
+Use the [Android build prerequisites](#packaged-offline-client) and one disposable API 36 x86_64 `KlaxonSessionP0_` AVD. Start it read-only with airplane mode on, Wi-Fi off, no active default network, no fixture install and no existing ADB mappings. Set `ADB` to the SDK's adb executable. The runner uses the local ADB server on port 5037. From `spikes/p0`, substitute the verified emulator serial.
+
+```powershell
+node native/package.mjs --target x86_64 --session --android-provider-preflight
+node native/smoke.mjs android-provider-preflight emulator-5586
+```
+
+This account-free command installs the separate debug APK, forwards emulator loopback port 3210 to a host-only scripted server, and checks native and WebView traffic. It exercises sign-in, a cold Keystore resume, rejection of a nondefinitive refresh, rotation, subscription invalidation, and signed-out relaunch. The package, single-use input, receipts, listeners and mappings are scoped to the rehearsal. Shut down the selected emulator after the command finishes.
+
+**The live local-provider run needs Will's explicit approval for Android.** Its separate entry point is `node native/smoke.mjs android-provider-acceptance <emulator-serial>`. It repeats the account-free transport admission check, then starts the pinned Convex backend on Windows loopback ports 3210/3211 and pushes the indexed test functions to that ephemeral backend. It creates two disposable synthetic owners, a separate same-owner control session and one task. The emulator reaches port 3210 only through ADB reverse. The run checks the targeted session's cold restore and revocation, the independent Edge control and other-owner denial, then removes the disposable database, accounts, grants and package. The operator supplies no personal account or hosted deployment key. [Recorded results and remaining gate](../../../docs/klaxon-v2-progress.md#android-local-provider-preflight)
