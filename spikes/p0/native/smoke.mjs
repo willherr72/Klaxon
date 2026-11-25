@@ -12,7 +12,9 @@ import { withAndroidFixture } from "./android-install.mjs";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkProfileBytes, checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
-import { exerciseWindowsLoopbackSignOut, exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
+import {
+  exerciseWindowsLoopbackRefresh, exerciseWindowsLoopbackSignOut, exerciseWindowsSdkHandoff,
+} from "./packaged-session/sdk-check.mjs";
 import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
 import { readFixtureFile } from "./packaged-session/adb-file.mjs";
 import { observeWindowsBrowsers, windowsProcessIdentity } from "./windows-process.mjs";
@@ -20,6 +22,18 @@ import { observeWindowsBrowsers, windowsProcessIdentity } from "./windows-proces
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
 const [platform, platformArgument] = process.argv.slice(2);
+const windowsLoopbackCases = {
+  "windows-sdk-signout-loopback": {
+    exercise: exerciseWindowsLoopbackSignOut,
+    name: "sign-out",
+    result: "Lost reply retained pending intent and ciphertext. Explicit null cleared the slot.",
+  },
+  "windows-sdk-refresh-loopback": {
+    exercise: exerciseWindowsLoopbackRefresh,
+    name: "cold refresh",
+    result: "HTTP 503 preserved ciphertext. The authenticated reply had a protected successor. Successor expiry cleared the slot.",
+  },
+};
 
 async function exercise(page) {
   page.setDefaultTimeout(20000);
@@ -329,8 +343,8 @@ async function exerciseNativeTasks(launch, root, record) {
   assert.deepEqual(await readdir(root), ["webview"], "cold resume recreated a native slot");
 }
 
-async function windowsSession(sdk, loopbackExe) {
-  const exe = loopbackExe ?? join(nativeDir, "src-tauri/target/debug/windows_session.exe");
+async function windowsSession(sdk, loopback) {
+  const exe = loopback?.exe ?? join(nativeDir, "src-tauri/target/debug/windows_session.exe");
   await access(exe);
   const html = await readFile(join(nativeDir, ".run/windows-session-frontend/index.html"), "utf8");
   const expectedPolicy = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)?.[1];
@@ -356,7 +370,7 @@ async function windowsSession(sdk, loopbackExe) {
     }, capture, env);
   }
   try {
-    if (loopbackExe) await exerciseWindowsLoopbackSignOut(launch, root, record);
+    if (loopback) await loopback.exercise(launch, root, record);
     else if (sdk) await exerciseWindowsSdkHandoff(launch, root, record);
     else await exerciseNativeTasks(launch, root, record);
     for (const chunks of [capture.stdout, capture.stderr]) {
@@ -372,10 +386,10 @@ async function windowsSession(sdk, loopbackExe) {
     await rm(root, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
   }
   await assert.rejects(access(root), { code: "ENOENT" });
-  if (loopbackExe) {
-    console.log("PASS packaged Windows SDK sign-out over loopback HTTP:", capture.hosts.size,
-      "fresh hosts and WebViews; lost reply retained pending intent and ciphertext; explicit null cleared the slot;",
-      "cold access denied and fixture removed; WebView2", webviewVersion);
+  if (loopback) {
+    console.log("PASS packaged Windows SDK", loopback.name, "over loopback HTTP.", capture.hosts.size,
+      "fresh hosts and WebViews.", loopback.result,
+      "Cold access denied and fixture removed. WebView2", webviewVersion);
     return;
   }
   if (sdk) {
@@ -470,8 +484,8 @@ async function android(serial) {
 
 if (platform === "windows") await windows();
 else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
-else if (platform === "windows-sdk-signout-loopback") {
+else if (Object.hasOwn(windowsLoopbackCases, platform)) {
   assert.ok(platformArgument, "Pass the separately built Windows loopback fixture executable");
-  await windowsSession(true, resolve(platformArgument));
+  await windowsSession(true, { ...windowsLoopbackCases[platform], exe: resolve(platformArgument) });
 } else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android(platformArgument);
-else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");
+else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");

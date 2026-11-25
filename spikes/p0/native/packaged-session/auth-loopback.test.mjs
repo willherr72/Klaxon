@@ -3,13 +3,18 @@ import { once } from "node:events";
 import { request } from "node:http";
 import { connect } from "node:net";
 import test from "node:test";
-import { withSignOutLoopback } from "./signout-loopback.mjs";
+import { withRefreshLoopback, withSignOutLoopback } from "./auth-loopback.mjs";
 
 const mutation = {
   path: "auth:signOut",
   format: "convex_encoded_json",
   args: [{ refreshToken: "KLAXON-P0-INERT/packaged/3" }],
 };
+const refresh = generation => ({
+  ...mutation,
+  path: "auth:refreshSession",
+  args: [{ refreshToken: "KLAXON-P0-INERT/packaged/" + generation }],
+});
 
 function post(port, body = mutation) {
   return new Promise((resolve, reject) => {
@@ -89,4 +94,57 @@ test("closes the listener and an incomplete connection if the smoke fails", asyn
   await closed;
   assert.ok(!socketError || socketError.code === "ECONNRESET");
   await assert.rejects(post(port), { code: "ECONNREFUSED" });
+});
+
+test("models HTTP 503, rotation and definitive expiry in separate refresh attempts", async () => {
+  const missing = { status: "success", value: { kind: "noSession" }, logLines: [] };
+  let dispatches = 0;
+  const checkDispatch = () => { dispatches++; };
+  await withRefreshLoopback(async fixture => {
+    fixture.allowNext(checkDispatch);
+    assert.deepEqual(await post(fixture.port, refresh(1)), { status: 503, body: missing });
+    fixture.assertAttempts(1);
+
+    fixture.allowNext(checkDispatch);
+    assert.deepEqual(await post(fixture.port, refresh(1)), {
+      status: 200,
+      body: {
+        status: "success",
+        value: { kind: "rotated", tokens: {
+          accessToken: "p0-inert-access-a",
+          refreshToken: "KLAXON-P0-INERT/packaged/3",
+          refreshTokenExpiresAt: 4102444800000,
+          userId: "p0-fixture-owner-a",
+        } },
+        logLines: [],
+      },
+    });
+    fixture.assertAttempts(2);
+
+    fixture.allowNext(checkDispatch);
+    assert.deepEqual(await post(fixture.port, refresh(3)), { status: 200, body: missing });
+    fixture.assertAttempts(3);
+    assert.equal(dispatches, 3);
+  });
+});
+
+test("rejects automatic refresh retries before the following cold launch", async () => {
+  await withRefreshLoopback(async fixture => {
+    fixture.allowNext();
+    assert.equal((await post(fixture.port, refresh(1))).status, 503);
+    assert.equal((await post(fixture.port, refresh(1))).status, 400);
+    assert.throws(() => fixture.assertAttempts(1), { message: "Unexpected refresh mutation attempt" });
+  });
+});
+
+test("rejects a retired predecessor at the successor-only refresh step", async () => {
+  await withRefreshLoopback(async fixture => {
+    fixture.allowNext();
+    assert.equal((await post(fixture.port, refresh(1))).status, 503);
+    fixture.allowNext();
+    assert.equal((await post(fixture.port, refresh(1))).status, 200);
+    fixture.allowNext(() => assert.fail("unexpected dispatch"));
+    assert.equal((await post(fixture.port, refresh(1))).status, 400);
+    assert.throws(() => fixture.assertAttempts(2), { message: "Unexpected refresh mutation body" });
+  });
 });

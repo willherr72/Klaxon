@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { withSignOutLoopback } from "./signout-loopback.mjs";
+import { withRefreshLoopback, withSignOutLoopback } from "./auth-loopback.mjs";
 import { checkProfileBytes, containsMarker, containsSdkAccess } from "./web-check.mjs";
 
 const click = (panel, name) => panel.getByRole("button", { name, exact: true }).click();
@@ -33,6 +33,10 @@ async function nativeDenies(page) {
 async function resume(page, panel, owner) {
   await click(panel, "Resume session");
   await statusIs(page, "authenticated");
+  await expectAuthenticated(page, panel, owner);
+}
+
+async function expectAuthenticated(page, panel, owner) {
   await expectRow(panel, owner);
   const generation = owner.toLowerCase() + "1";
   const observed = await page.evaluate(generation => ({
@@ -309,6 +313,77 @@ async function exerciseWindowsRefreshRecord(launch, root, record) {
   await assert.rejects(access(record), { code: "ENOENT" });
   await rm(requireSuccessor);
   assert.deepEqual(await readdir(root), ["webview"], "sign-out must retire any staged refresh material");
+}
+
+export async function exerciseWindowsLoopbackRefresh(launch, root, record) {
+  const unrelated = join(root, "unrelated.txt");
+  const control = "Unrelated fixture data";
+  await writeFile(unrelated, control, { flag: "wx" });
+
+  async function readProtectedRecord() {
+    const bytes = await readFile(record);
+    assert.ok(bytes.length > 0 && ["latin1", "utf16le"].every(encoding =>
+      !containsMarker(bytes.toString(encoding)) && !containsSdkAccess(bytes.toString(encoding))),
+    "expected only protected session bytes");
+    return bytes;
+  }
+
+  await withRefreshLoopback(async loopback => {
+    const env = { KLAXON_P0_REFRESH_PORT: String(loopback.port) };
+    await launch([(page, panel) => seed(page, panel)], env);
+    loopback.assertAttempts(0);
+    const predecessor = await readProtectedRecord();
+
+    async function coldResume(attempt, before, expected, checkRecord) {
+      await launch([async (page, panel) => {
+        await expectColdDenial(page, panel);
+        const start = await page.evaluate(() => window.p0Replies.length);
+        loopback.allowNext(async () => {
+          assert.ok((await readFile(record)).equals(before), "protected record changed before the provider replied");
+          assert.ok(await page.evaluate(start => window.p0Replies.length === start &&
+            window.p0SdkFixture.accessRequests.length === 0 &&
+            window.p0SdkFixture.evidence.socketsOpened === 0, start),
+          "unexpected reply or SDK activity before the provider replied");
+        });
+
+        await click(panel, "Resume session");
+        await page.waitForFunction(start => window.p0Replies.length > start, start);
+        loopback.assertAttempts(attempt);
+        assert.ok(await page.evaluate(({ start, expected }) => window.p0Replies[start] === expected,
+          { start, expected }), "cold resume must return " + expected + " through native IPC");
+        // Check storage at the first observed native reply, before waiting for SDK authentication.
+        await checkRecord();
+        await statusIs(page, expected);
+        if (expected === "authenticated") {
+          await expectAuthenticated(page, panel, "A");
+        } else {
+          assert.equal(await page.evaluate(() => window.p0Replies.length), start + 1,
+            "cold denial must return exactly one native status");
+          await expectColdDenial(page, panel);
+        }
+      }], env);
+      loopback.assertAttempts(attempt);
+    }
+
+    await coldResume(1, predecessor, "retry-required", async () => {
+      assert.ok((await readFile(record)).equals(predecessor), "HTTP 503 changed the protected record");
+    });
+    assert.ok((await readFile(record)).equals(predecessor), "the predecessor changed after the denied host exited");
+
+    let successor;
+    await coldResume(2, predecessor, "authenticated", async () => {
+      successor = await readProtectedRecord();
+      assert.ok(!successor.equals(predecessor), "native authentication requires a new protected record");
+    });
+    assert.ok((await readFile(record)).equals(successor), "the protected successor must survive host exit");
+
+    await coldResume(3, successor, "signed-out", async () => {
+      await assert.rejects(access(record), { code: "ENOENT" });
+    });
+    assert.deepEqual((await readdir(root)).sort(), ["unrelated.txt", "webview"], "expected scoped session cleanup");
+    assert.ok(await readFile(unrelated, "utf8") === control, "session cleanup changed unrelated data");
+  });
+  await checkProfile(join(root, "webview"));
 }
 
 export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
