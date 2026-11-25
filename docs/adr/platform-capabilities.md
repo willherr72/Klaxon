@@ -27,7 +27,7 @@ For the one-time focused run on November 24, 2026, both push services returned H
 | State | Windows Edge / installed PWA | Android Chrome / installed PWA |
 |---|---|---|
 | App focused | Pass, one visible copy (owner report, Edge tab) | Pass, one visible copy (owner report, Chrome tab) |
-| Background, screen locked | Inconclusive for visible delivery. HTTP 201, one matching Edge worker receipt, display request resolved. Owner did not see the notification and reported a gap in observation. | Pending |
+| Background, screen locked | Inconclusive for visible delivery. HTTP 201, one matching Edge worker receipt, display request resolved. Owner did not see the notification and reported a gap in observation. | HTTP 201, with worker receipt and owner observation pending. |
 | App window closed, browser permitted in background | Pending | Pending |
 | Browser explicitly quit or force-stopped | Pending | Pending |
 | Permission denied or revoked | Pending | Pending |
