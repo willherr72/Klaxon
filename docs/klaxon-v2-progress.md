@@ -127,7 +127,9 @@ For the November 24 locked-screen run, Will confirmed Windows Edge enrollment an
 
 On November 25, Will approved and enrolled in the [Android-only locked-screen run](p0-reminder-owner-test.md#android-chrome-locked-screen-procedure). The sender's new mode requires exactly one Android subscription and rejects a Windows endpoint before claiming the attempt. The operator verified five HTTPS assets, JavaScript MIME types and 404 responses for the Windows worker and private inputs. The offline reminder suite passed 19/19. The two-device mock rehearsal and all 65 app tests also passed.
 
-The sender at `92cbe436512ccacc0c57d6f2faf1660235b0f603` attempted one Android Chrome push at 16:04:00.488 UTC and recorded HTTP 201 at 16:04:00.884 UTC. The five-minute visibility cutoff was 16:09:00.488 UTC, with unlock agreed for 16:10 UTC. Will reported seeing no notification while the phone was locked or after unlocking. Chrome showed zero worker receipts when checked. The observed result does not establish whether the worker ran. The locked-screen cell has no visible delivery pass, and the single attempt is spent. Cleanup confirmation is pending.
+The sender at `92cbe436512ccacc0c57d6f2faf1660235b0f603` attempted one Android Chrome push at 16:04:00.488 UTC and recorded HTTP 201 at 16:04:00.884 UTC. The five-minute visibility cutoff was 16:09:00.488 UTC, with unlock agreed for 16:10 UTC. Will reported seeing no notification while the phone was locked or after unlocking. Chrome showed zero worker receipts when checked. The observed result does not establish whether the worker ran. The locked-screen cell has no visible delivery pass, and the single attempt is spent.
+
+Will confirmed removal of the Android Chrome test subscription. The operator stopped the temporary tunnel and loopback server, removed the private run directory containing the sender input and disposable key, and deleted the matching export from Windows Downloads after verifying its hash. The listener and run directory were absent, and the former receiver returned HTTP 530. Deletion of the copy in Android Downloads was not separately confirmed.
 
 ### Packaged Android session evidence
 

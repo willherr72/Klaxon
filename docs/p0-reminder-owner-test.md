@@ -38,7 +38,7 @@ After unlocking, use **Read worker receipt** before removing the subscription. R
 
 Use explicit `targetMode: "android-only"` and exactly `subscriptions["android-chrome"]` in the private sender input. The sender refuses other targets and unsupported endpoints before claiming the run. A claimed attempt is spent even if its transport result is uncertain.
 
-**November 25 result.** Will confirmed enrollment and agreed to the lock window. The sender attempted delivery at 16:04:00.488 UTC and recorded HTTP 201 at 16:04:00.884 UTC. Will saw no notification while the phone was locked or after unlocking. Chrome showed zero worker receipts, so there is no recorded display request. The single attempt is spent. The receiver remains available for subscription removal. Owner cleanup confirmation is pending.
+**November 25 result.** Will confirmed enrollment and agreed to the lock window. The sender attempted delivery at 16:04:00.488 UTC and recorded HTTP 201 at 16:04:00.884 UTC. Will saw no notification while the phone was locked or after unlocking. Chrome showed zero worker receipts, so there is no recorded display request. The single attempt is spent. Will confirmed removal of the test subscription. The operator retired the receiver, removed the private run directory and matching Windows export, and verified the former receiver returned HTTP 530. Deletion of the Android Downloads copy was not separately confirmed.
 
 ## Two-device background procedure (requires separate approval)
 
