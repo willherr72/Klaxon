@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
@@ -12,14 +12,14 @@ import { withAndroidFixture } from "./android-install.mjs";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkProfileBytes, checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
 import { checkTaskDenial, checkTaskSwitch } from "./packaged-session/task-check.mjs";
-import { exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
+import { exerciseWindowsLoopbackSignOut, exerciseWindowsSdkHandoff } from "./packaged-session/sdk-check.mjs";
 import { exerciseAndroidSdkHandoff } from "./packaged-session/android-sdk-check.mjs";
 import { readFixtureFile } from "./packaged-session/adb-file.mjs";
 import { observeWindowsBrowsers, windowsProcessIdentity } from "./windows-process.mjs";
 
 const nativeDir = fileURLToPath(new URL(".", import.meta.url));
 const appId = "dev.klaxon.p0native";
-const [platform, serial] = process.argv.slice(2);
+const [platform, platformArgument] = process.argv.slice(2);
 
 async function exercise(page) {
   page.setDefaultTimeout(20000);
@@ -127,7 +127,7 @@ function windowsFixtureProcesses(hostPid, profile) {
   }));
 }
 
-async function withWindowsHost(exe, profile, action, capture) {
+async function withWindowsHost(exe, profile, action, capture, env) {
   const portFiles = ["EBWebView/DevToolsActivePort", "DevToolsActivePort"];
   const removed = [];
   // Chromium can leave the debugger files after exit. Keep the profile and its
@@ -142,7 +142,7 @@ async function withWindowsHost(exe, profile, action, capture) {
   }
 
   const started = Date.now();
-  const host = spawn(exe, [], { windowsHide: true, env: { ...process.env,
+  const host = spawn(exe, [], { windowsHide: true, env: { ...process.env, ...env,
     ...(capture.runName && { KLAXON_P0_SESSION_RUN: capture.runName }),
     WEBVIEW2_USER_DATA_FOLDER: profile,
     WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: "--remote-debugging-port=0 --remote-debugging-address=127.0.0.1",
@@ -329,8 +329,8 @@ async function exerciseNativeTasks(launch, root, record) {
   assert.deepEqual(await readdir(root), ["webview"], "cold resume recreated a native slot");
 }
 
-async function windowsSession(sdk = false) {
-  const exe = join(nativeDir, "src-tauri/target/debug/windows_session.exe");
+async function windowsSession(sdk, loopbackExe) {
+  const exe = loopbackExe ?? join(nativeDir, "src-tauri/target/debug/windows_session.exe");
   await access(exe);
   const html = await readFile(join(nativeDir, ".run/windows-session-frontend/index.html"), "utf8");
   const expectedPolicy = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)?.[1];
@@ -341,7 +341,7 @@ async function windowsSession(sdk = false) {
   const capture = { runName: basename(root), hosts: new Set(), browsers: new Set(), stdout: [], stderr: [] };
   let replies = 0;
   let webviewVersion;
-  async function launch(actions) {
+  async function launch(actions, env) {
     await withWindowsHost(exe, profile, async page => {
       if (sdk) {
         await page.goto("http://tauri.localhost/#sdk");
@@ -353,10 +353,11 @@ async function windowsSession(sdk = false) {
       webviewVersion = page.context().browser().version();
       await checkSessionPage(page, actions, sdk ? "windows" : undefined);
       replies += actions.filter(Array.isArray).length;
-    }, capture);
+    }, capture, env);
   }
   try {
-    if (sdk) await exerciseWindowsSdkHandoff(launch, root, record);
+    if (loopbackExe) await exerciseWindowsLoopbackSignOut(launch, root, record);
+    else if (sdk) await exerciseWindowsSdkHandoff(launch, root, record);
     else await exerciseNativeTasks(launch, root, record);
     for (const chunks of [capture.stdout, capture.stderr]) {
       const log = Buffer.concat(chunks);
@@ -371,6 +372,12 @@ async function windowsSession(sdk = false) {
     await rm(root, { recursive: true, force: true, maxRetries: 12, retryDelay: 300 });
   }
   await assert.rejects(access(root), { code: "ENOENT" });
+  if (loopbackExe) {
+    console.log("PASS packaged Windows SDK sign-out over loopback HTTP:", capture.hosts.size,
+      "fresh hosts and WebViews; lost reply retained pending intent and ciphertext; explicit null cleared the slot;",
+      "cold access denied and fixture removed; WebView2", webviewVersion);
+    return;
+  }
   if (sdk) {
     console.log("PASS packaged Windows DPAPI-to-SDK:", capture.hosts.size,
       "fresh hosts and WebViews; SDK read, subscription, simulated access cutover and sign-out checked; fixture removed; WebView2", webviewVersion);
@@ -381,7 +388,7 @@ async function windowsSession(sdk = false) {
     "native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
 }
 
-async function android() {
+async function android(serial) {
   assert.match(serial ?? "", /^emulator-\d+$/, "Pass a disposable AVD serial");
   const sdk = platform === "android-sdk";
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
@@ -463,5 +470,8 @@ async function android() {
 
 if (platform === "windows") await windows();
 else if (platform === "windows-session" || platform === "windows-sdk") await windowsSession(platform === "windows-sdk");
-else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android();
-else throw new Error("Choose windows, windows-session, windows-sdk, android, android-session or android-sdk. Android requires a disposable emulator serial.");
+else if (platform === "windows-sdk-signout-loopback") {
+  assert.ok(platformArgument, "Pass the separately built Windows loopback fixture executable");
+  await windowsSession(true, resolve(platformArgument));
+} else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android(platformArgument);
+else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");

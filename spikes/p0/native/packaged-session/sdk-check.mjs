@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { withSignOutLoopback } from "./signout-loopback.mjs";
 import { checkProfileBytes, containsMarker, containsSdkAccess } from "./web-check.mjs";
 
 const click = (panel, name) => panel.getByRole("button", { name, exact: true }).click();
@@ -310,6 +311,89 @@ async function exerciseWindowsRefreshRecord(launch, root, record) {
   assert.deepEqual(await readdir(root), ["webview"], "sign-out must retire any staged refresh material");
 }
 
+export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
+  const exchange = join(root, "p0-provider-refresh");
+  const pending = join(root, "packaged.signout-pending");
+  let successor;
+  async function checkPending() {
+    assert.ok((await readFile(pending, "utf8")) === "pending", "expected durable sign-out intent");
+  }
+  async function checkPendingRecord() {
+    await checkPending();
+    assert.ok((await readFile(record)).equals(successor), "unacknowledged sign-out changed the protected record");
+  }
+  async function checkSlotEmpty() {
+    assert.deepEqual(await readdir(root), ["webview"], "sign-out must remove all native slot files");
+  }
+
+  await withSignOutLoopback(checkPending, async loopback => {
+    const env = { KLAXON_P0_SIGNOUT_LOOPBACK_PORT: String(loopback.port) };
+    await launch([async (page, panel) => {
+      await seed(page, panel);
+      const predecessor = await readFile(record);
+      await writeFile(exchange, "", { flag: "wx" });
+      try {
+        await resume(page, panel, "A");
+      } finally {
+        await rm(exchange);
+      }
+      successor = await readFile(record);
+      assert.ok(successor.length > 0 && !successor.equals(predecessor), "expected a rotated protected record");
+      assert.ok(["latin1", "utf16le"].every(encoding =>
+        !containsMarker(successor.toString(encoding)) && !containsSdkAccess(successor.toString(encoding))),
+      "expected only protected bytes in the replacement record");
+      await assert.rejects(access(pending), { code: "ENOENT" });
+      loopback.assertAttempts(0);
+
+      await click(panel, "Sign out");
+      await statusIs(page, "retry-required");
+      loopback.assertAttempts(1);
+      await checkPendingRecord();
+      await expectClearedSignOut(page, panel);
+    }], env);
+
+    await launch([async (page, panel) => {
+      await nativeDenies(page);
+      await click(panel, "Resume session");
+      await statusIs(page, "retry-required");
+      await expectColdDenial(page, panel);
+      await checkPendingRecord();
+      loopback.allowRetry();
+      await signOut(page, panel);
+      loopback.assertAttempts(2);
+      await checkSlotEmpty();
+    }], env);
+
+    await launch([async (page, panel) => {
+      await click(panel, "Resume session");
+      await statusIs(page, "signed-out");
+      await expectColdDenial(page, panel);
+      await checkSlotEmpty();
+    }], env);
+    loopback.assertAttempts(2);
+  });
+  await checkProfile(join(root, "webview"));
+}
+
+async function expectColdDenial(page, panel) {
+  assert.equal(await taskRows(panel).count(), 0);
+  await nativeDenies(page);
+  const opened = await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened);
+  assert.equal(opened, 0, "a cold denial must not open an SDK socket");
+  assert.ok(await page.evaluate(() => window.p0SdkFixture.accessRequests.length === 0 &&
+    !window.p0Replies.some(reply => String(reply).startsWith("sdk-access-"))),
+  "a cold denial must not request or receive SDK access");
+}
+
+async function expectClearedSignOut(page, panel) {
+  assert.equal(await taskRows(panel).count(), 0);
+  assert.ok(await page.evaluate(() => {
+    const { socketsOpened, socketsClosed } = window.p0SdkFixture.evidence;
+    return socketsOpened > 0 && socketsOpened === socketsClosed;
+  }), "unacknowledged sign-out must close the SDK socket");
+  await nativeDenies(page);
+}
+
 async function exerciseWindowsLostSignOutReply(launch, root, record) {
   const exchange = join(root, "p0-provider-refresh");
   const dropReply = join(root, "p0-signout-drop-reply");
@@ -319,16 +403,6 @@ async function exerciseWindowsLostSignOutReply(launch, root, record) {
   const unrelated = join(root, "p0-unrelated");
   const unrelatedContents = "keep this fixture file";
   let successor;
-
-  async function expectColdDenial(page, panel) {
-    assert.equal(await taskRows(panel).count(), 0);
-    await nativeDenies(page);
-    const opened = await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened);
-    assert.equal(opened, 0, "a cold denial must not open an SDK socket");
-    assert.ok(await page.evaluate(() => window.p0SdkFixture.accessRequests.length === 0 &&
-      !window.p0Replies.some(reply => String(reply).startsWith("sdk-access-"))),
-    "a cold denial must not request or receive SDK access");
-  }
 
   await writeFile(unrelated, unrelatedContents, { flag: "wx" });
   try {
@@ -352,12 +426,7 @@ async function exerciseWindowsLostSignOutReply(launch, root, record) {
       assert.equal(await panel.getByLabel("SDK session status").textContent(), "retry-required",
         "sign-out must require retry when the issuer commits and drops its reply");
       await access(issuerReceipt);
-      assert.equal(await taskRows(panel).count(), 0);
-      assert.ok(await page.evaluate(() => {
-        const { socketsOpened, socketsClosed } = window.p0SdkFixture.evidence;
-        return socketsOpened > 0 && socketsOpened === socketsClosed;
-      }), "unacknowledged sign-out must close the SDK socket");
-      await nativeDenies(page);
+      await expectClearedSignOut(page, panel);
       assert.ok((await readFile(record)).equals(successor), "lost reply changed the protected record");
     }]);
 
