@@ -339,6 +339,7 @@ export async function exerciseWindowsLoopbackRefresh(launch, root, record) {
         await statusIs(page, "unavailable");
         assert.deepEqual(await page.evaluate(start => window.p0Replies.slice(start), start), ["unavailable"]);
         await assert.rejects(access(record), { code: "ENOENT" });
+        await assert.rejects(access(join(root, "packaged.staged")), { code: "ENOENT" });
         await expectColdDenial(page, panel);
         signIn.allowSuccess();
         await seed(page, panel);
