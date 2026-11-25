@@ -69,6 +69,16 @@ Passed November 25, 2026, on source `a5180172692f2f9f6711a1ecc7e36e58dc3d425f`. 
 
 From `spikes/p0`, `node native/package.mjs --target x86_64 --session --android-provider-preflight` and `node native/smoke.mjs android-provider-acceptance emulator-5586 --reconnect` exited 0. The package build used Cargo offline. `npm --prefix spikes/p0 run test:portable` passed 97/97, including reverse-route setup and removal acknowledgment loss with the native route left intact. This run cut only the SDK socket and observed its in-memory rows. The [hosted packaged runs](#hosted-packaged-native-acceptance) followed. Physical Android and device-wide offline behavior remain open.
 
+### Running Android SDK renewal
+
+Passed on a disposable Android 16/API 36 x86_64 emulator at source `6363164931006b6ba87f8c96159f40e4fb305be0`. From `spikes/p0`, `node native/package.mjs --target x86_64 --session --android-provider-preflight` built the debug APK (SHA-256 `5fc16dda55c4616b3e9901e1e3d2c37b97f7a03498f12445311d597e62b1fb1c`). `node native/smoke.mjs android-provider-preflight emulator-5586 --renewal` exited 0. The emulator had no default network. The actual WebView, Convex SDK 1.51.0, Tauri bridge and Android Keystore used a scripted issuer over ADB reverse. No accounts were needed.
+
+The second process denied forced access before resume without contacting the issuer. After cold resume, the SDK timer made one forced refresh on its 20-second test bearer. Native code verified the confirmed slot and bound the successor to the same owner and session before returning access. One socket and its original task query authenticated with the successor and delivered an independent edit. An explicit HTTP read returned the edited row. The issuer received the exact stored successor at sign-out and returned `noSession` on replay. The original subscription and rendered list emptied. A third process stayed signed out with zero provider requests.
+
+The one-use input was consumed, the fixture was uninstalled and all test mappings were cleared. After shutdown the emulator ports were free and the disposable AVD directory was removed. One cleanup retry released a temporarily locked emulator log. The next issuer check is scheduled Android renewal against the real disposable local provider; physical Android and hosted scheduled renewal remain open. [Run procedure](../spikes/p0/native/README.md#android-local-provider)
+
+The first full portable run during the native build passed 160/170, with nine timeouts and one timeout cancellation. After emulator shutdown, the default portable build passed and the same `test:portable` file list passed 170/170 with `node --test --test-concurrency=2 --test-reporter=tap` (48.6 seconds). The timeout settings were unchanged.
+
 ### Android local provider preflight
 
 Tested source `4db45e279fdfd513f9aaeb14f8c570cebb4e770d`, draft #14 targeting `v2`. The final account-free packaged run exited 0 after the ADB ownership fixes. `npm --prefix spikes/p0 run test:portable` passed 94/94, including admission under inherited debug/proxy settings, conflicting ADB mappings and lost acknowledgments. `cargo fmt --manifest-path spikes/p0/native/src-tauri/Cargo.toml -- --check` and `git diff --cached --check` passed.
