@@ -66,10 +66,13 @@ async function client(t, respond, onSocketMessage, { signInTokens } = {}) {
   page.setDefaultTimeout(4500);
   page.on("pageerror", e => errors.push(e.message));
   await page.goto(artifact);
-  async function login(username) {
+  async function login(username, { clockPaused = false } = {}) {
     await page.getByLabel("Username").fill(username);
     await page.getByLabel("Password").fill("only-a-test");
-    await page.getByRole("button", { name: "Sign in" }).click();
+    const signIn = page.getByRole("button", { name: "Sign in" });
+    // Keyboard activation works while the test clock holds animation frames.
+    if (clockPaused) await signIn.press("Enter");
+    else await signIn.click();
     await page.getByRole("button", { name: "Read tasks" }).waitFor();
   }
   return { page, login, errors, socketReopened: socketReopened.promise,
@@ -154,10 +157,10 @@ test("scheduled token renewals keep the original task subscription and update HT
       }
     }, { signInTokens: initial });
 
-    const start = (issuedAt - 1) * 1000;
-    await page.clock.install({ time: start });
+    // Give the clock ample room to advance between installing and pausing it.
+    await page.clock.install({ time: (issuedAt - 3600) * 1000 });
     await page.clock.pauseAt(issuedAt * 1000);
-    await login("synthetic-a");
+    await login("synthetic-a", { clockPaused: true });
     await page.getByText("Subscription connected", { exact: true }).waitFor();
     const tasks = page.getByRole("list", { name: "Synthetic tasks" });
     await tasks.getByText(originalRow.title, { exact: true }).waitFor();
@@ -185,10 +188,10 @@ test("scheduled token renewals keep the original task subscription and update HT
     assert.ok(authentications.every(({ socket }) => socket === sockets[0]));
     assert.deepEqual(reads, []);
 
-    await page.getByRole("button", { name: "Read tasks" }).click();
+    await page.getByRole("button", { name: "Read tasks" }).press("Enter");
     await tasks.getByText(readRow.title, { exact: true }).waitFor();
     assert.deepEqual(reads, [`Bearer ${second.accessToken}`]);
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("button", { name: "Sign out" }).press("Enter");
     await page.getByRole("status").getByText("Signed out.").waitFor();
     await page.getByRole("button", { name: "Sign in" }).waitFor();
     assert.deepEqual(revocations, [[{ refreshToken: "refresh-after-second-renewal" }]]);
