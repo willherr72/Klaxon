@@ -392,6 +392,8 @@ Each numbered task in [the approved backlog](../KLAXON_V2_DESIGN_AND_IMPLEMENTAT
 
 ## Decision and evidence log
 
+P0-07 cost follow-up at `5c6305315be86fa52e12e4969a1342f89fbb80c6`: anonymous GitHub metadata confirmed the repository is public. Workflow inspection confirmed both jobs run on standard Ubuntu and Windows hosts. Their compute falls under GitHub's public repository allowance. [Cost evidence](deployment.md#unsigned-validation-costs)
+
 - P0-01. Baseline architecture and regression evidence belong in [testing](testing.md) and [migration](migration.md). Tested source `2eec1b406400010e8f5ccc6c45b1f32229d8bcfe` with `python spikes/migration/probe.py`. The original read-only check overlooked an extra orphaned step. The corrected probe detected both a missing parent and a parent that was an ordinary reminder in separate synthetic schema-17 databases. Both file hashes survived rejection.
 - P0-02/03. Branch created from the production baseline. Hosted isolation, authenticated web/native sessions and desktop-off synchronization require separate evidence. See [spike](../spikes/p0/README.md).
 - P0-04/05/06. Track provider support, actual identity/device observations and fallbacks in the [platform investigation](adr/platform-capabilities.md) and [Dot playbook](dot-playbook.md).
