@@ -14,6 +14,7 @@
   let rows = $state([]);
   let rowsVersion = 0;
   let rowsFresh = $state(false);
+  let readAfterWriteRequired = $state(false);
   let receivedAt = $state("");
   let busy = $state(false);
   let error = $state("");
@@ -23,7 +24,8 @@
   let title = $state("");
   let editing = $state(null);
   let renamed = $state("");
-  let canWrite = $derived(!busy && !!receivedAt && (!origin || (online && authenticated && connected && rowsFresh)));
+  let canWrite = $derived(!busy && !!receivedAt && (!origin ||
+    (online && authenticated && connected && rowsFresh && !readAfterWriteRequired)));
 
   function markStale() {
     transportEpoch++;
@@ -71,6 +73,7 @@
     busy = false;
     notice = "";
     session = null;
+    readAfterWriteRequired = false;
     markStale();
     connected = false;
     connectionCount = 0;
@@ -106,7 +109,9 @@
         if (id) await active.rename(id, value);
         else await active.create(value);
       } catch {
-        throw new Error("Server write unconfirmed. Read tasks after reconnecting before retrying.");
+        if (active !== session) return;
+        readAfterWriteRequired = true;
+        throw new Error("Server write unconfirmed.");
       }
       if (active !== session) return;
     } else {
@@ -150,8 +155,17 @@
             return;
           }
         }
+        if (!Array.isArray(result) || !result.every(row => typeof row?._id === "string" &&
+          row._id.length > 0 && typeof row.title === "string") ||
+          new Set(result.map(row => row._id)).size !== result.length) {
+          throw new Error("The server returned an invalid task list. Read tasks again.");
+        }
         receive(result, startedConnected);
         notice = "Read from the server.";
+        if (readAfterWriteRequired && rowsFresh && authenticated) {
+          readAfterWriteRequired = false;
+          notice += " Check the task list before submitting again.";
+        }
       } catch (err) {
         if (isCurrentRead()) throw err;
       }
@@ -216,6 +230,9 @@
     <div class="heading"><h2 id="tasks-heading">Synthetic tasks</h2>
       <button class="secondary" disabled={busy || (origin && !online)} onclick={() => perform(read)}>Read tasks</button>
     </div>
+    {#if readAfterWriteRequired}
+      <p>Select Read tasks to check whether your last change was saved.</p>
+    {/if}
     {#if receivedAt}
       <p class="stamp">{origin && !rowsFresh ? "Last available rows" : "Last read"} <time datetime={receivedAt}>{receivedAt}</time></p>
     {/if}

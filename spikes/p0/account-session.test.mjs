@@ -256,6 +256,82 @@ test("a read finishing after expiry cannot expose the previous account's rows", 
   await page.getByText("Waiting for tasks.").waitFor();
 });
 
+test("a rename rejection from an expired session leaves the next owner able to write", { timeout: 20000 }, async t => {
+  const previousRow = { _id: "old-id", _creationTime: 1, owner: "synthetic-owner-1", title: "Previous owner's task" };
+  const currentRow = { _id: "new-id", _creationTime: 2, owner: "synthetic-owner-2", title: "Current owner's task" };
+  const rowsByToken = new Map([["access-1", previousRow], ["access-2", currentRow]]);
+  const tokensBySocket = new Map();
+  const renameStarted = Promise.withResolvers();
+  const finishRename = Promise.withResolvers();
+  t.after(() => finishRename.resolve());
+  const writes = [];
+  const { page, login, rejectSocketToken, errors } = await client(t, async (path, route, success) => {
+    if (path === "auth:refreshSession") return success({ kind: "noSession" });
+    assert.equal(path, "tasks:rename");
+    const request = route.request();
+    const authorization = request.headers().authorization;
+    writes.push({ authorization, args: request.postDataJSON().args });
+    if (authorization === "Bearer access-1") {
+      renameStarted.resolve();
+      await finishRename.promise;
+      return route.fulfill({ status: 503, body: "Previous owner's rename unavailable" });
+    }
+    await success(null);
+  }, (message, socket, transition) => {
+    if (message.type === "Authenticate" && message.tokenType === "User") {
+      tokensBySocket.set(socket, message.value);
+      transition({ identity: message.baseVersion + 1 });
+    }
+    if (message.type === "ModifyQuerySet") {
+      const query = message.modifications.find(mod => mod.type === "Add" && mod.udfPath === "tasks:list");
+      const row = rowsByToken.get(tokensBySocket.get(socket));
+      assert.ok(query && row, "expected a task subscription for the authenticated owner");
+      transition({ querySet: message.newVersion }, [updatedTask(query.queryId, row)]);
+    }
+  });
+
+  const tasks = page.getByRole("list", { name: "Synthetic tasks" });
+  const rename = tasks.getByRole("button", { name: "Rename", exact: true });
+  const draft = page.getByLabel("New title");
+  const save = page.getByRole("button", { name: "Save title" });
+  const alert = page.getByRole("alert");
+  await login("synthetic-a");
+  await tasks.getByText(previousRow.title, { exact: true }).waitFor();
+  await page.getByLabel("Task title").fill("Previous owner's create draft");
+  await rename.click();
+  await draft.fill("Previous owner's rename draft");
+  await save.click();
+  await renameStarted.promise;
+
+  await rejectSocketToken();
+  await alert.getByText(/expired/i).waitFor();
+  await login("synthetic-b");
+  await tasks.getByText(currentRow.title, { exact: true }).waitFor();
+  const rejected = page.waitForResponse(response => response.url().endsWith("/api/mutation") && response.status() === 503);
+  finishRename.resolve();
+  await (await rejected).finished();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
+  assert.equal(await alert.count(), 0);
+  assert.deepEqual(await tasks.locator("strong").allTextContents(), [currentRow.title]);
+  const createDraft = page.getByLabel("Task title");
+  assert.equal(await createDraft.inputValue(), "");
+  assert.equal(await draft.count(), 0);
+  assert.equal(await rename.isEnabled(), true);
+  await createDraft.fill("Current owner's create draft");
+  assert.equal(await page.getByRole("button", { name: "Create task" }).isEnabled(), true);
+  await rename.click();
+  assert.equal(await draft.inputValue(), currentRow.title);
+  await draft.fill("Current owner's updated title");
+  await save.click();
+  await page.getByRole("status").getByText("Server acknowledged the write.").waitFor();
+  assert.deepEqual(writes, [
+    { authorization: "Bearer access-1", args: [{ id: "old-id", title: "Previous owner's rename draft" }] },
+    { authorization: "Bearer access-2", args: [{ id: "new-id", title: "Current owner's updated title" }] },
+  ]);
+  assert.deepEqual(errors, []);
+});
+
 for (const source of ["subscription", "HTTP", "continuously changing subscription"]) {
   test("a manual read overlapping a subscription reconciles the latest " + source + " rows",
     { timeout: 20000 }, t => checkOverlappingRead(t, source));
@@ -454,6 +530,91 @@ async function checkReconnect(t, source) {
   assert.deepEqual(writes, []);
   assert.deepEqual(errors, []);
 }
+
+test("an unconfirmed create requires a successful explicit read before another write", { timeout: 20000 }, async t => {
+  const owner = "synthetic-owner-1";
+  const original = { _id: "existing-task", _creationTime: 1, owner, title: "Original task title" };
+  const updated = { ...original, title: "Newer subscription title" };
+  const title = "Draft with a lost acknowledgment";
+  const subscribed = Promise.withResolvers();
+  const requests = [];
+  const committed = [];
+  let reads = 0;
+  const { page, login, errors } = await client(t, async (path, route, success) => {
+    const request = route.request();
+    assert.equal(request.headers().authorization, "Bearer access-1");
+    const { args } = request.postDataJSON();
+    requests.push({ path, args });
+    if (path === "tasks:create") {
+      committed.push({ _id: `created-${committed.length + 1}`, _creationTime: 2, owner, title: args[0].title });
+      return route.abort("connectionfailed");
+    }
+    assert.equal(path, "tasks:list");
+    if (++reads === 1) return route.fulfill({ status: 503, body: "Test read unavailable" });
+    if (reads === 2) return success([{ _id: "missing-title" }]);
+    await success([...committed, updated]);
+  }, (message, _socket, transition) => {
+    if (message.type === "Authenticate") transition({ identity: message.baseVersion + 1 });
+    if (message.type === "ModifyQuerySet") {
+      const query = message.modifications.find(mod => mod.type === "Add" && mod.udfPath === "tasks:list");
+      assert.ok(query, "expected the task subscription");
+      transition({ querySet: message.newVersion }, [updatedTask(query.queryId, original)]);
+      subscribed.resolve(() => transition({}, [updatedTask(query.queryId, updated)]));
+    }
+  });
+
+  await login("synthetic-a");
+  await page.getByText("Subscription connected", { exact: true }).waitFor();
+  const tasks = page.getByRole("list", { name: "Synthetic tasks" });
+  await tasks.getByText(original.title, { exact: true }).waitFor();
+  const draft = page.getByLabel("Task title");
+  const create = page.getByRole("button", { name: "Create task" });
+  const rename = tasks.getByRole("button", { name: "Rename", exact: true });
+  const read = page.getByRole("button", { name: "Read tasks" });
+  const alert = page.getByRole("alert");
+  await draft.fill(title);
+  await create.click();
+  await alert.getByText(/server write unconfirmed/i).waitFor();
+  assert.equal(await draft.inputValue(), title);
+  assert.equal(await create.isDisabled(), true, "A lost acknowledgment must block another create.");
+  assert.equal(await rename.isDisabled(), true);
+  assert.deepEqual(requests, [{ path: "tasks:create", args: [{ title }] }]);
+
+  (await subscribed.promise)();
+  await tasks.getByText(updated.title, { exact: true }).waitFor();
+  assert.equal(await create.isDisabled(), true, "A newer subscription result must not release the write gate.");
+  assert.equal(await rename.isDisabled(), true);
+  await draft.press("Enter");
+  await create.evaluate(button => button.form.requestSubmit());
+
+  await read.click();
+  await alert.getByText("Test read unavailable", { exact: true }).waitFor();
+  assert.equal(await draft.inputValue(), title);
+  assert.equal(await create.isDisabled(), true, "A failed read must leave writes blocked.");
+  assert.equal(await rename.isDisabled(), true);
+  await create.evaluate(button => button.form.requestSubmit());
+  assert.equal(await tasks.getByText(title, { exact: true }).count(), 0);
+
+  await read.click();
+  await alert.getByText("The server returned an invalid task list. Read tasks again.").waitFor();
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await tasks.getByText(updated.title, { exact: true }).count(), 1);
+
+  await read.click();
+  await page.getByRole("status").getByText("Read from the server.").waitFor();
+  assert.equal(await tasks.getByText(title, { exact: true }).count(), 1);
+  assert.equal(await draft.inputValue(), title);
+  assert.equal(await create.isEnabled(), true);
+  assert.deepEqual(await tasks.getByRole("button", { name: "Rename", exact: true }).all()
+    .then(buttons => Promise.all(buttons.map(button => button.isEnabled()))), [true, true]);
+  assert.deepEqual(requests, [
+    { path: "tasks:create", args: [{ title }] },
+    { path: "tasks:list", args: [{}] },
+    { path: "tasks:list", args: [{}] },
+    { path: "tasks:list", args: [{}] },
+  ]);
+  assert.deepEqual(errors, []);
+});
 
 for (const [failure, response] of [
   ["an unknown outcome", { kind: "unknown" }],
