@@ -473,6 +473,11 @@ fn sign_out_over_loopback_requires_explicit_null_and_retries_the_same_marker() {
         .unwrap();
     let attempt = |reply| {
         sign_out::run_with_provider(&slot.path, |request| {
+            assert_eq!(
+                fs::read(&pending).unwrap(),
+                b"pending",
+                "record intent before sending"
+            );
             runtime.block_on(async {
                 tokio::time::timeout(Duration::from_secs(5), loopback_sign_out(request, reply))
                     .await
