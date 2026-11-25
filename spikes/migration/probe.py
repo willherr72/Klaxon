@@ -49,6 +49,16 @@ def verify_projection(path):
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert db.execute("SELECT max(version) FROM schema_version").fetchone() == (17,)
+        # Schema 17 permits an unresolved parent. Count from the step side so
+        # a valid task in the same snapshot cannot hide a dropped child.
+        unresolved = db.execute("""
+            SELECT COUNT(*) FROM task_steps s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM reminders r WHERE r.id=s.task_id AND r.silent=1
+            )
+        """).fetchone()[0]
+        if unresolved:
+            raise ValueError(f"{unresolved} step(s) without a task parent")
         assert db.execute("""
             SELECT r.id, r.state, s.id, s.completed, l.is_default
             FROM reminders r JOIN task_steps s ON s.task_id=r.id
@@ -58,6 +68,23 @@ def verify_projection(path):
         assert db.execute("SELECT body FROM thoughts").fetchall() == [("capture",)]
         assert db.execute("SELECT day FROM day_notes").fetchall() == [("2026-11-23",)]
     assert hashlib.sha256(path.read_bytes()).digest() == before
+
+
+def check_unresolved_steps(directory):
+    # One parent does not exist. The other exists as an ordinary reminder.
+    for parent in ("absent", "r"):
+        path = directory / f"unresolved-{parent}.db"
+        seed_fixture(path)
+        with closing(sqlite3.connect(path)) as writer, writer:
+            writer.execute("INSERT INTO task_steps VALUES ('extra', ?, 'step', 0, 20, 1, 2)", (parent,))
+        before = hashlib.sha256(path.read_bytes()).digest()
+        try:
+            verify_projection(path)
+        except ValueError as error:
+            assert str(error) == "1 step(s) without a task parent"
+        else:
+            raise AssertionError("Snapshot with an unresolved task step passed validation")
+        assert hashlib.sha256(path.read_bytes()).digest() == before
 
 
 def check_snapshot_recovery(directory):
@@ -101,4 +128,5 @@ if __name__ == "__main__":
         seed_fixture(fixture)
         verify_projection(fixture)
         check_snapshot_recovery(Path(tmp))
-    print("Schema 17 projection, live WAL snapshot, interrupted edit, truncated copy and retry passed")
+        check_unresolved_steps(Path(tmp))
+    print("Schema 17 projection, step-parent validation, live WAL snapshot, interrupted edit, truncated copy and retry passed")
