@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node build-portable.mjs",
-    "test:portable": "node --test portable.test.mjs account-session.test.mjs native/android-install.test.mjs native/package.test.mjs native/windows-process.test.mjs native/packaged-session/task-session.test.mjs native/packaged-session/profile.test.mjs sdk-task-session.test.mjs"
+    "test:portable": "node --test portable.test.mjs account-session.test.mjs native/android-install.test.mjs native/package.test.mjs native/windows-process.test.mjs native/packaged-session/task-session.test.mjs native/packaged-session/profile.test.mjs native/packaged-session/signout-loopback.test.mjs sdk-task-session.test.mjs"
   },
   "dependencies": {
     "@convex-dev/auth": "2.1.0",

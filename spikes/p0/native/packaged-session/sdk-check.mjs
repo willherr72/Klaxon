@@ -326,6 +326,16 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
     assert.deepEqual(await readdir(root), ["webview"], "sign-out must remove all native slot files");
   }
 
+  async function coldResume(page, panel, expected) {
+    const start = await page.evaluate(() => window.p0Replies.length);
+    await click(panel, "Resume session");
+    await statusIs(page, expected);
+    assert.ok(await page.evaluate(({ start, expected }) =>
+      window.p0Replies.length === start + 1 && window.p0Replies[start] === expected,
+    { start, expected }), "cold resume must return the expected status through native IPC");
+    await expectColdDenial(page, panel);
+  }
+
   await withSignOutLoopback(checkPending, async loopback => {
     const env = { KLAXON_P0_SIGNOUT_LOOPBACK_PORT: String(loopback.port) };
     await launch([async (page, panel) => {
@@ -346,17 +356,17 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
       loopback.assertAttempts(0);
 
       await click(panel, "Sign out");
-      await statusIs(page, "retry-required");
+      await page.waitForFunction(() => ["retry-required", "signed-out", "unavailable"]
+        .includes(document.querySelector('[aria-label="SDK session status"]').textContent));
       loopback.assertAttempts(1);
+      assert.equal(await panel.getByLabel("SDK session status").textContent(), "retry-required");
       await checkPendingRecord();
       await expectClearedSignOut(page, panel);
     }], env);
 
     await launch([async (page, panel) => {
       await nativeDenies(page);
-      await click(panel, "Resume session");
-      await statusIs(page, "retry-required");
-      await expectColdDenial(page, panel);
+      await coldResume(page, panel, "retry-required");
       await checkPendingRecord();
       loopback.allowRetry();
       await signOut(page, panel);
@@ -365,9 +375,7 @@ export async function exerciseWindowsLoopbackSignOut(launch, root, record) {
     }], env);
 
     await launch([async (page, panel) => {
-      await click(panel, "Resume session");
-      await statusIs(page, "signed-out");
-      await expectColdDenial(page, panel);
+      await coldResume(page, panel, "signed-out");
       await checkSlotEmpty();
     }], env);
     loopback.assertAttempts(2);

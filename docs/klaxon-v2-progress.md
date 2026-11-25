@@ -244,6 +244,8 @@ From `spikes/p0`, `npm run build` and `npm run test:portable` passed, including 
 
 ### Session fixture packaging boundary
 
+Both unsigned draft checks passed at `1723242be745915156876b4803b936cc6da627fc`, including the Windows rehearsal with the process-identity fix and the native HTTP library test. [CI run](https://github.com/willherr72/Klaxon/actions/runs/45522045921)
+
 The packager regression at `72a9bdbc6da19ce813095c2e89d9fb3fe8f33d3c` exercised three unsupported invocations: Windows and x86_64 Android session builds with a hosted origin, and an arm64 Android session build. All three stopped before writing a build artifact. Removing the guard in a temporary copy made the new test fail. From `spikes/p0`, `node --test native/package.test.mjs` passed 3/3 and `npm run test:portable` passed 49/49.
 
 ### Windows CI process identity
