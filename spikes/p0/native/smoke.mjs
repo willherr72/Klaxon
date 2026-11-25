@@ -371,15 +371,36 @@ async function windowsSession(sdk, loopback) {
     "native and WebView output checked, signed out after relaunch, temporary profile and record removed; WebView2", webviewVersion);
 }
 
-async function android(serial) {
+export async function withWebViewForward(deviceAdb, serial, target, action) {
+  // Without the allocated port, a forward to this socket could belong to another caller.
+  const port = deviceAdb("forward", "tcp:0", target);
+  assert.ok(/^[1-9]\d*$/.test(port) && Number(port) <= 65535, "ADB did not return a valid WebView forward port");
+  const source = "tcp:" + port;
+  try {
+    return await action(port);
+  } finally {
+    const routes = deviceAdb("forward", "--list").split(/\r?\n/)
+      .map(line => line.trim().split(/\s+/))
+      .filter(([, local]) => local === source);
+    if (routes.length === 1) {
+      const [[owner, , remote]] = routes;
+      if (owner === serial && remote === target) deviceAdb("forward", "--remove", source);
+    }
+  }
+}
+
+export async function android(serial) {
   assert.match(serial ?? "", /^emulator-\d+$/, "Pass a disposable AVD serial");
   const sdk = platform === "android-sdk";
+  const provider = platform === "android-provider-preflight" || platform === "android-provider-acceptance";
+  if (provider) assert.equal(process.argv.slice(2).length, 2, "Pass one disposable emulator serial only");
+  const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
-    ...(sdk ? ["-H", "127.0.0.1"] : []), "-s", serial, ...args,
+    ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
   ], { input, stdio: ["pipe", "pipe", "pipe"], timeout: args[0] === "push" ? 120000 : 30000, maxBuffer: 16 * 1024 * 1024 });
   const deviceAdb = (...args) => deviceAdbBytes(args).toString("utf8").trim();
   assert.equal(deviceAdb("shell", "getprop", "ro.kernel.qemu"), "1");
-  const session = platform === "android-session" || sdk;
+  const session = platform === "android-session" || guarded;
   if (session) assert.match(deviceAdb("emu", "avd", "name").split(/\r?\n/)[0].trim(), /^KlaxonSessionP0_[A-Za-z0-9]+$/);
   assert.equal(deviceAdb("shell", "getprop", "sys.boot_completed"), "1");
   assert.equal(deviceAdb("shell", "settings", "get", "global", "airplane_mode_on"), "1", "Enable airplane mode on the AVD");
@@ -389,37 +410,49 @@ async function android(serial) {
       "Require an AVD without ADB forwards");
     assert.equal(deviceAdb("reverse", "--list"), "", "Require an AVD without ADB reverse routes");
   }
-  if (sdk) {
+  if (guarded) {
     assert.equal(deviceAdb("shell", "getprop", "ro.product.cpu.abi"), "x86_64");
     assert.equal(deviceAdb("shell", "settings", "get", "global", "wifi_on"), "0", "Disable Wi-Fi on the AVD");
     assertNoMappings();
   }
-  const apk = join(nativeDir, session ? ".run/klaxon-p0-x86_64-session.apk" : ".run/klaxon-p0-x86_64-fixture.apk");
+  if (provider) assert.equal(deviceAdb("shell", "getprop", "ro.build.version.sdk"), "36");
+  const variant = provider ? "provider-preflight" : session ? "session" : "fixture";
+  const apk = join(nativeDir, ".run/klaxon-p0-x86_64-" + variant + ".apk");
   await access(apk);
-  await withAndroidFixture(deviceAdb, apk, appId, async () => {
+  const exerciseInstalled = async () => {
     async function withActivity(action) {
       deviceAdb("shell", "am", "start", "-W", "-n", appId + "/.MainActivity");
       const pid = deviceAdb("shell", "pidof", appId);
       assert.match(pid, /^\d+$/);
-      const socket = "webview_devtools_remote_" + pid;
-      const port = deviceAdb("forward", "tcp:0", "localabstract:" + socket);
-      let browser;
-      try {
-        const endpoint = "http://127.0.0.1:" + port;
-        for (let attempt = 0; attempt < 100; attempt++) {
-          const targets = await fetch(endpoint + "/json/list", { signal: AbortSignal.timeout(1500) })
-            .then(response => response.json()).catch(() => []);
-          if (targets.some(target => target.type === "page" && target.url === "http://tauri.localhost/")) break;
-          await delay(300);
+      const target = "localabstract:webview_devtools_remote_" + pid;
+      return await withWebViewForward(deviceAdb, serial, target, async port => {
+        let browser;
+        try {
+          const endpoint = "http://127.0.0.1:" + port;
+          for (let attempt = 0; attempt < 100; attempt++) {
+            const targets = await fetch(endpoint + "/json/list", { signal: AbortSignal.timeout(1500) })
+              .then(response => response.json()).catch(() => []);
+            if (targets.some(target => target.type === "page" && target.url === "http://tauri.localhost/")) break;
+            await delay(300);
+          }
+          browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
+            { noDefaults: true, timeout: 15000 });
+          const context = browser.contexts()[0];
+          return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), pid);
+        } finally {
+          await browser?.close();
         }
-        browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
-          { noDefaults: true, timeout: 15000 });
-        const context = browser.contexts()[0];
-        return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), pid);
-      } finally {
-        try { await browser?.close(); }
-        finally { deviceAdb("forward", "--remove", "tcp:" + port); }
-      }
+      });
+    }
+    if (provider) {
+      const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
+      const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance } =
+        await import("./local-provider/android-session-preflight.mjs");
+      const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId);
+      const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
+      const session = platform === "android-provider-preflight" ? await exerciseAndroidProviderSession(target) :
+        await exerciseAndroidProviderAcceptance(target);
+      return { transport, session };
     }
     if (sdk) {
       const control = "cache/p0-binary-control";
@@ -444,11 +477,12 @@ async function android(serial) {
     const saved = await withActivity(exercise);
     deviceAdb("shell", "am", "force-stop", appId);
     await withActivity(page => verifyRestart(page, saved, apk));
-  });
-  if (sdk) {
-    assertNoMappings();
-    console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
-  }
+  };
+  let report;
+  try { report = await withAndroidFixture(deviceAdb, apk, appId, exerciseInstalled); }
+  finally { if (guarded) assertNoMappings(); }
+  if (guarded) console.log("Android fixture package absent. ADB forwards and reverse routes are empty.");
+  if (provider) console.log(platform, report);
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
@@ -457,6 +491,9 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
   else if (Object.hasOwn(windowsLoopbackCases, platform)) {
     assert.ok(platformArgument, "Pass the separately built Windows loopback fixture executable");
     await windowsSession(true, { ...windowsLoopbackCases[platform], exe: resolve(platformArgument) });
-  } else if (platform === "android" || platform === "android-session" || platform === "android-sdk") await android(platformArgument);
-  else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session or android-sdk. Android requires a disposable emulator serial.");
+  } else if (platform === "android-provider-acceptance") {
+    const { launchAndroidAcceptance } = await import("./local-provider/android-acceptance-worker.mjs");
+    process.exitCode = launchAndroidAcceptance(process.argv.slice(2));
+  } else if (["android", "android-session", "android-sdk", "android-provider-preflight"].includes(platform)) await android(platformArgument);
+  else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session, android-sdk or android-provider-preflight. Android requires a disposable emulator serial.");
 }

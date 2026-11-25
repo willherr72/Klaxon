@@ -18,13 +18,13 @@ tauri = { version = "=2.11.0", features = [] }
 [target.'cfg(any(windows, target_os = "android"))'.dependencies]
 serde = { version = "=1.0.228", optional = true, features = ["derive"] }
 serde_json = { version = "=1.0.149", optional = true }
+reqwest = { version = "=0.13.3", optional = true, default-features = false, features = ["json"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "=0.21.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 base64 = { version = "=0.22.1", optional = true }
-reqwest = { version = "=0.13.3", optional = true, default-features = false, features = ["json"] }
 windows-sys = { version = "=0.61.2", optional = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(windows)'.dev-dependencies]
@@ -36,6 +36,7 @@ tokio = { version = "=1.52.2", features = ["net", "rt", "time"] }
 
 [features]
 p0-session = ["dep:jni", "dep:serde", "dep:serde_json", "dep:windows-sys"]
+p0-android-provider-preflight = ["p0-session", "dep:reqwest"]
 p0-windows-sign-out-http = ["p0-session", "dep:reqwest"]
 p0-local-provider = ["dep:base64", "dep:reqwest", "dep:serde", "dep:serde_json", "dep:windows-sys"]
 custom-protocol = ["tauri/custom-protocol"]

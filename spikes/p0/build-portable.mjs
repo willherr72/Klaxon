@@ -4,11 +4,17 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { build } from "esbuild";
 import { compile } from "svelte/compiler";
+import { androidProviderPreflightConnections } from "./build-policy.mjs";
 
 const { values } = parseArgs({ options: {
   outdir: { type: "string", default: "dist" }, session: { type: "boolean" }, "windows-tasks": { type: "boolean" },
+  "android-provider-preflight": { type: "boolean" },
 } });
 const origin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
+const androidProviderPreflight = values["android-provider-preflight"];
+if (androidProviderPreflight && (!values.session || values["windows-tasks"] || origin)) {
+  throw new Error("Android provider preflight requires the offline session frontend without Windows tasks");
+}
 if (values.session && origin) throw new Error("The packaged session fixture runs offline");
 if (values["windows-tasks"] && !values.session) throw new Error("Task transport requires the offline session fixture");
 if (origin && !/^https:\/\/[a-z0-9]+(?:-[a-z0-9]+)*\.convex\.cloud$/.test(origin)) {
@@ -32,18 +38,35 @@ const bundle = await build({
 
 const script = bundle.outputFiles[0].text.replace(/<\/script/gi, "<\\/script").replace(/\r\n/g, "\n");
 const style = (await readFile("portable/style.css", "utf8")).replace(/\r\n/g, "\n");
-const hash = text => "'sha256-" + createHash("sha256").update(text).digest("base64") + "'";
-const connections = origin ? origin + " " + origin.replace(/^http/, "ws") : "'none'";
+const hash = text => "sha256-" + createHash("sha256").update(text).digest("base64");
+let connections = origin ? origin + " " + origin.replace(/^http/, "ws") : "'none'";
+const scriptHashes = [hash(script)];
+let marker = "";
+let providerScript = "";
+await mkdir(values.outdir, { recursive: true });
+if (androidProviderPreflight) {
+  connections = androidProviderPreflightConnections;
+  marker = '<meta name="p0-android-provider-preflight" content="loopback-only">\n';
+  const provider = await build({
+    entryPoints: ["native/local-provider/client.js"], bundle: true, write: false,
+    format: "iife", platform: "browser", minify: true, legalComments: "none",
+  });
+  const asset = provider.outputFiles[0].contents;
+  const integrity = hash(asset);
+  scriptHashes.push(integrity);
+  providerScript = `<script src="./local-provider.js" integrity="${integrity}"></script>`;
+  await writeFile(join(values.outdir, "local-provider.js"), asset);
+}
 const policy = [
   "default-src 'none'", "base-uri 'none'", "form-action 'none'",
-  "script-src " + hash(script), "style-src " + hash(style), "connect-src " + connections,
+  "script-src " + scriptHashes.map(value => "'" + value + "'").join(" "),
+  "style-src '" + hash(style) + "'", "connect-src " + connections,
 ].join("; ");
 const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${policy}">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+${marker}<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Klaxon · Device check</title><style>${style}</style></head>
-<body><main id="app"></main><script>${script}</script></body></html>`;
-await mkdir(values.outdir, { recursive: true });
+<body><main id="app"></main><script>${script}</script>${providerScript}</body></html>`;
 await writeFile(join(values.outdir, "index.html"), html);
 console.log(`Built ${join(values.outdir, "index.html")} (${origin || "local fixture"})`);

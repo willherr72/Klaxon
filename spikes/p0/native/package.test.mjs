@@ -1,9 +1,33 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const spike = fileURLToPath(new URL("../", import.meta.url));
+
+test("Android live admission starts a fresh process without proxy or protocol logging settings", async () => {
+  const { androidAcceptanceEnv } = await import("./local-provider/android-acceptance-worker.mjs");
+  assert.deepEqual(androidAcceptanceEnv({
+    ADB: "adb", SystemRoot: "Windows", DEBUG: "pw:protocol", NODE_DEBUG: "http",
+    NODE_OPTIONS: "--use-env-proxy", NODE_USE_ENV_PROXY: "1", HTTP_PROXY: "http://127.0.0.1:1",
+    unrelated: "unused",
+  }), { ADB: "adb", SystemRoot: "Windows" });
+  const result = spawnSync(process.execPath, ["native/smoke.mjs", "android-provider-acceptance", "invalid"], {
+    cwd: spike, encoding: "utf8", env: { ...process.env, DEBUG: "pw:protocol", NODE_USE_ENV_PROXY: "1" },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Pass a disposable AVD serial/);
+});
+
+async function copyPackager(root, native) {
+  await mkdir(native, { recursive: true });
+  await copyFile(new URL("./package.mjs", import.meta.url), join(native, "package.mjs"));
+  await copyFile(new URL("../build-policy.mjs", import.meta.url), join(root, "build-policy.mjs"));
+}
 
 for (const { name, options, invalid, message } of [
   {
@@ -22,12 +46,26 @@ for (const { name, options, invalid, message } of [
     invalid: [[], ["--session", "--target", "x86_64"], ["--session", "--origin", "https://fixture.convex.cloud"]],
     message: /HTTP sign-out requires the offline Windows session fixture/,
   },
+  {
+    name: "Android provider preflight packaging requires offline Android x86_64 session flags",
+    options: ["--android-provider-preflight"],
+    invalid: [
+      [],
+      ["--session"],
+      ["--target", "x86_64"],
+      ["--target", "aarch64", "--session"],
+      ["--target", "x86_64", "--session", "--origin", "https://fixture.convex.cloud"],
+      ["--target", "x86_64", "--session", "--sign-out-http"],
+    ],
+    message: /Android provider preflight requires --target x86_64 --session without --origin or --sign-out-http/,
+  },
 ]) {
   test(name, async t => {
     const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
     t.after(() => rm(root, { recursive: true, force: true }));
-    const packager = join(root, "package.mjs");
-    await copyFile(new URL("./package.mjs", import.meta.url), packager);
+    const native = join(root, "native");
+    const packager = join(native, "package.mjs");
+    await copyPackager(root, native);
     for (const args of invalid) {
       const result = spawnSync(process.execPath, [packager, ...options, ...args], {
         cwd: root, encoding: "utf8", env: { PATH: root }, timeout: 10000,
@@ -35,12 +73,12 @@ for (const { name, options, invalid, message } of [
       assert.ifError(result.error);
       assert.equal(result.status, 1);
       assert.match(result.stderr, message);
-      assert.deepEqual(await readdir(root), ["package.mjs"]);
+      assert.deepEqual(await readdir(native), ["package.mjs"]);
     }
   });
 }
 
-for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore.java"]) {
+for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore.java", "p0native/LocalProviderPlugin.kt"]) {
   test("Android packaging stops before the frontend when " + stagedSource + " is already staged", async t => {
     const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -48,12 +86,15 @@ for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore
     const packager = join(native, "package.mjs");
     const staged = join(native, "src-tauri/gen/android/app/src/debug/java/dev/klaxon", stagedSource);
     await mkdir(dirname(staged), { recursive: true });
-    await copyFile(new URL("./package.mjs", import.meta.url), packager);
+    await copyPackager(root, native);
     await writeFile(join(root, "build-portable.mjs"), 'throw new Error("unexpected frontend build");\n');
     const marker = "// fixture source left by an interrupted build\n";
     await writeFile(staged, marker, { flag: "wx" });
 
-    const targets = [["--target", "x86_64"], ["--target", "x86_64", "--session"], ["--target", "aarch64"]];
+    const targets = [
+      ["--target", "x86_64"], ["--target", "x86_64", "--session"], ["--target", "aarch64"],
+      ["--target", "x86_64", "--session", "--android-provider-preflight"],
+    ];
     for (const args of targets) {
       const result = spawnSync(process.execPath, [packager, ...args], {
         cwd: root, encoding: "utf8", env: { PATH: root }, timeout: 10000,
@@ -68,3 +109,90 @@ for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore
     }
   });
 }
+
+const preflightConnections = "connect-src ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:3210";
+const preflightMarker = '<meta name="p0-android-provider-preflight" content="loopback-only">';
+
+test("Android provider preflight writes a dedicated native policy and forwards the frontend flag", async t => {
+  const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const native = join(root, "native");
+  const run = join(native, ".run");
+  await copyPackager(root, native);
+  await mkdir(run);
+  // Stop after the config write and before the first Android tool invocation.
+  await writeFile(join(run, "android-user"), "");
+  await writeFile(join(root, "build-portable.mjs"), [
+    'import { writeFile } from "node:fs/promises";',
+    'await writeFile("frontend-args.json", JSON.stringify(process.argv.slice(2)));',
+  ].join("\n"));
+  const result = spawnSync(process.execPath, [
+    join(native, "package.mjs"), "--target", "x86_64", "--session", "--android-provider-preflight",
+  ], { cwd: root, encoding: "utf8", timeout: 10000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /(?:EEXIST|ENOTDIR).*android-user/);
+  const overlay = JSON.parse(await readFile(join(run, "android-provider-preflight.json"), "utf8"));
+  assert.equal(overlay.app.withGlobalTauri, true);
+  assert.equal(overlay.app.security.csp.split("; ").find(rule => rule.startsWith("connect-src ")), preflightConnections);
+  assert.deepEqual(JSON.parse(await readFile(join(root, "frontend-args.json"), "utf8")), [
+    "--outdir", "native/.run/android-provider-preflight-frontend", "--session", "--android-provider-preflight",
+  ]);
+  assert.equal(overlay.build.frontendDist, "../.run/android-provider-preflight-frontend");
+});
+
+test("portable builds isolate the Android provider preflight marker and loopback CSP", async t => {
+  const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const { name, args, origin, connect, preflight } of [
+    {
+      name: "preflight", args: ["--session", "--android-provider-preflight"], origin: "",
+      connect: preflightConnections, preflight: true,
+    },
+    { name: "session", args: ["--session"], origin: "", connect: "connect-src 'none'" },
+    {
+      name: "hosted", args: [], origin: "https://fixture.convex.cloud",
+      connect: "connect-src https://fixture.convex.cloud wss://fixture.convex.cloud",
+    },
+  ]) {
+    const outdir = join(root, name);
+    const result = spawnSync(process.execPath, ["build-portable.mjs", "--outdir", outdir, ...args], {
+      cwd: spike, encoding: "utf8", env: { ...process.env, P0_PUBLIC_DEV_ORIGIN: origin }, timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    const html = await readFile(join(outdir, "index.html"), "utf8");
+    assert.equal(html.includes(preflightMarker), !!preflight);
+    const [, policy] = html.match(/http-equiv="Content-Security-Policy" content="([^"]+)"/);
+    assert.equal(policy.split("; ").find(rule => rule.startsWith("connect-src ")), connect);
+    if (preflight) {
+      assert.ok(html.includes("fixture_sdk_access"));
+      const client = await readFile(join(outdir, "local-provider.js"), "utf8");
+      assert.match(client, /\.p0LocalProvider=/);
+      const integrity = "sha256-" + createHash("sha256").update(client).digest("base64");
+      assert.ok(html.includes(`<script src="./local-provider.js" integrity="${integrity}"></script>`));
+      assert.ok(policy.split("; ").find(rule => rule.startsWith("script-src ")).includes("'" + integrity + "'"));
+    } else {
+      assert.deepEqual(await readdir(outdir), ["index.html"]);
+      assert.ok(!html.includes("local-provider.js"));
+    }
+  }
+});
+
+test("portable Android provider preflight rejects non-session, Windows and hosted builds", async t => {
+  const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const { args, origin } of [
+    { args: [], origin: "" },
+    { args: ["--session", "--windows-tasks"], origin: "" },
+    { args: ["--session"], origin: "https://fixture.convex.cloud" },
+  ]) {
+    const result = spawnSync(process.execPath, [
+      "build-portable.mjs", "--outdir", root, "--android-provider-preflight", ...args,
+    ], { cwd: spike, encoding: "utf8", env: { ...process.env, P0_PUBLIC_DEV_ORIGIN: origin }, timeout: 10000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Android provider preflight requires the offline session frontend without Windows tasks/);
+    assert.deepEqual(await readdir(root), []);
+  }
+});

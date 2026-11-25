@@ -11,16 +11,21 @@ export const controlScript = join(native, ".run", "local-provider-control.js");
 const target = join(native, "src-tauri", "target", "sign-out-http");
 export const executable = join(target, "debug", "windows_local_provider.exe");
 
+export async function buildControlScript() {
+  await mkdir(dirname(controlScript), { recursive: true });
+  await build({
+    entryPoints: [join(here, "control.js")], bundle: true, platform: "browser",
+    outfile: controlScript, minify: true, logLevel: "warning",
+  });
+}
+
 export async function buildLocalProvider(reconnectPort) {
   if (process.platform !== "win32") throw Error("The packaged provider exercise requires Windows.");
   if (reconnectPort !== undefined && !(Number.isInteger(reconnectPort) && reconnectPort > 0 && reconnectPort <= 65535)) {
     throw Error("Invalid subscription relay port");
   }
   await mkdir(assets, { recursive: true });
-  await build({
-    entryPoints: [join(here, "control.js")], bundle: true, platform: "browser",
-    outfile: controlScript, minify: true, logLevel: "warning",
-  });
+  await buildControlScript();
   await build({
     entryPoints: [join(here, "client.js")], bundle: true, platform: "browser",
     outfile: join(assets, "client.js"), minify: true, logLevel: "warning",
