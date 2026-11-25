@@ -111,13 +111,16 @@ for (const { name, options, invalid, message } of [
   });
 }
 
-for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore.java", "p0native/LocalProviderPlugin.kt"]) {
+for (const stagedSource of [
+  "java/dev/klaxon/p0native/SessionPlugin.kt", "java/dev/klaxon/p0session/FixtureStore.java",
+  "java/dev/klaxon/p0native/LocalProviderPlugin.kt", "AndroidManifest.xml",
+]) {
   test("Android packaging stops before the frontend when " + stagedSource + " is already staged", async t => {
     const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
     t.after(() => rm(root, { recursive: true, force: true }));
     const native = join(root, "native");
     const packager = join(native, "package.mjs");
-    const staged = join(native, "src-tauri/gen/android/app/src/debug/java/dev/klaxon", stagedSource);
+    const staged = join(native, "src-tauri/gen/android/app/src/debug", stagedSource);
     await mkdir(dirname(staged), { recursive: true });
     await copyPackager(root, native);
     await writeFile(join(root, "build-portable.mjs"), 'throw new Error("unexpected frontend build");\n');

@@ -5,7 +5,7 @@ import { withWebViewForward } from "./smoke.mjs";
 const serial = "emulator-5554";
 const target = "localabstract:webview_devtools_remote_2468";
 
-function fakeForward({ acknowledge = true } = {}) {
+function fakeForward({ acknowledge = true, remote = target } = {}) {
   const routes = new Map();
   function adb(...args) {
     if (args[1] === "--list") {
@@ -13,7 +13,7 @@ function fakeForward({ acknowledge = true } = {}) {
     }
     if (args[1] === "tcp:0") {
       assert.deepEqual(args, ["forward", "tcp:0", target]);
-      routes.set("41001", target);
+      routes.set("41001", remote);
       if (!acknowledge) throw Error("setup acknowledgment lost");
       return "41001";
     }
@@ -48,4 +48,10 @@ test("leaves a same-socket route intact when ADB never identifies the allocated 
   await assert.rejects(fixture.run(() => assert.fail("WebView check should not run")),
     /setup acknowledgment lost/);
   assert.deepEqual([...fixture.routes], [["41001", target]]);
+});
+
+test("refuses to attach when the returned port points at a different socket", async () => {
+  const fixture = fakeForward({ remote: "localabstract:other_process" });
+  await assert.rejects(fixture.run(() => assert.fail("WebView check should not run")), /forward ownership unconfirmed/);
+  assert.deepEqual([...fixture.routes], [["41001", "localabstract:other_process"]]);
 });

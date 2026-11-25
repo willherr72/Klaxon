@@ -376,17 +376,49 @@ export async function withWebViewForward(deviceAdb, serial, target, action) {
   const port = deviceAdb("forward", "tcp:0", target);
   assert.ok(/^[1-9]\d*$/.test(port) && Number(port) <= 65535, "ADB did not return a valid WebView forward port");
   const source = "tcp:" + port;
+  const routesAtPort = () => deviceAdb("forward", "--list").split(/\r?\n/)
+    .map(line => line.trim().split(/\s+/))
+    .filter(([, local]) => local === source);
+  const owned = routes => routes.length === 1 && routes[0][0] === serial && routes[0][2] === target;
   try {
+    assert.ok(owned(routesAtPort()), "ADB WebView forward ownership unconfirmed");
     return await action(port);
   } finally {
-    const routes = deviceAdb("forward", "--list").split(/\r?\n/)
-      .map(line => line.trim().split(/\s+/))
-      .filter(([, local]) => local === source);
-    if (routes.length === 1) {
-      const [[owner, , remote]] = routes;
-      if (owner === serial && remote === target) deviceAdb("forward", "--remove", source);
-    }
+    if (owned(routesAtPort())) deviceAdb("forward", "--remove", source);
   }
+}
+
+export async function withAndroidActivity(deviceAdb, serial, appId, action, { primaryUser = false } = {}) {
+  const user = primaryUser ? ["--user", "0"] : [];
+  deviceAdb("shell", "am", "start", "-W", ...user, "-n", appId + "/.MainActivity");
+  const pid = deviceAdb("shell", "pidof", appId);
+  assert.match(pid, /^\d+$/);
+  const target = "localabstract:webview_devtools_remote_" + pid;
+  return await withWebViewForward(deviceAdb, serial, target, async port => {
+    let browser;
+    try {
+      const url = "http://tauri.localhost/";
+      const endpoint = "http://127.0.0.1:" + port;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const targets = await fetch(endpoint + "/json/list", { redirect: "error", signal: AbortSignal.timeout(1500) })
+          .then(response => response.json()).catch(() => []);
+        if (targets.some(target => target.type === "page" && target.url === url)) break;
+        if (attempt === 99 && primaryUser) throw new Error("Expected the fixture WebView DevTools target");
+        await delay(300);
+      }
+      browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
+        { noDefaults: true, timeout: 15000 });
+      if (!primaryUser) {
+        const context = browser.contexts()[0];
+        return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), pid);
+      }
+      const pages = browser.contexts().flatMap(context => context.pages()).filter(page => page.url() === url);
+      assert.equal(pages.length, 1, "Expected one fixture WebView page");
+      return await action(pages[0], pid);
+    } finally {
+      await browser?.close();
+    }
+  });
 }
 
 export async function android(serial, hosted, { requireNetwork = true } = {}) {
@@ -428,30 +460,7 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
   const apk = join(nativeDir, ".run/klaxon-p0-x86_64-" + variant + ".apk");
   await access(apk);
   const exerciseInstalled = async () => {
-    async function withActivity(action) {
-      deviceAdb("shell", "am", "start", "-W", "-n", appId + "/.MainActivity");
-      const pid = deviceAdb("shell", "pidof", appId);
-      assert.match(pid, /^\d+$/);
-      const target = "localabstract:webview_devtools_remote_" + pid;
-      return await withWebViewForward(deviceAdb, serial, target, async port => {
-        let browser;
-        try {
-          const endpoint = "http://127.0.0.1:" + port;
-          for (let attempt = 0; attempt < 100; attempt++) {
-            const targets = await fetch(endpoint + "/json/list", { signal: AbortSignal.timeout(1500) })
-              .then(response => response.json()).catch(() => []);
-            if (targets.some(target => target.type === "page" && target.url === "http://tauri.localhost/")) break;
-            await delay(300);
-          }
-          browser = await chromium.connectOverCDP("ws://127.0.0.1:" + port + "/devtools/browser",
-            { noDefaults: true, timeout: 15000 });
-          const context = browser.contexts()[0];
-          return await action(context.pages()[0] ?? await context.waitForEvent("page", { timeout: 15000 }), pid);
-        } finally {
-          await browser?.close();
-        }
-      });
-    }
+    const withActivity = action => withAndroidActivity(deviceAdb, serial, appId, action);
     if (hosted) return hosted({ withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId });
     if (provider) {
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");

@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const platformKeys = new Set([
   "systemroot", "windir", "systemdrive", "comspec", "pathext", "path", "temp", "tmp",
   "userprofile", "appdata", "localappdata", "programfiles", "programfiles(x86)", "programdata",
-  "processor_architecture", "number_of_processors", "adb",
+  "processor_architecture", "number_of_processors", "adb", "java_home", "android_home",
   "homedrive", "homepath", "logonserver", "userdomain", "username",
 ]);
 

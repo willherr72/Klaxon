@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { withAndroidFixture } from "./android-install.mjs";
@@ -9,12 +10,14 @@ const appId = "dev.klaxon.p0native";
 const receipt = "/data/local/tmp/klaxon-p0-install-active";
 const rawAdbError = "private ADB output";
 const unexpectedAction = () => assert.fail("fixture should not start");
+const apkSha256 = createHash("sha256").update(readFileSync(apk)).digest("hex");
 
 function fakeDevice({
   acknowledgeLaunch = true, acknowledgePush = true, polls = ["0"], result = "Success", failCleanup = false,
+  phone = false, replacedOnFailure = false, stageHash = apkSha256,
 } = {}) {
   const calls = [];
-  const state = { locked: false, installed: false, status: undefined };
+  const state = { locked: false, installed: false, status: undefined, installDirectory: "fixture" };
   let tick = 0;
   const timing = { now: () => tick, pause: async ms => { tick += ms; }, timeoutMs: 500 };
   function adb(...args) {
@@ -35,12 +38,22 @@ function fakeDevice({
       state.locked = true;
     } else if (tool.startsWith("nohup ")) {
       if (!acknowledgeLaunch) throw new Error(rawAdbError);
+    } else if (tool === "sha256sum") {
+      const file = args[2];
+      return (file === receipt + "/base.apk" ? stageHash : apkSha256) + "  " + file;
+    } else if (tool === "pm" && args[2] === "path") {
+      return state.installed ? "package:/data/app/" + state.installDirectory + "/base.apk" : "";
+    } else if (tool === "pm" && args[2] === "uninstall") {
+      if (failCleanup) throw new Error(rawAdbError);
+      state.installed = false;
+      return "Success";
     } else if (tool === "pm") {
       return state.installed ? "package:" + appId : "";
     } else if (tool === "ls") {
       state.status = polls.shift();
       if (state.status instanceof Error) throw state.status;
       if (state.status === "0") state.installed = true;
+      if (state.status === "1" && replacedOnFailure) state.installed = true;
       return state.status === undefined ? "base.apk\nresult" : "base.apk\nresult\nstatus";
     } else if (tool === "head") {
       const [, , , , filename] = args;
@@ -54,7 +67,7 @@ function fakeDevice({
   }
   return {
     calls, state,
-    run: action => withAndroidFixture(adb, apk, appId, action, timing),
+    run: action => withAndroidFixture(adb, apk, appId, action, { ...timing, ...(phone ? { apkSha256 } : {}) }),
   };
 }
 
@@ -139,4 +152,40 @@ test("a failed smoke exercise still cleans up its confirmed install", async () =
   await assert.rejects(device.run(() => { throw exerciseFailure; }), error => error === exerciseFailure);
   assert.equal(device.state.installed, false);
   assert.equal(device.state.locked, false);
+});
+
+test("phone install pins user zero and disallows replacement, then cleans only the confirmed package", async () => {
+  const device = fakeDevice({ phone: true });
+  assert.equal(await device.run(() => "exercised"), "exercised");
+  assert.ok(device.calls.some(([, command]) => command.includes("pm install -R --user 0 -S ")));
+  assert.deepEqual(device.calls.find(([command, pm, op]) =>
+    command === "shell" && pm === "pm" && op === "uninstall"), ["shell", "pm", "uninstall", "--user", "0", appId]);
+  assert.equal(device.state.installed, false);
+  assert.equal(device.state.locked, false);
+});
+
+test("phone installation stops before launch when staged bytes do not match", async () => {
+  const device = fakeDevice({ phone: true, stageHash: "0".repeat(64) });
+  await assert.rejects(device.run(unexpectedAction), /staged APK hash did not match/);
+  assert.ok(!device.calls.some(([, command]) => command.startsWith("nohup ")));
+  assert.equal(device.state.installed, false);
+  assert.equal(device.state.locked, true);
+});
+
+test("a package installed concurrently after a rejected install is left intact", async () => {
+  const device = fakeDevice({ phone: true, polls: ["1"], result: "Failure [INSTALL_FAILED_ALREADY_EXISTS]",
+    replacedOnFailure: true });
+  await assert.rejects(device.run(unexpectedAction), /Android fixture installation failed/);
+  assert.equal(device.state.installed, true);
+  assert.ok(!device.calls.some(args => args.includes("uninstall")));
+  assert.equal(device.state.locked, false);
+});
+
+test("phone cleanup preserves an install whose path changed during exercise", async () => {
+  const device = fakeDevice({ phone: true });
+  await assert.rejects(device.run(() => { device.state.installDirectory = "replacement"; }),
+    /Android fixture package cleanup unconfirmed/);
+  assert.equal(device.state.installed, true);
+  assert.ok(!device.calls.some(args => args.includes("uninstall")));
+  assert.equal(device.state.locked, true);
 });

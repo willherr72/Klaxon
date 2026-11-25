@@ -41,6 +41,7 @@ const spike = fileURLToPath(new URL("../", import.meta.url));
 const run = join(native, ".run");
 const androidHome = join(run, "android-user");
 const gradle = join(native, "src-tauri/gen/android");
+const hostedManifest = join(gradle, "app/src/debug/AndroidManifest.xml");
 const androidFixtureSources = [
   ["packaged-session/SessionPlugin.kt", "dev/klaxon/p0native"],
   ["android-session/src/main/java/dev/klaxon/p0session/FixtureStore.java", "dev/klaxon/p0session"],
@@ -59,7 +60,7 @@ const execute = (command, args, cwd) => execFileSync(command, args, { cwd, env, 
 async function build() {
   if (values.target !== "windows") {
     // Gradle compiles these paths in every debug APK, even without p0-session.
-    for (const { destination } of androidFixtureSources) {
+    for (const destination of [...androidFixtureSources.map(({ destination }) => destination), hostedManifest]) {
       if (lstatSync(destination, { throwIfNoEntry: false })) {
         throw new Error("Found staged Android fixture source at " + destination +
           ". Verify any interrupted build has stopped, then move this file out of the generated Android source tree before retrying.");
@@ -107,6 +108,13 @@ async function build() {
   if (androidProvider) features.push("p0-android-provider-preflight");
   if (androidProviderHosted) features.push("p0-hosted-provider");
   try {
+    if (androidProviderHosted) {
+      await mkdir(dirname(hostedManifest), { recursive: true });
+      // Do not let a previously backed-up fixture supply account or WebView state.
+      await writeFile(hostedManifest, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n' +
+        '    <application android:allowBackup="false" />\n</manifest>\n', { flag: "wx" });
+      staged.push(hostedManifest);
+    }
     if (values.session) {
       for (const { source, destination, preflightOnly } of androidFixtureSources) {
         if (preflightOnly && !androidProvider) continue;

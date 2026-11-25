@@ -263,6 +263,18 @@ Get-FileHash -Algorithm SHA256 -LiteralPath $apk
 
 Expect one `arm64-v8a` ABI and the debug package `dev.klaxon.p0native`. The APK shares its package ID with the other P0 Android fixtures. Keep it on the build host for inspection. Verify the archived library matches the compiled `aarch64-linux-android` output and has ELF load alignment of at least 16 KiB. ZIP alignment checks the archive layout separately. The ordinary ARM64 account build uses a different mode and requires sign-in after reload. [Android page-size requirements](https://developer.android.com/guide/practices/page-sizes)
 
-The existing hosted runner admits only the disposable x86_64 emulator and its APK. The hosted WebView exposes automation hooks, and native sign-in consumes a one-use private input written by the runner. Physical acceptance requires a separate owner-assisted test entry point that verifies the selected phone, package hash and absence of a prior P0 install before touching the device. Rebuild for an owner-confirmed disposable Development origin and attest the HTML, SDK and native pins before staging a synthetic login. Keep the Development key off-device.
+#### Account-free phone attestation
+
+The existing hosted runner remains emulator-only. The separate phone command below requires approval for the specific device and APK. The owner connects one USB phone, unlocks Android user zero and authorizes this computer's USB debugging prompt. Supply the selected serial and the previously verified lowercase APK SHA-256. Set `ADB`, `ANDROID_HOME` and `JAVA_HOME` using the [Android prerequisites](#packaged-offline-client).
+
+```powershell
+node native/local-provider/owner-phone.mjs --owner-approved --serial $usbSerial --origin $compiledOrigin --apk-sha256 $verifiedSha256
+```
+
+The command verifies the package identity, single ARM64 ABI, debug signature and disabled Android backup on the build host first. On the phone it checks for earlier P0 installs across Android users. It installs the matching APK for user zero with replacement disabled. A scoped WebView forward lets it attest the HTML, SDK and native origin pins without accounts. The command removes its forward and verified fixture install. If the package outcome is uncertain, preserve the install receipt at `/data/local/tmp/klaxon-p0-install-active`. If ADB loses the forward acknowledgment, inspect the selected phone's test mapping before retrying. Leave other devices and forwards untouched. The owner can remove the computer's USB debugging authorization after the session.
+
+#### Hosted phone lifecycle still to verify
+
+The hosted WebView exposes automation hooks, and native sign-in consumes a one-use private input written by the runner. For a future hosted lifecycle run, rebuild for an owner-confirmed disposable Development origin and verify all three pins in the same install before enrolling synthetic identities. Keep the Development key off-device. The account-free entry point currently ends after attestation and cleanup.
 
 On the phone's own network, record native sign-in, cold Keystore resume and rotation, authenticated HTTP and WSS, exact-grant revocation, stale-bearer denial and signed-out cold launch. Use the existing control expectations for same-owner continuity and cross-owner denial. A device-wide outage needs a distinct cold-resume check that observes denial, protected-record preservation and recovery after reconnect. Verify test identity retirement and remove only the fixture and its debug connection afterward.
