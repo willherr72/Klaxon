@@ -25,3 +25,19 @@ For a 30-day example, assume one owner makes 20 successful task renames per day 
 | Database I/O | Assume 1,000 bytes per returned row including index reads and 4,000 bytes total per rename including index work. `1,380 × 20 × 1,000 + 600 × 4,000` = **30 MB** (decimal) | **3.0%** of 1 GB |
 
 For this task-list slice, database I/O uses a larger fraction of its allowance than calls. Authentication, other team projects, future jobs and integrations are outside the estimate. The byte sizes are assumptions. At the next authorized usage review, compare database I/O and call deltas for a known batch of edits with both subscriptions active, then check total shared-team usage before projecting remaining capacity.
+
+### Active browser sessions
+
+An active Edge tab renewed its 60-second token 8.870 seconds before expiry against the pinned local issuer. Use one explicit refresh mutation every 50 seconds as a planning assumption for each connected, awake client. In the example below, both devices use the portable browser client. Active hours count separately for every signed-in tab. Background suspension, session boundaries, outages and reconnects can change the rate. [Measured renewal](klaxon-v2-progress.md#portable-browser-session-grants) · [Browser refresh path](../spikes/p0/portable/account.js)
+
+| Active hours per device per day | Estimated refresh mutations per 30 days | Task-list calls plus explicit refreshes | Share of 1M Free calls |
+|---:|---:|---:|---:|
+| 1 | 4,320 | 6,300 | 0.630% |
+| 8 | 34,560 | 36,540 | 3.654% |
+| 24 | 103,680 | 105,660 | 10.566% |
+
+Refreshes are `2 devices × 30 days × active hours × 3,600 / 50`. The partial call total adds the 1,980 task-list calls above. It excludes sign-in, sign-out, retries, scheduled cleanup, and any additional subscription or component work. Each refresh calls the Auth component, which reads the session, updates token state and stores a successor. The observed subscription stayed open across renewal. Its continued operation does not measure hosted function counts or database bytes. [Spike auth configuration](../spikes/p0/convex/auth.ts) · [Convex usage definitions](https://docs.convex.dev/production/state/limits)
+
+**Database I/O could reach its cap first.** After the assumed 30 MB task workload, the 24-hour scenario leaves about **9.36 kB per refresh** for all additional database work if this is the team's only workload. As a sensitivity check, one extra uncached 20-row task-list read per renewal at the assumed 1,000 bytes per row would put task-list I/O alone at **721.2 MB** for eight hours or **2,103.6 MB** for 24 hours, before auth I/O. The latter exceeds the published 1 GB Free cap. The extra read is hypothetical. Cached reads incur no database bandwidth. [Convex realtime caching](https://docs.convex.dev/realtime) · [Free resource caps](https://docs.convex.dev/production/state/limits)
+
+Keep Free as the deployment requirement. At the next authorized dashboard comparison, record team headroom, then compare a quiet interval with an equal interval containing known active client-minutes and counted refreshes, without task edits. Separately measure the task-edit workload above. Use the incremental calls and database I/O to project the intended active hours against the team's remaining capacity. If dashboard resolution or unrelated traffic obscures the delta, leave capacity unverified. [Convex usage metrics](https://docs.convex.dev/production/usage-limits)
