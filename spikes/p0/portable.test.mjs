@@ -121,6 +121,72 @@ test("an account build can retry a failed sign-in without storing credentials or
   assert.equal(await page.getByLabel("Password").inputValue(), "");
 });
 
+test("malformed completed sign-in grants leave the account form ready for another attempt", async t => {
+  const origin = "https://synthetic-portable-test.convex.cloud";
+  const artifact = await buildForTest(t, origin);
+  const context = await browser.newContext({ serviceWorkers: "block" });
+  t.after(() => context.close());
+  const grant = {
+    accessToken: "synthetic-reply-access",
+    refreshToken: "synthetic-reply-refresh",
+    userId: "synthetic-reply-owner",
+    refreshTokenExpiresAt: Date.now() + 60000,
+  };
+  const rejectedGrants = [
+    { ...grant, userId: undefined },
+    { ...grant, refreshTokenExpiresAt: undefined },
+    { ...grant, accessToken: "" },
+  ];
+  const signInPath = "auth:signInWithUsernamePassword";
+  const calls = [];
+  const sockets = [];
+  const diagnostics = [];
+  const row = { _id: "test-row", title: "Task available after retry" };
+  let attempt = 0;
+
+  await context.routeWebSocket(/.*/, socket => { sockets.push(socket.url()); });
+  await context.route(/^https?:/i, async route => {
+    const request = route.request();
+    const url = request.url();
+    const path = request.method() === "POST" ? request.postDataJSON()?.path : undefined;
+    calls.push(path ?? url);
+    const success = value => route.fulfill({ json: { status: "success", value } });
+    if (url === origin + "/api/mutation" && path === signInPath) {
+      return success({ status: "complete", tokens: rejectedGrants[attempt++] ?? grant });
+    }
+    if (url === origin + "/api/query" && path === "tasks:list" &&
+        request.headers().authorization === "Bearer " + grant.accessToken) return success([row]);
+    return route.abort("blockedbyclient");
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(4500);
+  page.on("console", message => diagnostics.push(message.text()));
+  page.on("pageerror", error => diagnostics.push(error.message));
+  await page.goto(artifact);
+  const username = page.getByLabel("Username");
+  const password = page.getByLabel("Password");
+  const signIn = page.getByRole("button", { name: "Sign in" });
+  await username.fill("synthetic-user");
+  for (const _ of rejectedGrants) {
+    await password.fill("synthetic-only-test-password");
+    await signIn.click();
+    await page.getByRole("alert").getByText(/sign-in could not be confirmed/i).waitFor();
+    assert.equal(await username.inputValue(), "synthetic-user");
+    assert.equal(await password.inputValue(), "");
+    assert.equal(await page.getByRole("button", { name: "Read tasks" }).count(), 0);
+    assert.doesNotMatch(await page.locator("body").innerText(), /synthetic-reply-/);
+  }
+  assert.deepEqual(calls, [signInPath, signInPath, signInPath]);
+  assert.deepEqual(sockets, []);
+  assert.doesNotMatch(diagnostics.join("\n"), /synthetic-reply-/);
+
+  await password.fill("synthetic-only-test-password");
+  await signIn.click();
+  await page.getByRole("button", { name: "Read tasks" }).click();
+  await page.getByRole("listitem").getByText(row.title, { exact: true }).waitFor();
+  assert.deepEqual(calls, [signInPath, signInPath, signInPath, signInPath, "tasks:list"]);
+});
+
 test("the copied fixture cold-starts offline, stores edits, and reopens without a server", async t => {
   const context = await browser.newContext({ offline: true, viewport: { width: 360, height: 760 } });
   t.after(() => context.close());
