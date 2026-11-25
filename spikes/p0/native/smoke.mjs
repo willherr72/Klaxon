@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { chromium } from "playwright-core";
+import { openTaskLink } from "../task-link-check.mjs";
 import { withAndroidFixture } from "./android-install.mjs";
 import { exerciseSession } from "./packaged-session/check.mjs";
 import { checkProfileBytes, checkSessionPage, containsMarker, containsSdkAccess } from "./packaged-session/web-check.mjs";
@@ -58,6 +59,18 @@ async function verifyRestart(page, saved, artifact) {
   await row.waitFor();
   assert.equal(await row.getAttribute("data-task-id"), saved.id);
   assert.equal(await row.locator("strong").textContent(), saved.title);
+  if (platform === "windows") {
+    const entry = page.url();
+    await openTaskLink(page, entry, saved);
+    const history = new URL("tasks/" + encodeURIComponent(saved.id), entry);
+    await page.goto(history.href);
+    await page.reload();
+    assert.equal(page.url(), history.href);
+    assert.equal(await page.evaluate(() => !!window.__TAURI_INTERNALS__), true);
+    await row.waitFor();
+    assert.equal(await row.getAttribute("data-task-id"), saved.id);
+    console.log("PASS Windows task fragment and Tauri history-path asset fallback");
+  }
   const digest = createHash("sha256").update(await readFile(artifact)).digest("hex");
   console.log("PASS", platform, new URL(page.url()).origin, await page.evaluate(() => navigator.userAgent),
     "fixture, CSS, create, rename, reload/read and native process restart with stable task ID; SHA-256", digest);

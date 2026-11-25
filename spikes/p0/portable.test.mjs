@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { after, before, test } from "node:test";
 import { chromium } from "playwright-core";
+import { openTaskLink } from "./task-link-check.mjs";
 import { containsMarker, containsSdkAccess } from "./native/packaged-session/web-check.mjs";
 
 const pageUrl = pathToFileURL(resolve("dist/index.html")).href;
@@ -18,6 +20,38 @@ before(async () => {
     process.platform === "win32" ? { channel: "msedge" } : {});
 });
 after(async () => { await browser?.close(); });
+
+test("task fragment reopens from a nested static mount without a server rewrite", async t => {
+  const html = await readFile(new URL(pageUrl));
+  const mount = "/klaxon/p0/";
+  const documents = [];
+  const server = createServer((request, response) => {
+    if (request.headers["sec-fetch-dest"] === "document") documents.push(request.url);
+    const found = request.url === mount;
+    response.writeHead(found ? 200 : 404, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    response.end(found ? html : "Missing static file");
+  });
+  await new Promise((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const entry = "http://127.0.0.1:" + server.address().port + mount;
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.goto(entry);
+  const title = "Synthetic direct link";
+  await page.getByLabel("Task title", { exact: true }).fill(title);
+  await page.getByRole("button", { name: "Create task" }).click();
+  const row = page.getByRole("listitem").filter({ hasText: title });
+  const id = await row.getAttribute("data-task-id");
+  assert.match(id, /^[0-9a-f-]{36}$/);
+  await page.close();
+  const reopened = await context.newPage();
+  await openTaskLink(reopened, entry, { id, title });
+  assert.deepEqual(documents, [mount, mount, mount]);
+  const historyPath = new URL("tasks/" + encodeURIComponent(id), entry);
+  assert.equal((await reopened.goto(historyPath.href)).status(), 404);
+  assert.equal(documents.at(-1), historyPath.pathname);
+});
 
 async function buildForTest(t, origin, ...options) {
   const outdir = await mkdtemp(join(tmpdir(), "klaxon-portable-"));
