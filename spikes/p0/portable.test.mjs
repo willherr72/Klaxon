@@ -72,6 +72,14 @@ test("the Android SDK panel is confined to offline session assets and excludes n
   await assert.rejects(buildForTest(t, "https://synthetic-portable-test.convex.cloud", "--session"), /runs offline/);
 });
 
+test("the loopback account fixture pins its HTTP and WebSocket origins", async t => {
+  const page = await buildForTest(t, "", "--loopback-account");
+  const html = await readFile(new URL(page), "utf8");
+  assert.match(html, /connect-src http:\/\/127\.0\.0\.1:3210 ws:\/\/127\.0\.0\.1:3210"/);
+  await assert.rejects(buildForTest(t, "https://synthetic.convex.cloud", "--loopback-account"), /loopback account/i);
+  await assert.rejects(buildForTest(t, "", "--loopback-account", "--session"), /loopback account/i);
+});
+
 test("the build rejects local, insecure and credential-bearing account destinations", async t => {
   for (const invalid of ["http://127.0.0.1:3210", "http://unsafe.convex.cloud",
       "https://example.test", "https://key@synthetic.convex.cloud", "https://synthetic.convex.cloud/?token=TEST"]) {

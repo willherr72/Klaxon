@@ -8,10 +8,17 @@ import { androidProviderPreflightConnections, convexDevelopmentOriginPattern, ho
 
 const { values } = parseArgs({ options: {
   outdir: { type: "string", default: "dist" }, session: { type: "boolean" }, "windows-tasks": { type: "boolean" },
+  "loopback-account": { type: "boolean" },
   "android-provider-preflight": { type: "boolean" },
   "android-provider-hosted": { type: "boolean" },
 } });
-const origin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
+const developmentOrigin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
+const loopbackAccount = values["loopback-account"];
+if (loopbackAccount && (developmentOrigin || values.session || values["windows-tasks"] ||
+    values["android-provider-preflight"] || values["android-provider-hosted"])) {
+  throw new Error("The loopback account fixture requires a browser build without a configured deployment");
+}
+const origin = loopbackAccount ? "http://127.0.0.1:3210" : developmentOrigin;
 const androidProviderPreflight = values["android-provider-preflight"];
 const androidProviderHosted = values["android-provider-hosted"];
 if (androidProviderPreflight && (!values.session || values["windows-tasks"] || origin)) {
@@ -22,7 +29,7 @@ if (androidProviderHosted && (!values.session || values["windows-tasks"] || !ori
 }
 if (values.session && origin && !androidProviderHosted) throw new Error("The packaged session fixture runs offline");
 if (values["windows-tasks"] && !values.session) throw new Error("Task transport requires the offline session fixture");
-if (origin && !convexDevelopmentOriginPattern.test(origin)) {
+if (developmentOrigin && !convexDevelopmentOriginPattern.test(developmentOrigin)) {
   throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin");
 }
 
