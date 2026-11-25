@@ -8,6 +8,8 @@ use std::{
 use tauri::Manager;
 use tauri::{ipc::Channel, Builder, State, WebviewWindow, Wry};
 
+#[cfg(any(test, feature = "p0-windows-sign-out-http"))]
+mod loopback;
 mod sign_out;
 mod store;
 
@@ -76,6 +78,18 @@ impl Provider {
     fn revoke(&mut self) {
         self.owner = None;
         self.subscription = None;
+    }
+
+    fn resume(&mut self, path: Option<&Path>) -> Result<&'static str, &'static str> {
+        self.revoke();
+        match confirm_resume(path.ok_or("unavailable")?) {
+            Ok(session) => {
+                self.owner = Some(session.owner);
+                Ok("authenticated")
+            }
+            Err(status @ ("retry-required" | "signed-out")) => Ok(status),
+            Err(error) => Err(error),
+        }
     }
 
     fn sdk_access(&mut self, slot: Option<&Path>) -> Result<String, &'static str> {
@@ -149,7 +163,11 @@ fn provider<'a>(
     if !crate::is_fixture_window(window) {
         return Err("unavailable");
     }
-    state.lock().map_err(|_| "unavailable")
+    #[cfg(feature = "p0-windows-sign-out-http")]
+    let locked = state.try_lock(); // Never wait for the HTTP worker on the WebView thread.
+    #[cfg(not(feature = "p0-windows-sign-out-http"))]
+    let locked = state.lock();
+    locked.map_err(|_| "unavailable")
 }
 
 struct ConfirmedSession {
@@ -196,7 +214,11 @@ fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str>
     Ok("fixture-ready")
 }
 
-fn accept_refresh(slot: &store::Slot<'_>, body: &[u8]) -> Result<String, &'static str> {
+fn accept_refresh(
+    slot: &store::Slot<'_>,
+    marker: &[u8],
+    body: &[u8],
+) -> Result<String, &'static str> {
     let Some(grant) = super::refresh_response::decode(body).map_err(|_| "unavailable")? else {
         slot.remove().map_err(|_| "unavailable")?;
         return Err("signed-out");
@@ -207,14 +229,65 @@ fn accept_refresh(slot: &store::Slot<'_>, body: &[u8]) -> Result<String, &'stati
     {
         return Err("unavailable");
     }
-    slot.publish(grant.refresh_token.as_bytes(), store::Publish::Refresh)
-        .map_err(|_| "unavailable")?;
+    // A later Resume can confirm the fixture's already committed successor.
+    if marker != grant.refresh_token.as_bytes() {
+        slot.publish(grant.refresh_token.as_bytes(), store::Publish::Refresh)
+            .map_err(|_| "unavailable")?;
+    }
     Ok(grant.access_token)
+}
+
+fn confirm_resume(path: &Path) -> Result<ConfirmedSession, &'static str> {
+    #[cfg(feature = "p0-windows-sign-out-http")]
+    if let Some(port) = env::var_os("KLAXON_P0_REFRESH_PORT") {
+        return confirm_session_with(path, None, |slot, owner, marker| {
+            if owner != Owner::A {
+                return Err("unavailable");
+            }
+            let token = std::str::from_utf8(marker).map_err(|_| "unavailable")?;
+            // Convex 1.51.0 POST /api/mutation, with Auth 2.1.0's refreshSession arguments.
+            let request = serde_json::json!({
+                "path": "auth:refreshSession",
+                "format": "convex_encoded_json",
+                "args": [{ "refreshToken": token }]
+            });
+            let (status, body) = loopback::post(port.to_str(), &request)?;
+            if !(200..300).contains(&status) {
+                return Err("retry-required");
+            }
+            accept_refresh(slot, marker, &body)
+        });
+    }
+    confirm_session(path, None)
 }
 
 fn confirm_session(
     path: &Path,
     expected_owner: Option<Owner>,
+) -> Result<ConfirmedSession, &'static str> {
+    confirm_session_with(path, expected_owner, |slot, owner, marker| match owner {
+        Owner::A if marker == MARKER && provider_flag(path, "p0-require-successor")? => {
+            accept_refresh(
+                slot,
+                marker,
+                br#"{"status":"success","value":{"kind":"noSession"}}"#,
+            )
+        }
+        Owner::A if marker == MARKER && provider_flag(path, "p0-provider-refresh")? => {
+            accept_refresh(slot, marker, REFRESH_RESPONSE)
+        }
+        Owner::A if expected_owner.is_some() && provider_flag(path, "p0-provider-rotated")? => {
+            Ok(crate::ROTATED_OWNER_A_ACCESS.to_owned())
+        }
+        Owner::A => Ok(OWNER_A_ACCESS.to_owned()),
+        Owner::B => Ok("p0-inert-access-b".to_owned()),
+    })
+}
+
+fn confirm_session_with(
+    path: &Path,
+    expected_owner: Option<Owner>,
+    check_provider: impl FnOnce(&store::Slot<'_>, Owner, &[u8]) -> Result<String, &'static str>,
 ) -> Result<ConfirmedSession, &'static str> {
     let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
     require_no_pending_sign_out(&slot)?;
@@ -233,22 +306,7 @@ fn confirm_session(
     if provider_flag(path, "p0-provider-offline")? {
         return Err("retry-required");
     }
-    let access = match owner {
-        Owner::A if marker == MARKER && provider_flag(path, "p0-require-successor")? => {
-            accept_refresh(
-                &slot,
-                br#"{"status":"success","value":{"kind":"noSession"}}"#,
-            )?
-        }
-        Owner::A if marker == MARKER && provider_flag(path, "p0-provider-refresh")? => {
-            accept_refresh(&slot, REFRESH_RESPONSE)?
-        }
-        Owner::A if expected_owner.is_some() && provider_flag(path, "p0-provider-rotated")? => {
-            crate::ROTATED_OWNER_A_ACCESS.to_owned()
-        }
-        Owner::A => OWNER_A_ACCESS.to_owned(),
-        Owner::B => "p0-inert-access-b".to_owned(),
-    };
+    let access = check_provider(&slot, owner, &marker)?;
     Ok(ConfirmedSession { owner, access })
 }
 
@@ -282,9 +340,14 @@ fn run_session(
     state: &Mutex<Provider>,
     operation: &str,
 ) -> Result<&'static str, &'static str> {
-    let mut provider = provider(window, state)?;
-    if !matches!(operation, "seed" | "seed-peer" | "resume" | "sign-out") {
+    if !crate::is_fixture_window(window)
+        || !matches!(operation, "seed" | "seed-peer" | "resume" | "sign-out")
+    {
         return Err("unavailable");
+    }
+    let mut provider = state.lock().map_err(|_| "unavailable")?;
+    if operation == "resume" {
+        return provider.resume(slot().as_deref());
     }
     // Revoke before attempting I/O. Only a subsequent confirmed resume grants access.
     provider.revoke();
@@ -292,14 +355,6 @@ fn run_session(
     match operation {
         "seed" => seed_session(&slot, Owner::A),
         "seed-peer" => seed_session(&slot, Owner::B),
-        "resume" => match confirm_session(&slot, None) {
-            Ok(session) => {
-                provider.owner = Some(session.owner);
-                Ok("authenticated")
-            }
-            Err(status @ ("retry-required" | "signed-out")) => Ok(status),
-            Err(error) => Err(error),
-        },
         #[cfg(not(feature = "p0-windows-sign-out-http"))]
         "sign-out" => sign_out::run(&slot),
         #[cfg(feature = "p0-windows-sign-out-http")]

@@ -52,14 +52,28 @@ impl TestSlot {
     }
 
     fn child(&self, action: &str, checkpoint: &str) -> TestChild {
-        let child = Command::new(env::current_exe().unwrap())
+        self.child_with_refresh_port(action, checkpoint, None)
+    }
+
+    fn child_with_refresh_port(
+        &self,
+        action: &str,
+        checkpoint: &str,
+        port: Option<&str>,
+    ) -> TestChild {
+        let mut command = Command::new(env::current_exe().unwrap());
+        command
             .args(["--exact", CHILD_TEST, "--ignored", "--nocapture"])
             .env(TEST_PATH, &self.path)
             .env(TEST_ACTION, action)
             .env(TEST_CHECKPOINT, checkpoint)
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stdin(Stdio::null());
+        if let Some(port) = port {
+            command.env("KLAXON_P0_REFRESH_PORT", port);
+        } else {
+            command.env_remove("KLAXON_P0_REFRESH_PORT");
+        }
+        let child = command.spawn().unwrap();
         assert_ne!(child.id(), std::process::id());
         TestChild(child)
     }
@@ -132,12 +146,28 @@ pub(super) fn crash_checkpoint(path: &Path, checkpoint: &str) {
 fn refresh_child() {
     let path = PathBuf::from(env::var_os(TEST_PATH).expect("test child slot"));
     match env::var(TEST_ACTION).as_deref() {
-        Ok("resume") => {
-            let session = confirm_session(&path, None).unwrap();
-            assert!(session.owner == Owner::A);
+        Ok(action @ ("resume" | "retry-resume")) => {
             let mut provider = Provider::new();
-            provider.owner = Some(session.owner);
-            assert!(provider.sdk_access(Some(&path)).unwrap() == "p0-inert-access-a");
+            assert_eq!(provider.sdk_access(Some(&path)), Err("signed-out"));
+            if action == "retry-resume" {
+                assert_eq!(provider.resume(Some(&path)), Ok("retry-required"));
+                assert_eq!(provider.sdk_access(Some(&path)), Err("signed-out"));
+            } else {
+                assert_eq!(provider.resume(Some(&path)), Ok("authenticated"));
+                assert!(provider.owner == Some(Owner::A));
+                #[cfg(feature = "p0-windows-sign-out-http")]
+                if env::var_os("KLAXON_P0_REFRESH_PORT").is_some() {
+                    let committed = store::Slot::lock(&path).unwrap().read().unwrap();
+                    assert!(
+                        committed == SUCCESSOR_MARKER,
+                        "authenticated before DPAPI commit"
+                    );
+                }
+                assert_eq!(
+                    provider.sdk_access(Some(&path)).as_deref(),
+                    Ok(OWNER_A_ACCESS)
+                );
+            }
         }
         Ok("sign-out") => assert_eq!(sign_out(&path), Ok("signed-out")),
         Ok("retry-sign-out") => assert_eq!(sign_out(&path), Err("retry-required")),
@@ -547,6 +577,83 @@ async fn loopback_sign_out(
     slot: &Path,
     reply: Option<(u16, &[u8])>,
 ) -> Result<&'static str, &'static str> {
+    let pending = slot.with_extension("signout-pending");
+    let expected = serde_json::json!({
+        "path": "auth:signOut",
+        "format": "convex_encoded_json",
+        "args": [{ "refreshToken": std::str::from_utf8(SUCCESSOR_MARKER).unwrap() }]
+    });
+    let (port, server) = serve_loopback(expected, reply, move || {
+        assert_eq!(
+            fs::read(&pending).unwrap(),
+            b"pending",
+            "record intent before sending"
+        );
+    })
+    .await;
+    let slot = slot.to_owned();
+    let received =
+        tauri::async_runtime::spawn_blocking(move || sign_out::run_http(&slot, Some(&port), || {}))
+            .await
+            .expect("sign-out worker failed");
+    server.await.expect("loopback fixture failed");
+    received
+}
+
+#[cfg(feature = "p0-windows-sign-out-http")]
+#[test]
+fn cold_loopback_resume_preserves_predecessor_on_failure_then_presents_saved_successor() {
+    let slot = TestSlot::new("http-resume");
+    seed(&slot.path, MARKER).unwrap();
+    let predecessor = slot.ciphertext();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let attempt = |action, marker, reply| {
+        runtime.block_on(async {
+            let expected = serde_json::json!({
+                "path": "auth:refreshSession",
+                "format": "convex_encoded_json",
+                "args": [{ "refreshToken": std::str::from_utf8(marker).unwrap() }]
+            });
+            let before = slot.ciphertext();
+            let path = slot.path.clone();
+            let (port, server) = serve_loopback(expected, reply, move || {
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    before,
+                    "record changed before reply"
+                );
+            })
+            .await;
+            let child = slot.child_with_refresh_port(action, "", Some(&port));
+            tauri::async_runtime::spawn_blocking(move || child.expect_success())
+                .await
+                .expect("cold Resume worker failed");
+            tokio::time::timeout(Duration::from_secs(10), server)
+                .await
+                .expect("loopback Resume request timed out")
+                .expect("loopback fixture failed");
+        })
+    };
+
+    for reply in [None, Some((503, REFRESH_RESPONSE))] {
+        attempt("retry-resume", MARKER, reply);
+        assert!(slot.ciphertext() == predecessor && !slot.staged().exists());
+    }
+    attempt("resume", MARKER, Some((200, REFRESH_RESPONSE)));
+    let successor = slot.ciphertext();
+    assert!(successor != predecessor && !slot.staged().exists());
+    attempt("resume", SUCCESSOR_MARKER, Some((200, REFRESH_RESPONSE)));
+    assert!(slot.ciphertext() == successor && !slot.staged().exists());
+}
+
+async fn serve_loopback(
+    expected: serde_json::Value,
+    reply: Option<(u16, &[u8])>,
+    check_before_reply: impl Fn() + Send + Sync + 'static,
+) -> (String, tokio::task::JoinHandle<()>) {
     use http_body_util::{BodyExt, Full};
     use hyper::{
         body::{Bytes, Incoming},
@@ -563,17 +670,12 @@ async fn loopback_sign_out(
         .await
         .unwrap();
     let port = listener.local_addr().unwrap().port().to_string();
-    let pending = slot.with_extension("signout-pending");
+    let expected = serde_json::to_vec(&expected).unwrap();
     let reply = reply.map(|(status, body)| (status, Bytes::copy_from_slice(body)));
     let server = tokio::spawn(async move {
         let checked = AtomicBool::new(false);
         let (stream, _) = listener.accept().await.unwrap();
         let service = service_fn(|request: Request<Incoming>| async {
-            assert_eq!(
-                fs::read(&pending).unwrap(),
-                b"pending",
-                "record intent before sending"
-            );
             let (parts, body) = request.into_parts();
             assert!(parts.method == Method::POST, "expected POST");
             assert!(
@@ -595,15 +697,8 @@ async fn loopback_sign_out(
                 .await
                 .expect("unreadable request body")
                 .to_bytes();
-            let expected = serde_json::json!({
-                "path": "auth:signOut",
-                "format": "convex_encoded_json",
-                "args": [{ "refreshToken": std::str::from_utf8(SUCCESSOR_MARKER).unwrap() }]
-            });
-            assert!(
-                body.as_ref() == serde_json::to_vec(&expected).unwrap(),
-                "unexpected mutation body"
-            );
+            assert!(body.as_ref() == expected, "unexpected mutation body");
+            check_before_reply();
             checked.store(true, Ordering::Relaxed);
             let (status, body) = reply
                 .clone()
@@ -625,13 +720,7 @@ async fn loopback_sign_out(
         );
         assert_eq!(served.is_err(), reply.is_none());
     });
-    let slot = slot.to_owned();
-    let received =
-        tauri::async_runtime::spawn_blocking(move || sign_out::run_http(&slot, Some(&port), || {}))
-            .await
-            .expect("sign-out worker failed");
-    server.await.expect("loopback fixture failed");
-    received
+    (port, server)
 }
 
 #[test]
@@ -691,11 +780,17 @@ fn only_a_confirmed_no_session_removes_the_record() {
     let before = test.ciphertext();
     let slot = store::Slot::lock(&test.path).unwrap();
     let failed = br#"{"status":"error","value":{"kind":"noSession"}}"#;
-    assert_eq!(accept_refresh(&slot, failed).err(), Some("unavailable"));
+    assert_eq!(
+        accept_refresh(&slot, MARKER, failed).err(),
+        Some("unavailable")
+    );
     assert!(test.ciphertext() == before);
 
     let ended = br#"{"status":"success","value":{"kind":"noSession"}}"#;
-    assert_eq!(accept_refresh(&slot, ended).err(), Some("signed-out"));
+    assert_eq!(
+        accept_refresh(&slot, MARKER, ended).err(),
+        Some("signed-out")
+    );
     drop(slot);
     assert!(!test.path.try_exists().unwrap());
     assert_eq!(confirm_session(&test.path, None).err(), Some("signed-out"));
@@ -717,7 +812,7 @@ fn invalid_grant_cannot_change_the_record() {
         let body = response.replace(field, replacement);
         assert!(body != response);
         assert_eq!(
-            accept_refresh(&slot, body.as_bytes()).err(),
+            accept_refresh(&slot, MARKER, body.as_bytes()).err(),
             Some("unavailable"),
             "{label}"
         );
