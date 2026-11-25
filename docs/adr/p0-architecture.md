@@ -20,7 +20,7 @@ The Android fixture uses a single packaged app process, serialized plugin calls,
 
 On Android, initial sign-in can die after key creation but before the encrypted record is published. Under the fixture's single-writer assumption, resume or a fresh validated sign-in may discard that slot's staging file and key only when both the published record and its legacy backup are verifiably absent. A backup blocks cleanup even when the base file is missing. The [initial sign-in evidence](../klaxon-v2-progress.md#android-initial-sign-in-to-keystore) covers these two recovery paths.
 
-The [Windows sign-out fixture](../klaxon-v2-progress.md#windows-sign-out-after-a-lost-acknowledgment) distinguishes an issuer that may have committed revocation from a client that received confirmation. Keep the protected refresh record available for an idempotent retry while denying fresh access. Persist a confirmed acknowledgment before deleting that record so local cleanup can resume after process termination.
+The [Windows](../klaxon-v2-progress.md#windows-sign-out-after-a-lost-acknowledgment) and [Android](../klaxon-v2-progress.md#android-sign-out-after-a-lost-acknowledgment) fixtures distinguish an issuer that may have committed revocation from a client that received confirmation. Keep the protected refresh record available for an idempotent retry while denying fresh access. Persist a confirmed acknowledgment before deleting that record so local cleanup can resume after process termination. Both fixtures validate the same Convex response in Rust. A loopback HTTP check is the next step toward verifying native request handling.
 
 ## Shared client and backend
 
