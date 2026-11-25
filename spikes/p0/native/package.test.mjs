@@ -5,6 +5,27 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
+test("session packaging rejects hosted origins and Android arm64 before creating build artifacts", async t => {
+  const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const packager = join(root, "package.mjs");
+  await copyFile(new URL("./package.mjs", import.meta.url), packager);
+  const origin = "https://synthetic-portable-test.convex.cloud";
+  for (const args of [
+    ["--target", "windows", "--origin", origin],
+    ["--target", "x86_64", "--origin", origin],
+    ["--target", "aarch64"],
+  ]) {
+    const result = spawnSync(process.execPath, [packager, "--session", ...args], {
+      cwd: root, encoding: "utf8", env: { PATH: root }, timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /session fixture requires offline Windows or Android x86_64/);
+    assert.deepEqual(await readdir(root), ["package.mjs"]);
+  }
+});
+
 for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore.java"]) {
   test("Android packaging stops before the frontend when " + stagedSource + " is already staged", async t => {
     const root = await mkdtemp(join(tmpdir(), "klaxon-p0-package-"));
