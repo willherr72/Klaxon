@@ -187,14 +187,50 @@ fn provider_flag(slot: &Path, flag: &str) -> Result<bool, &'static str> {
         .map_err(|_| "unavailable")
 }
 
-// Model only the username/password mutation result. The fixture never accepts credentials.
 fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str> {
     let slot = store::Slot::lock(path).map_err(|_| "unavailable")?;
     require_no_pending_sign_out(&slot)?;
+    if path.try_exists().map_err(|_| "unavailable")? {
+        return Err("unavailable");
+    }
     let (id, access, refresh) = match owner {
         Owner::A => (OWNER_A_ID, OWNER_A_ACCESS, OWNER_A_REFRESH),
         Owner::B => ("p0-fixture-owner-b", "p0-inert-access-b", OWNER_B_REFRESH),
     };
+    let response = initial_response(path, id, access, refresh)?;
+    let grant =
+        super::refresh_response::decode_sign_in(&response, id).map_err(|_| "unavailable")?;
+    if grant.access_token != access || grant.refresh_token != refresh {
+        return Err("unavailable");
+    }
+    slot.seed(grant.refresh_token.as_bytes())
+        .map_err(|_| "unavailable")?;
+    Ok("fixture-ready")
+}
+
+fn initial_response(
+    path: &Path,
+    id: &str,
+    access: &str,
+    refresh: &str,
+) -> Result<Vec<u8>, &'static str> {
+    #[cfg(feature = "p0-windows-sign-out-http")]
+    if let Some(port) = env::var_os("KLAXON_P0_SIGN_IN_PORT") {
+        if id != OWNER_A_ID {
+            return Err("unavailable");
+        }
+        // Public fixture inputs only. Nothing from the WebView selects the endpoint or identity.
+        let request = serde_json::json!({
+            "path": "auth:signInWithUsernamePassword", "format": "convex_encoded_json",
+            "args": [{"username":"p0-local-user","password":"p0-inert-input"}]
+        });
+        let (status, body) = loopback::post(port.to_str(), &request)?;
+        return if (200..300).contains(&status) {
+            Ok(body)
+        } else {
+            Err("retry-required")
+        };
+    }
     let result = if provider_flag(path, "p0-signin-denied")? {
         serde_json::json!({"status":"error","userError":{"error":"USER_NOT_FOUND"}})
     } else {
@@ -208,16 +244,8 @@ fn seed_session(path: &Path, owner: Owner) -> Result<&'static str, &'static str>
             "refreshTokenExpiresAt":4102444800000_i64
         }})
     };
-    let response = serde_json::to_vec(&serde_json::json!({"status":"success","value":result}))
-        .map_err(|_| "unavailable")?;
-    let grant =
-        super::refresh_response::decode_sign_in(&response, id).map_err(|_| "unavailable")?;
-    if grant.access_token != access || grant.refresh_token != refresh {
-        return Err("unavailable");
-    }
-    slot.seed(grant.refresh_token.as_bytes())
-        .map_err(|_| "unavailable")?;
-    Ok("fixture-ready")
+    serde_json::to_vec(&serde_json::json!({"status":"success","value":result}))
+        .map_err(|_| "unavailable")
 }
 
 fn accept_refresh(

@@ -45,7 +45,7 @@ async function withMutationLoopback({ label, path, checkFailure }, action) {
         if (size > 1024) return reject("Unexpected " + label + " mutation body size");
         chunks.push(chunk);
       }
-      const expected = { path, format: "convex_encoded_json", args: [{ refreshToken: reply.token }] };
+      const expected = { path, format: "convex_encoded_json", args: [reply.args ?? { refreshToken: reply.token }] };
       if (!isDeepStrictEqual(JSON.parse(Buffer.concat(chunks)), expected)) {
         return reject("Unexpected " + label + " mutation body");
       }
@@ -130,5 +130,24 @@ export async function withRefreshLoopback(action) {
         next++;
       },
     });
+  });
+}
+
+export async function withSignInLoopback(action) {
+  const args = { username: "p0-local-user", password: "p0-inert-input" };
+  await withMutationLoopback({
+    label: "sign-in", path: "auth:signInWithUsernamePassword", checkFailure: "Sign-in dispatch check failed",
+  }, async ({ port, assertAttempts, allow }) => {
+    allow({ args, status: 200, value: { status: "error", userError: { error: "USER_NOT_FOUND" } } });
+    await action({
+      port, assertAttempts,
+      allowSuccess() {
+        assertAttempts(1);
+        allow({ args, status: 200, value: {
+          status: "complete", tokens: { ...rotated.tokens, refreshToken: predecessor },
+        } });
+      },
+    });
+    assertAttempts(2);
   });
 }

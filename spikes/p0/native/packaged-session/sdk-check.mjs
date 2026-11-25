@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createReadStream } from "node:fs";
 import { access, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { withRefreshLoopback, withSignOutLoopback } from "./auth-loopback.mjs";
+import { withRefreshLoopback, withSignInLoopback, withSignOutLoopback } from "./auth-loopback.mjs";
 import { checkProfileBytes, containsMarker, containsSdkAccess } from "./web-check.mjs";
 
 const click = (panel, name) => panel.getByRole("button", { name, exact: true }).click();
@@ -330,7 +330,26 @@ export async function exerciseWindowsLoopbackRefresh(launch, root, record) {
 
   await withRefreshLoopback(async loopback => {
     const env = { KLAXON_P0_REFRESH_PORT: String(loopback.port) };
-    await launch([(page, panel) => seed(page, panel)], env);
+    await withSignInLoopback(async signIn => {
+      await launch([async (page, panel) => {
+        const start = await page.evaluate(() => window.p0Replies.length);
+        await click(panel, "Start synthetic session");
+        await page.waitForFunction(start => window.p0Replies.length > start, start);
+        signIn.assertAttempts(1);
+        await statusIs(page, "unavailable");
+        assert.deepEqual(await page.evaluate(start => window.p0Replies.slice(start), start), ["unavailable"]);
+        await assert.rejects(access(record), { code: "ENOENT" });
+        await expectColdDenial(page, panel);
+        signIn.allowSuccess();
+        await seed(page, panel);
+        assert.equal(await page.evaluate(() => window.p0SdkFixture.evidence.socketsOpened), 0);
+        const sealed = await readProtectedRecord();
+        await click(panel, "Start synthetic session");
+        await statusIs(page, "unavailable");
+        signIn.assertAttempts(2);
+        assert.ok((await readFile(record)).equals(sealed), "duplicate sign-in changed the protected record");
+      }], { ...env, KLAXON_P0_SIGN_IN_PORT: String(signIn.port) });
+    });
     loopback.assertAttempts(0);
     const predecessor = await readProtectedRecord();
 

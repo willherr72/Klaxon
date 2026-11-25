@@ -78,6 +78,8 @@ The smoke seeds and rotates an inert grant before clicking Sign out. The server 
 
 From `spikes/p0`, run `node native/smoke.mjs windows-sdk-refresh-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe` with the HTTP fixture built above. The runner supplies a disposable loopback port through `KLAXON_P0_REFRESH_PORT`. A fresh process must deny access and preserve the encrypted record after HTTP 503, even when the body contains `noSession`. The next process must publish a rotated record before reporting authentication. A final process must send the successor and clear its slot on HTTP 200 with `noSession`. The issuer responses use inert markers.
 
+The first host receives a separate `KLAXON_P0_SIGN_IN_PORT`. Clicking Start synthetic session sends the pinned username/password mutation with two fixed public fixture strings. A denied response leaves the slot empty. A successful response seeds the protected record for the cold-refresh sequence. Another start against the occupied slot must leave that record intact and issue no third mutation. All issuer listeners bind to ephemeral IPv4 loopback ports.
+
 ## Android emulator fixture
 
 ### Packaged Android session

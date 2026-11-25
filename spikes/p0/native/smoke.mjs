@@ -31,7 +31,7 @@ const windowsLoopbackCases = {
   "windows-sdk-refresh-loopback": {
     exercise: exerciseWindowsLoopbackRefresh,
     name: "cold refresh",
-    result: "HTTP 503 preserved ciphertext. The authenticated reply had a protected successor. Successor expiry cleared the slot.",
+    result: "Sign-in denial left the slot empty; an accepted grant seeded it. HTTP 503 preserved ciphertext. Rotation persisted the successor and expiry cleared the slot.",
   },
 };
 
