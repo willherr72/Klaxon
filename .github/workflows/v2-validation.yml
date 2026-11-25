@@ -38,6 +38,8 @@ jobs:
         run: |
           npm ci --prefix spikes/p0/reminder-push --ignore-scripts --no-audit --no-fund
           node --test spikes/p0/reminder-evidence.test.mjs spikes/p0/reminder-push/*.test.mjs
+      - name: Check the native Android alarm receipt contract on the JVM
+        run: JAVA_HOME="$JAVA_HOME_17_X64" node spikes/p0/native/android-alarm-visible/test-host.mjs
       - name: Build portable fixture
         working-directory: spikes/p0
         run: |

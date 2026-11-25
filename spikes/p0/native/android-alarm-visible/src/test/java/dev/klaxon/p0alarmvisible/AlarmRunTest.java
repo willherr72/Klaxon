@@ -24,9 +24,24 @@ public final class AlarmRunTest {
         ignore(armed, "klaxon-p0-alarm-visible://run/64449afa-bbe9-4b02-bccb-121291234abc/2");
         ignore(armed, "klaxon-p0-alarm-visible://run/84587582-2392-45d2-bbe2-833af870cafe/1");
 
+        // UTC can jump, so only the elapsed clock admits a callback.
+        AlarmRun.Callback early = new AlarmRun.Callback(armed.cutoffMs(), armed.dueElapsedMs() - 1,
+                25, 200, true, false, true);
+        armed.receive(IDENTITY, early, state -> { throw new AssertionError("early callback consumed the run"); }, () -> {
+            throw new AssertionError("early callback attempted to display");
+        });
+        for (long elapsed : new long[]{armed.dueElapsedMs(), armed.cutoffElapsedMs()}) {
+            AlarmRun.Callback boundary = new AlarmRun.Callback(armed.armedAtMs(), elapsed, 25, 200,
+                    true, false, true);
+            List<AlarmRun> writes = new ArrayList<>();
+            armed.receive(IDENTITY, boundary, writes::add, () -> AlarmRun.DisplayResult.REQUESTED);
+            require(writes.size() == 2 && writes.get(1).receipt().result() == AlarmRun.DisplayResult.REQUESTED,
+                    "elapsed due and cutoff are both included in the display window");
+        }
+
         for (AlarmRun.DisplayResult result : List.of(AlarmRun.DisplayResult.REQUESTED,
                 AlarmRun.DisplayResult.PERMISSION_DENIED, AlarmRun.DisplayResult.CHANNEL_BLOCKED,
-                AlarmRun.DisplayResult.FAILED)) {
+                AlarmRun.DisplayResult.FAILED, AlarmRun.DisplayResult.EXPIRED)) {
             List<AlarmRun> writes = new ArrayList<>();
             armed.receive(IDENTITY, CALLBACK, writes::add, () -> {
                 require(writes.size() == 1, "claim must be saved before checking display");
@@ -75,6 +90,18 @@ public final class AlarmRunTest {
         require(saved.get(0).receipt().result() == AlarmRun.DisplayResult.UNCERTAIN,
                 "display evidence must remain uncertain after receipt failure");
         ignore(saved.get(0), IDENTITY);
+
+        RuntimeException interrupted = new RuntimeException("display request interrupted");
+        List<AlarmRun> claimed = new ArrayList<>();
+        try {
+            armed.receive(IDENTITY, CALLBACK, claimed::add, () -> { throw interrupted; });
+            throw new AssertionError("display request interruption must propagate");
+        } catch (RuntimeException failure) {
+            require(failure == interrupted, "expected the original display request interruption");
+        }
+        require(claimed.size() == 1 && claimed.get(0).receipt().result() == AlarmRun.DisplayResult.UNCERTAIN,
+                "the uncertain claim must survive a display request interruption");
+        ignore(claimed.get(0), IDENTITY);
         System.out.println("Alarm run receipt tests passed.");
     }
 

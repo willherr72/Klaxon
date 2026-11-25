@@ -251,12 +251,13 @@ node spikes/p0/native/android-alarm-visible/check.mjs emulator-5586
 
 The APK is `spikes/p0/native/android-alarm-visible/build/outputs/apk/debug/android-alarm-visible-debug.apk`. Set `ADB` to the SDK executable and substitute the serial of a freshly created API 36 x86_64 `KlaxonAlarmVisibleP0_` AVD. It must have airplane mode on, Wi-Fi off, no active default network, no previous fixture install and no ADB mappings. The smoke opens the real permission prompt, denies it, verifies arming is disabled and checks the same state after a fresh launch. It verifies scoped uninstall before the operator shuts down the selected AVD.
 
-The host test substitutes a display request and checks the one-shot claim, cutoff and write failures. From `spikes/p0/native/android-alarm-visible` with the JDK on `Path`:
+The host test substitutes a display request and checks the one-shot claim, elapsed-time boundaries and interrupted writes. From the repository root with JDK 17 or newer on `Path` or selected through `JAVA_HOME`:
 
 ```powershell
-javac --release 17 -d build/host-test-classes src/main/java/dev/klaxon/p0alarmvisible/AlarmRun.java src/test/java/dev/klaxon/p0alarmvisible/AlarmRunTest.java
-java -cp build/host-test-classes dev.klaxon.p0alarmvisible.AlarmRunTest
+node spikes/p0/native/android-alarm-visible/test-host.mjs
 ```
+
+The v2 Ubuntu validation job runs the same command. This check exercises the Java receipt and cutoff logic with synthetic data. The packaged permission check and owner lock-screen observation have their own procedures.
 
 ## Hosted packaged native acceptance
 
