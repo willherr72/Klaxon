@@ -30,7 +30,7 @@ function tokenBundle(accessToken, refreshToken, userId = "synthetic-owner-1") {
 }
 
 // The page runs the bundled Convex SDK. Only the cloud transport is replaced.
-async function client(t, respond, onSocketMessage) {
+async function client(t, respond, onSocketMessage, { signInTokens } = {}) {
   const context = await browser.newContext({ serviceWorkers: "block" });
   t.after(() => context.close());
   const authenticating = Promise.withResolvers();
@@ -56,7 +56,7 @@ async function client(t, respond, onSocketMessage) {
     const success = value => route.fulfill({ json: { status: "success", value } });
     if (path === "auth:signInWithUsernamePassword") {
       ++logins;
-      const tokens = tokenBundle(`access-${logins}`, `refresh-${logins}`, `synthetic-owner-${logins}`);
+      const tokens = signInTokens ?? tokenBundle(`access-${logins}`, `refresh-${logins}`, `synthetic-owner-${logins}`);
       await success({ status: "complete", tokens });
     } else {
       await respond(path, route, success);
@@ -81,17 +81,121 @@ function socketTransition(socket) {
   const bytes = Buffer.alloc(8);
   let tick = 0n;
   let version = { querySet: 0, identity: 0, ts: bytes.toString("base64") };
-  return (changes, modifications = []) => {
+  return (changes, modifications = [], { clientClockSkew } = {}) => {
     const startVersion = version;
     bytes.writeBigUInt64LE(++tick);
     version = { ...version, ...changes, ts: bytes.toString("base64") };
-    socket.send(JSON.stringify({ type: "Transition", startVersion, endVersion: version, modifications }));
+    socket.send(JSON.stringify({ type: "Transition", startVersion, endVersion: version, modifications, clientClockSkew }));
   };
 }
 
 function updatedTask(queryId, row) {
   return { type: "QueryUpdated", queryId, value: [row], logLines: [], journal: null };
 }
+
+function timedAccessMarker(iat) {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const header = encode({ alg: "ES256", typ: "JWT" });
+  const claims = encode({ sub: "synthetic-owner-1", aud: "convex", jti: `test-${iat}`, iat, exp: iat + 20 });
+  // Intentionally invalid signature. Only the intercepted socket accepts the marker.
+  return `${header}.${claims}.dGVzdA`;
+}
+
+test("scheduled token renewals keep the original task subscription and update HTTP and sign-out credentials",
+  { timeout: 20000 }, async t => {
+    const issuedAt = 1_800_000_000;
+    const initial = tokenBundle(timedAccessMarker(issuedAt), "refresh-at-sign-in");
+    const first = tokenBundle(timedAccessMarker(issuedAt + 10), "refresh-after-first-renewal");
+    const second = tokenBundle(timedAccessMarker(issuedAt + 20), "refresh-after-second-renewal");
+    const originalRow = { _id: "test-row", title: "Before scheduled renewal" };
+    const firstRow = { ...originalRow, title: "After the first scheduled renewal" };
+    const secondRow = { ...originalRow, title: "After the second scheduled renewal" };
+    const readRow = { ...originalRow, title: "Read after scheduled renewal" };
+    const sockets = [];
+    const authentications = [];
+    const subscriptions = [];
+    const presented = [];
+    const reads = [];
+    const revocations = [];
+    let allowedRenewals = 0;
+
+    const { page, login, errors } = await client(t, async (path, route, success) => {
+      if (path === "auth:refreshSession") {
+        presented.push(route.request().postDataJSON().args);
+        const renewed = [first, second][presented.length - 1];
+        if (presented.length > allowedRenewals || !renewed) {
+          // Exercise a scripted issuer that returns the same bearer for a premature exchange.
+          return success({ kind: "rotated", tokens: { ...initial, refreshToken: "early-rotation" } });
+        }
+        return success({ kind: "rotated", tokens: renewed });
+      }
+      if (path === "auth:signOut") {
+        revocations.push(route.request().postDataJSON().args);
+        return success(null);
+      }
+      assert.equal(path, "tasks:list");
+      reads.push(route.request().headers().authorization);
+      await success([readRow]);
+    }, (message, socket, transition) => {
+      if (message.type === "Connect") sockets.push(socket);
+      if (message.type === "Authenticate" && message.tokenType === "User") {
+        authentications.push({ socket, token: message.value });
+        const row = message.value === first.accessToken ? firstRow :
+          message.value === second.accessToken ? secondRow : undefined;
+        const changes = row ? [updatedTask(subscriptions[0].queryId, row)] : [];
+        const timing = message.value === initial.accessToken ? { clientClockSkew: 0 } : undefined;
+        transition({ identity: message.baseVersion + 1 }, changes, timing);
+      }
+      if (message.type === "ModifyQuerySet") {
+        const query = message.modifications.find(mod => mod.type === "Add" && mod.udfPath === "tasks:list");
+        if (!query) return;
+        subscriptions.push({ socket, queryId: query.queryId });
+        transition({ querySet: message.newVersion }, [updatedTask(query.queryId, originalRow)]);
+      }
+    }, { signInTokens: initial });
+
+    const start = (issuedAt - 1) * 1000;
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(issuedAt * 1000);
+    await login("synthetic-a");
+    await page.getByText("Subscription connected", { exact: true }).waitFor();
+    const tasks = page.getByRole("list", { name: "Synthetic tasks" });
+    await tasks.getByText(originalRow.title, { exact: true }).waitFor();
+    // The pinned SDK renews 10 seconds ahead of a 20-second token's expiration.
+    await page.clock.runFor(9_000);
+    assert.deepEqual(presented, [], "the sign-in token should be reused until its scheduled renewal");
+
+    allowedRenewals = 1;
+    await page.clock.runFor(1_100);
+    await tasks.getByText(firstRow.title, { exact: true }).waitFor();
+    assert.deepEqual(presented, [[{ refreshToken: "refresh-at-sign-in" }]]);
+
+    await page.clock.runFor(9_000);
+    assert.equal(presented.length, 1, "the first successor should be reused until its scheduled renewal");
+    allowedRenewals = 2;
+    await page.clock.runFor(1_100);
+    await tasks.getByText(secondRow.title, { exact: true }).waitFor();
+    assert.deepEqual(presented, [
+      [{ refreshToken: "refresh-at-sign-in" }], [{ refreshToken: "refresh-after-first-renewal" }],
+    ]);
+    assert.equal(sockets.length, 1);
+    assert.equal(subscriptions.length, 1);
+    assert.equal(subscriptions[0].socket, sockets[0]);
+    assert.deepEqual(authentications.map(({ token }) => token), [initial.accessToken, first.accessToken, second.accessToken]);
+    assert.ok(authentications.every(({ socket }) => socket === sockets[0]));
+    assert.deepEqual(reads, []);
+
+    await page.getByRole("button", { name: "Read tasks" }).click();
+    await tasks.getByText(readRow.title, { exact: true }).waitFor();
+    assert.deepEqual(reads, [`Bearer ${second.accessToken}`]);
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await page.getByRole("status").getByText("Signed out.").waitFor();
+    await page.getByRole("button", { name: "Sign in" }).waitFor();
+    assert.deepEqual(revocations, [[{ refreshToken: "refresh-after-second-renewal" }]]);
+    await page.clock.runFor(11_000);
+    assert.equal(presented.length, 2, "sign-out should cancel further renewals");
+    assert.deepEqual(errors, []);
+  });
 
 test("reloading after an authenticated read requires sign-in and clears the account view", async t => {
   const row = { _id: "test-row", title: "Transient task" };
@@ -158,7 +262,6 @@ async function checkOverlappingRead(t, source) {
   const oldRow = { _id: "test-row", title: "Original task title" };
   const newRow = { ...oldRow, title: "Updated task title" };
   const latest = source === "subscription" ? newRow : { ...oldRow, title: "Latest HTTP title" };
-  let rotations = 0;
   let reads = 0;
   const readStarted = Promise.withResolvers();
   const finishRead = Promise.withResolvers();
@@ -169,10 +272,6 @@ async function checkOverlappingRead(t, source) {
   t.after(() => finishFollowup.resolve());
 
   const { page, login, errors } = await client(t, async (path, route, success) => {
-    if (path === "auth:refreshSession") {
-      // The SDK checks for a fresh token immediately after confirming the cached token.
-      return success({ kind: "rotated", tokens: tokenBundle("access-1", `rotated-refresh-${++rotations}`) });
-    }
     assert.equal(path, "tasks:list");
     assert.equal(route.request().headers().authorization, "Bearer access-1");
     if (++reads === 2) {
@@ -238,15 +337,11 @@ async function checkReconnect(t, source) {
   const finishOldRead = Promise.withResolvers();
   t.after(() => finishOldRead.resolve());
   const writes = [];
-  let rotations = 0;
   let reads = 0;
   let firstSocket;
   let reconnected = false;
 
   const { page, login, errors } = await client(t, async (path, route, success) => {
-    if (path === "auth:refreshSession") {
-      return success({ kind: "rotated", tokens: tokenBundle("access-1", `rotated-refresh-${++rotations}`) });
-    }
     if (path === "tasks:create" || path === "tasks:rename") {
       writes.push(path);
       return success(null);

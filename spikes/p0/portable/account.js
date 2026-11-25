@@ -42,7 +42,9 @@ export async function signIn(origin, username, password, events) {
   let disposed = false;
   const http = new ConvexHttpClient(origin, options);
   http.setAuth(tokens.accessToken);
-  const live = new ConvexClient(origin, { logger: false });
+  // Sign-in just minted this grant. Let the SDK schedule renewal after the
+  // server confirms it, avoiding a second mutation during startup.
+  const live = new ConvexClient(origin, { logger: false, initialAuthTokenReuse: true });
   const connectionState = () => live.connectionState();
   const publishConnection = state => {
     if (!disposed) events.connection(state);
