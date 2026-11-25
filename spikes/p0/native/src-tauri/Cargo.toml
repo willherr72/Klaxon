@@ -46,10 +46,12 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [[bin]]
 name = "windows_session"
+path = "src/fixture-bins/windows_session.rs"
 required-features = ["p0-session", "custom-protocol"]
 
 [[bin]]
 name = "windows_local_provider"
+path = "src/fixture-bins/windows_local_provider.rs"
 required-features = ["p0-local-provider", "custom-protocol"]
 
 # Preserve debuggable WebViews while keeping the APK practical to transfer to a device.
