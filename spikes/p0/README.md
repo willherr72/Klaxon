@@ -32,6 +32,19 @@ Each run verifies signup and separate login for the same account, explicit refre
 
 The package lock fixes Convex 1.51.0, Convex Auth 2.1.0 and Svelte 5.59.1. This flow uses framework-independent Convex APIs with Svelte rendering. Access-token expiry, automatic refresh, persisted sessions, OS secure storage, Tauri packaging and managed HTTPS deployment need their own verification. The Windows host result covers the rendering engine on this PC. It does not exercise the shipping Tauri shell or its origin and CSP configuration.
 
+## Local provider acceptance for an open subscription
+
+Pending owner authorization for temporary test identities and provider-issued sessions. The existing browser probe unsubscribes and closes its socket before sign-out. Its logout result proves explicit access and refresh denial after revocation. The packaged Windows HTTP fixture accepts only fixed inert grants. Running either command above as-is cannot establish what an open packaged subscription receives. [Browser logout](browser.js) · [Windows grant validation](native/src-tauri/src/windows_session.rs)
+
+For the proposed run, use a fresh project directory and isolated CLI state, with no inherited deployment selection, provider credentials or prior fixture database. The spike permits public synthetic signup only when its backend origin is exactly `http://127.0.0.1:3210`. If that port is occupied, stop before startup. The CLI and any cleanup must operate only on state created for this run. Before counting packaged evidence, confirm the native client actually consumes the returned grant and its SDK connects to the intended loopback provider. [Signup guard](convex/users.ts) · [Packager](native/package.mjs)
+
+1. Open two independently authenticated sessions for owner A and one for owner B. Create one synthetic task as A. Both A sessions must render the same ID and title from their subscriptions; B's authenticated read must omit it.
+2. Revoke the session whose still-open subscription is under observation, using that session's refresh grant through a separate request. Keep its SDK, cached access token and original subscription alive. Signing out the independently logged-in A control revokes a different session.
+3. After acknowledgment, verify the target's existing access token returns false from `isAuthenticated` and no rows from a fresh `tasks.list`. Separately observe the already-open subscription transition from the known nonempty result to an empty result and the rendered row disappear. Rename the task from the surviving A control and confirm its new title there. Record any disconnect, forced refresh, or local clearing before the transition as inconclusive for uninterrupted subscription invalidation.
+4. Confirm the revoked grant cannot refresh, the surviving A control still sees its task, and B still has no access. Close clients, revoke remaining test sessions, stop the disposable backend and remove only its verified test state. Record timestamps, outcomes and cleanup without account names or tokens.
+
+This expectation follows the pinned Auth 2.1.0 implementation: `signOut` deletes the session associated with the submitted refresh token, and `getAuthUserId` looks up the session identified by the access token. The spike's task-list query returns an empty result when that lookup yields no user. Runtime observations for this procedure are still pending. [Task query](convex/tasks.ts)
+
 ## Android emulator and Windows Edge
 
 Use a fresh API 36 Google Play x86_64 AVD, boot it fully and open Chrome once. Choose **Use without an account** in Chrome’s first-run screen. Run the local deployment described above. From the spike directory, point the adapter to the disposable device. Substitute its actual serial from `adb devices`.
