@@ -59,7 +59,7 @@ function timestamp(tick) {
   return bytes.toString("base64");
 }
 
-export async function withScriptedAndroidProvider(action) {
+export async function withScriptedAndroidProvider(action, { routeOutage = false } = {}) {
   const rows = [{ _id: taskId, title }];
   const sockets = new Set();
   const peers = new WebSocketServer({ noServer: true, maxPayload, perMessageDeflate: false });
@@ -69,6 +69,8 @@ export async function withScriptedAndroidProvider(action) {
   let accessA2;
   let subscription;
   let unexpected = false;
+  let connectionCount = 0;
+  let requestCount = 0;
 
   function rejectRequest(res) {
     unexpected = true;
@@ -85,7 +87,7 @@ export async function withScriptedAndroidProvider(action) {
   function mutate(res, body) {
     if (phase === "sign-in" && matchesCall(body, "auth:signInWithUsernamePassword",
       { username: input.username, password: input.password })) {
-      phase = "first-refresh";
+      phase = routeOutage ? "retry-refresh" : "first-refresh";
       return reply(res, 200, { status: "complete", tokens: grant(refreshA1, "a1") });
     }
     if (matchesCall(body, "auth:refreshSession", { refreshToken: refreshA1 })) {
@@ -117,6 +119,7 @@ export async function withScriptedAndroidProvider(action) {
   }
 
   const server = createServer({ maxHeaderSize: 8192, headersTimeout: 5000, requestTimeout: 10000 }, async (req, res) => {
+    requestCount++;
     const { origin, authorization, cookie, "content-length": contentLength } = req.headers;
     if (!cookie && origin === packagedOrigin && req.url === "/api/query" && req.method === "OPTIONS" &&
         !authorization && req.headers["access-control-request-method"] === "POST") {
@@ -159,14 +162,19 @@ export async function withScriptedAndroidProvider(action) {
   }
 
   server.on("connection", socket => {
+    connectionCount++;
     sockets.add(socket);
     socket.once("close", () => sockets.delete(socket));
   });
   server.on("error", () => { unexpected = true; });
   server.on("clientError", (_error, socket) => rejectSocket(socket));
-  server.on("connect", (_req, socket) => rejectSocket(socket));
+  server.on("connect", (_req, socket) => {
+    requestCount++;
+    rejectSocket(socket);
+  });
   peers.on("wsClientError", (_error, socket) => rejectSocket(socket));
   server.on("upgrade", (req, socket, head) => {
+    requestCount++;
     if (req.url !== syncPath || req.headers.origin !== packagedOrigin || req.headers.authorization || req.headers.cookie ||
         subscription || phase !== "rotated" || initialReads.size !== 2) return rejectSocket(socket);
     peers.handleUpgrade(req, socket, head, peer => {
@@ -235,7 +243,7 @@ export async function withScriptedAndroidProvider(action) {
 
   function verify() {
     assert.ok(!unexpected, "Unexpected scripted Android provider request or transport failure");
-    assert.equal(phase, "confirmed-revoked", "Expected sign-in, nonauthoritative refresh, rotation, sign-out and refresh denial");
+    assert.equal(phase, "confirmed-revoked", "Expected sign-in, refresh rotation, sign-out and refresh denial");
     assert.equal(initialReads.size, 2, "Expected authenticated HTTP reads");
     assert.equal(revokedReads.size, 2, "Expected HTTP reads with the revoked bearer");
     assert.ok(subscription?.authenticated && subscription.initialRowsSent && subscription.emptyRowsSent,
@@ -246,7 +254,8 @@ export async function withScriptedAndroidProvider(action) {
     const listening = once(server, "listening");
     server.listen({ host: loopback, port: 0, exclusive: true });
     await listening;
-    return await action({ port: server.address().port, input, taskId, title, verify, phase: () => phase });
+    return await action({ port: server.address().port, input, taskId, title, verify, phase: () => phase,
+      providerConnections: () => connectionCount, providerRequests: () => requestCount });
   } finally {
     for (const peer of peers.clients) peer.terminate();
     for (const socket of sockets) socket.destroy();

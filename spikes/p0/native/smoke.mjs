@@ -428,7 +428,9 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
   const provider = platform === "android-provider-preflight" || acceptance || !!hosted;
   const extra = process.argv.slice(4);
   const reconnect = acceptance && extra.length === 1 && extra[0] === "--reconnect";
-  if (provider && !hosted) assert.ok(extra.length === 0 || reconnect, "Pass one disposable emulator serial and optional acceptance --reconnect");
+  const routeOutage = platform === "android-provider-preflight" && extra.length === 1 && extra[0] === "--network-outage";
+  if (provider && !hosted) assert.ok(extra.length === 0 || reconnect || routeOutage,
+    "Pass one disposable emulator serial with optional acceptance --reconnect or preflight --network-outage");
   const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
@@ -464,12 +466,14 @@ export async function android(serial, hosted, { requireNetwork = true } = {}) {
     if (hosted) return hosted({ withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId });
     if (provider) {
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
-      const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance } =
+      const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance, exerciseAndroidRouteOutage } =
         await import("./local-provider/android-session-preflight.mjs");
       const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect });
       const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
-      const session = platform === "android-provider-preflight" ? await exerciseAndroidProviderSession(target) :
-        await exerciseAndroidProviderAcceptance(target, { reconnect });
+      let session;
+      if (routeOutage) session = await exerciseAndroidRouteOutage(target);
+      else if (acceptance) session = await exerciseAndroidProviderAcceptance(target, { reconnect });
+      else session = await exerciseAndroidProviderSession(target);
       return { transport, session };
     }
     if (sdk) {

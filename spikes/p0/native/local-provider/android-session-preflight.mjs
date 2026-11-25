@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { version } from "convex";
 import { androidSubscriptionPort } from "../../build-policy.mjs";
 import { readFixtureFile } from "../packaged-session/adb-file.mjs";
 import { withPreflightReverse } from "./android-preflight.mjs";
@@ -9,7 +10,8 @@ import { verifyHostedPage } from "./check.mjs";
 const inputPath = "cache/p0-local-input.json";
 const slot = "no_backup/localprovider.bin";
 
-export async function withAndroidTarget({ withActivity, adb, adbBytes, appId, primaryUser = false }, input, exercise, origin) {
+export async function withAndroidTarget({ withActivity, adb, adbBytes, appId, primaryUser = false }, input, exercise, origin,
+  { expectedProcesses = 3 } = {}) {
   const slotName = origin ? "localprovider-hosted-" + createHash("sha256").update(origin).digest("hex") : "localprovider";
   const recordPath = "no_backup/" + slotName + ".bin";
   const pids = new Set();
@@ -73,7 +75,7 @@ export async function withAndroidTarget({ withActivity, adb, adbBytes, appId, pr
         return false;
       }), "SDK access should be denied after cold logout");
     });
-    assert.equal(pids.size, 3);
+    assert.equal(pids.size, expectedProcesses);
     return { ...result, appProcesses: pids.size, inputConsumed: true, coldLogout: true };
   } catch (error) {
     // A failed ADB command can still have landed. Retry removal if its acknowledgment was lost.
@@ -85,6 +87,110 @@ export async function withAndroidTarget({ withActivity, adb, adbBytes, appId, pr
     }
     throw error;
   }
+}
+
+export async function verifyOfflineWebView(page) {
+  const httpUrl = "http://127.0.0.1:3210/api/query";
+  const socketUrl = `ws://127.0.0.1:3210/api/${version}/sync`;
+  let httpError;
+  let socketError;
+  const onRequestFailed = request => {
+    if (request.url() === httpUrl) httpError = request.failure()?.errorText;
+  };
+  const onSocket = socket => {
+    if (socket.url() === socketUrl) socket.once("socketerror", error => { socketError = error; });
+  };
+  page.on("requestfailed", onRequestFailed);
+  page.on("websocket", onSocket);
+  try {
+    const probe = await page.evaluate(async ({ httpUrl, socketUrl }) => {
+      const httpFailure = fetch(httpUrl, {
+        cache: "no-store", credentials: "omit", signal: AbortSignal.timeout(5000),
+      }).then(() => false, error => error instanceof TypeError);
+      const socketFailure = new Promise(resolve => {
+        const socket = new WebSocket(socketUrl);
+        const finish = result => {
+          clearTimeout(timeout);
+          socket.onopen = socket.onclose = socket.onerror = null;
+          socket.close();
+          resolve(result);
+        };
+        const timeout = setTimeout(() => finish(false), 5000);
+        socket.onerror = () => finish(true);
+        socket.onopen = socket.onclose = () => finish(false);
+      });
+      const [http, webSocket] = await Promise.all([httpFailure, socketFailure]);
+      return { http, webSocket };
+    }, { httpUrl, socketUrl });
+    assert.deepEqual(probe, { http: true, webSocket: true });
+    assert.match(httpError ?? "", /^net::ERR_CONNECTION_REFUSED$/, "Expected Chromium HTTP connection refusal");
+    assert.match(socketError ?? "", /\bnet::ERR_CONNECTION_REFUSED\b/, "Expected Chromium WebSocket connection refusal");
+  } finally {
+    page.off("requestfailed", onRequestFailed);
+    page.off("websocket", onSocket);
+  }
+}
+
+export async function exerciseAndroidRouteOutage(platform) {
+  const { adb, adbBytes, appId } = platform;
+  function requireDisconnected() {
+    assert.equal(adb("shell", "settings", "get", "global", "airplane_mode_on"), "1");
+    assert.equal(adb("shell", "settings", "get", "global", "wifi_on"), "0");
+    assert.match(adb("shell", "dumpsys", "connectivity"), /^Active default network:[ \t]*none[ \t]*\r?$/m);
+    assert.equal(adb("reverse", "--list"), "", "Provider reverse routes must be absent during the cut");
+  }
+  return withScriptedAndroidProvider(async ({ port, input, taskId, title, providerRequests, providerConnections, verify }) => {
+    const route = action => withPreflightReverse(adb, port, action);
+    const trafficCounts = () => [providerRequests(), providerConnections()];
+    const result = await withAndroidTarget(platform, input, async launch => {
+      const before = await route(async () => {
+        await launch(async page => {
+          await page.evaluate(() => window.p0LocalProvider.signIn());
+          await page.waitForFunction(() => window.p0LocalProvider.signInResult !== undefined);
+          assert.equal(await page.evaluate(() => window.p0LocalProvider.signInResult), "fixture-ready");
+        });
+        return trafficCounts();
+      });
+      const sealed = readFixtureFile(adbBytes, appId, slot);
+      try {
+        requireDisconnected();
+        await launch(async page => {
+          requireDisconnected();
+          assert.equal(await page.evaluate(() => window.p0LocalProvider.origin), "http://127.0.0.1:3210");
+          const denial = await page.evaluate(async () => {
+            const rejectsAs = async (command, expected, args) => {
+              try { await window.__TAURI__.core.invoke(command, args); }
+              catch (error) { return error === expected; }
+              return false;
+            };
+            return {
+              resume: await rejectsAs("local_resume", "retry-required"),
+              access: await rejectsAs("local_access", "signed-out", { forceRefresh: false }),
+            };
+          });
+          assert.deepEqual(denial, { resume: true, access: true }, "Cut must deny resume and SDK access");
+          assert.equal(await page.getByRole("list", { name: "Local provider tasks" }).getByRole("listitem").count(), 0);
+          await verifyOfflineWebView(page);
+        });
+        requireDisconnected();
+        assert.deepEqual(trafficCounts(), before, "Issuer received traffic during the route cut");
+        const after = readFixtureFile(adbBytes, appId, slot);
+        try { assert.ok(after.equals(sealed), "Disconnected resume changed the sealed slot"); }
+        finally { after.fill(0); }
+      } finally { sealed.fill(0); }
+      let observation;
+      await route(() => launch(async page => {
+        await page.evaluate(expected => window.p0LocalProvider.observe(expected), { taskId, title });
+        await page.waitForFunction(() => window.p0LocalProvider.result !== undefined, undefined, { timeout: 60_000 });
+        observation = await page.evaluate(() => window.p0LocalProvider.result);
+      }));
+      return observation;
+    }, undefined, { expectedProcesses: 4 });
+    requireDisconnected();
+    verify();
+    return { ...result, providerRouteRemoved: true, nativeResumeDenied: true, offlineTransportsFailed: true,
+      sealedSlotPreserved: true, providerConnectionsDuringCut: 0, providerRequestsDuringCut: 0 };
+  }, { routeOutage: true });
 }
 
 export async function exerciseAndroidProviderSession(platform) {

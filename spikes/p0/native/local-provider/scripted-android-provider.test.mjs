@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createConnection } from "node:net";
 import test from "node:test";
 import { ConvexClient, ConvexHttpClient } from "convex/browser";
 import { anyApi as api } from "convex/server";
@@ -20,8 +22,9 @@ function mutation(origin, path, args) {
   });
 }
 
-test("rotates the native grant and clears the real SDK's existing subscription on sign-out", { timeout: 10_000 }, async () => {
-  const port = await withScriptedAndroidProvider(async ({ port, input: { username, password, owner }, taskId, title, verify }) => {
+async function verifyNativeLifecycle({ routeOutage }) {
+  const port = await withScriptedAndroidProvider(async ({ port, input: { username, password, owner }, taskId, title,
+    verify, providerRequests }) => {
     const origin = `http://127.0.0.1:${port}`;
     const post = async (path, args) => {
       const response = await mutation(origin, path, args);
@@ -30,14 +33,19 @@ test("rotates the native grant and clears the real SDK's existing subscription o
       assert.equal(envelope.status, "success");
       return envelope.value;
     };
+    assert.equal(providerRequests(), 0);
     const signIn = await post("auth:signInWithUsernamePassword", { username, password });
     assert.equal(signIn.status, "complete");
+    assert.equal(providerRequests(), 1);
     const initialRefresh = { refreshToken: signIn.tokens.refreshToken };
-    const nonauthoritative = await mutation(origin, "auth:refreshSession", initialRefresh);
-    assert.equal(nonauthoritative.status, 202);
-    assert.deepEqual(await nonauthoritative.json(), { status: "success", value: { kind: "noSession" }, logLines: [] });
+    if (!routeOutage) {
+      const nonauthoritative = await mutation(origin, "auth:refreshSession", initialRefresh);
+      assert.equal(nonauthoritative.status, 202);
+      assert.deepEqual(await nonauthoritative.json(), { status: "success", value: { kind: "noSession" }, logLines: [] });
+    }
     const rotated = await post("auth:refreshSession", initialRefresh);
     assert.equal(rotated.kind, "rotated");
+    assert.equal(providerRequests(), routeOutage ? 2 : 3);
     assert.equal(rotated.tokens.userId, owner);
     assert.ok(rotated.tokens.accessToken !== signIn.tokens.accessToken);
     assert.ok(rotated.tokens.refreshToken !== signIn.tokens.refreshToken);
@@ -69,6 +77,8 @@ test("rotates the native grant and clears the real SDK's existing subscription o
     const read = () => Promise.all([http.query(api.auth.isAuthenticated), http.query(api.tasks.list)]);
     const rows = [{ _id: taskId, title }];
     assert.deepEqual(await read(), [true, rows]);
+    const beforeSocket = providerRequests();
+    assert.equal(beforeSocket, routeOutage ? 5 : 6);
 
     const client = new ConvexClient(origin, { webSocketConstructor: PackagedOriginSocket, logger: false,
       expectAuth: true, initialAuthTokenReuse: true });
@@ -84,12 +94,14 @@ test("rotates the native grant and clears the real SDK's existing subscription o
       const cleared = new Promise(resolve => { markCleared = resolve; });
       client.onUpdate(api.tasks.list, {}, tasks => tasks.length ? markReady(tasks) : markCleared(tasks));
       assert.deepEqual(await ready, rows);
+      assert.equal(providerRequests(), beforeSocket + 1);
       const before = client.connectionState().connectionCount;
       const args = { refreshToken: rotated.tokens.refreshToken };
       assert.equal(await post("auth:signOut", args), null);
       assert.deepEqual(await post("auth:refreshSession", args), { kind: "noSession" });
       assert.deepEqual(await cleared, []);
       assert.deepEqual(await read(), [false, []]);
+      assert.equal(providerRequests(), beforeSocket + 5);
       assert.ok(client.connectionState().isWebSocketConnected);
       assert.equal(client.connectionState().connectionCount, before);
       assert.equal(forcedRefreshes, 0);
@@ -98,12 +110,30 @@ test("rotates the native grant and clears the real SDK's existing subscription o
       await client.close();
     }
     return port;
-  });
+  }, routeOutage ? { routeOutage: true } : undefined);
   await assert.rejects(fetch(`http://127.0.0.1:${port}/api/query`));
+}
+
+test("rotates the native grant and clears the real SDK's existing subscription on sign-out", { timeout: 10_000 },
+  () => verifyNativeLifecycle({ routeOutage: false }));
+
+test("rotates on the first refresh in route-outage mode and counts HTTP requests and the WebSocket upgrade",
+  { timeout: 10_000 }, () => verifyNativeLifecycle({ routeOutage: true }));
+
+test("counts a TCP connection before any provider request is sent", { timeout: 10_000 }, async () => {
+  await withScriptedAndroidProvider(async ({ port, providerConnections, providerRequests }) => {
+    assert.equal(providerConnections(), 0);
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const closed = once(socket, "close");
+    socket.end();
+    await closed;
+    assert.equal(providerConnections(), 1);
+    assert.equal(providerRequests(), 0);
+  }, { routeOutage: true });
 });
 
-test("rejects out-of-order native requests, oversized bodies, and other browser origins", async () => {
-  await withScriptedAndroidProvider(async ({ port, input, verify }) => {
+test("counts rejected HTTP requests and WebSocket upgrades", async () => {
+  await withScriptedAndroidProvider(async ({ port, input, verify, providerRequests }) => {
     const origin = `http://127.0.0.1:${port}`;
     const response = await fetch(origin + "/api/query", { method: "OPTIONS", headers: {
       Origin: "http://other.localhost", "Access-Control-Request-Method": "POST",
@@ -116,6 +146,10 @@ test("rejects out-of-order native requests, oversized bodies, and other browser 
       args: [{ username: input.username, password: input.password }] }).padEnd(5000);
     assert.equal((await fetch(origin + "/api/mutation", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: padded })).status, 400);
+    assert.equal(providerRequests(), 3);
+    const peer = new PackagedOriginSocket(`ws://127.0.0.1:${port}/unexpected`);
+    await once(peer, "error");
+    assert.equal(providerRequests(), 4);
     assert.throws(verify, /unexpected/i);
   });
 });

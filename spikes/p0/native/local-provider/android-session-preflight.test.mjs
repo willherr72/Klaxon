@@ -1,12 +1,36 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
-import { withAndroidTarget } from "./android-session-preflight.mjs";
+import { verifyOfflineWebView, withAndroidTarget } from "./android-session-preflight.mjs";
 
 const appId = "dev.klaxon.p0native";
 const origin = "https://fixture.example";
 const input = { owner: "fixture-owner", username: "fixture-user", password: "fixture-password" };
 const inputPath = "cache/p0-local-input.json";
+
+test("offline WebView transport scoring requires Chromium connection refusal on both URLs", async () => {
+  const refused = "net::ERR_CONNECTION_REFUSED";
+  for (const [httpError, socketError, expectedFailure] of [
+    [refused, `WebSocket connection: ${refused}`, undefined],
+    ["net::ERR_FAILED", refused, /HTTP connection refusal/],
+    [refused, "Error during WebSocket handshake: Unexpected response code: 400", /WebSocket connection refusal/],
+  ]) {
+    const page = new EventEmitter();
+    page.evaluate = async (_probe, { httpUrl, socketUrl }) => {
+      page.emit("requestfailed", { url: () => httpUrl, failure: () => ({ errorText: httpError }) });
+      const socket = new EventEmitter();
+      socket.url = () => socketUrl;
+      page.emit("websocket", socket);
+      socket.emit("socketerror", socketError);
+      return { http: true, webSocket: true };
+    };
+    if (expectedFailure) await assert.rejects(verifyOfflineWebView(page), expectedFailure);
+    else await verifyOfflineWebView(page);
+    assert.equal(page.listenerCount("requestfailed"), 0);
+    assert.equal(page.listenerCount("websocket"), 0);
+  }
+});
 
 for (const failure of ["lost staging acknowledgment", "mismatched readback", "sign-in", "observation",
   "lost removal acknowledgment"]) {
