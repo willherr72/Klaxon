@@ -110,7 +110,7 @@ for (const stagedSource of ["p0native/SessionPlugin.kt", "p0session/FixtureStore
   });
 }
 
-const preflightConnections = "connect-src ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:3210";
+const preflightConnections = "connect-src ipc: http://ipc.localhost http://127.0.0.1:3210 ws://127.0.0.1:3210 ws://127.0.0.1:3212";
 const preflightMarker = '<meta name="p0-android-provider-preflight" content="loopback-only">';
 
 test("Android provider preflight writes a dedicated native policy and forwards the frontend flag", async t => {

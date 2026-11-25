@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { androidSubscriptionPort } from "../../build-policy.mjs";
 import { readFixtureFile } from "../packaged-session/adb-file.mjs";
 import { withPreflightReverse } from "./android-preflight.mjs";
 import { withScriptedAndroidProvider } from "./scripted-android-provider.mjs";
@@ -32,9 +33,12 @@ async function withAndroidTarget({ withActivity, adb, adbBytes, appId }, input, 
     adbBytes(["shell", "-T", "run-as", appId, "sh", "-c", "'umask 077; cat > " + inputPath + "'"], bytes);
     assert.ok(readFixtureFile(adbBytes, appId, inputPath).equals(bytes), "One-use input was not staged intact");
   } finally { bytes.fill(0); }
-  const result = await exercise(coldLaunch);
+  function verifySlotCleared() {
+    assert.ok(!list("no_backup").some(name => name.startsWith("localprovider.")), "Provider slot should be cleared");
+  }
+  const result = await exercise(coldLaunch, verifySlotCleared);
   assert.equal(result.status, "passed", "SDK lifecycle failed at " + (result.stage ?? "observation"));
-  assert.ok(!list("no_backup").some(name => name.startsWith("localprovider.")), "Provider slot should be cleared");
+  verifySlotCleared();
   await coldLaunch(async page => {
     assert.equal(await page.evaluate(() => window.__TAURI__.core.invoke("local_resume")), "signed-out");
     assert.ok(await page.evaluate(async () => {
@@ -90,16 +94,23 @@ export async function exerciseAndroidProviderSession(platform) {
 }
 
 // Separate opt-in entry point. The default preflight never enters this function.
-export async function exerciseAndroidProviderAcceptance(platform) {
+export async function exerciseAndroidProviderAcceptance(platform, { reconnect = false } = {}) {
   const { buildControlScript } = await import("./build.mjs");
   const { withLocalBackend } = await import("./backend.mjs");
   const { withLocalProviderScenario } = await import("./provider-controls.mjs");
   const { exerciseLocalProvider } = await import("./check.mjs");
+  const { withSubscriptionRelay } = await import("./relay.mjs");
   await buildControlScript();
   try {
-    return await withLocalBackend(({ url }) => withPreflightReverse(platform.adb, 3210, () =>
-      withLocalProviderScenario(url, ({ input, ...controls }) => withAndroidTarget(platform, input, launch =>
-        exerciseLocalProvider({ launch, ...controls })))));
+    return await withLocalBackend(({ url }) => withPreflightReverse(platform.adb, 3210, () => {
+      const exercise = relay => withLocalProviderScenario(url, ({ input, ...controls }) =>
+        withAndroidTarget(platform, input, (launch, verifySlotCleared) =>
+          exerciseLocalProvider({ launch, ...controls, relay, verifySlotCleared })));
+      if (!reconnect) return exercise();
+      return withSubscriptionRelay(relay =>
+        withPreflightReverse(platform.adb, relay.port,
+          () => exercise({ ...relay, port: androidSubscriptionPort }), androidSubscriptionPort));
+    }));
   } catch {
     // Provider and browser exceptions can include the session or task arguments.
     throw new Error("Disposable local Android provider acceptance or cleanup failed.");

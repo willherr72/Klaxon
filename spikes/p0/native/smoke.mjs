@@ -392,8 +392,11 @@ export async function withWebViewForward(deviceAdb, serial, target, action) {
 export async function android(serial) {
   assert.match(serial ?? "", /^emulator-\d+$/, "Pass a disposable AVD serial");
   const sdk = platform === "android-sdk";
-  const provider = platform === "android-provider-preflight" || platform === "android-provider-acceptance";
-  if (provider) assert.equal(process.argv.slice(2).length, 2, "Pass one disposable emulator serial only");
+  const acceptance = platform === "android-provider-acceptance";
+  const provider = platform === "android-provider-preflight" || acceptance;
+  const extra = process.argv.slice(4);
+  const reconnect = acceptance && extra.length === 1 && extra[0] === "--reconnect";
+  if (provider) assert.ok(extra.length === 0 || reconnect, "Pass one disposable emulator serial and optional acceptance --reconnect");
   const guarded = sdk || provider;
   const deviceAdbBytes = (args, input) => execFileSync(process.env.ADB ?? "adb", [
     ...(guarded ? ["-H", "127.0.0.1", "-P", "5037"] : []), "-s", serial, ...args,
@@ -448,10 +451,10 @@ export async function android(serial) {
       const { exerciseAndroidProviderPreflight } = await import("./local-provider/android-preflight.mjs");
       const { exerciseAndroidProviderSession, exerciseAndroidProviderAcceptance } =
         await import("./local-provider/android-session-preflight.mjs");
-      const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId);
+      const transport = await exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect });
       const target = { withActivity, adb: deviceAdb, adbBytes: deviceAdbBytes, appId };
       const session = platform === "android-provider-preflight" ? await exerciseAndroidProviderSession(target) :
-        await exerciseAndroidProviderAcceptance(target);
+        await exerciseAndroidProviderAcceptance(target, { reconnect });
       return { transport, session };
     }
     if (sdk) {
@@ -495,5 +498,5 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const { launchAndroidAcceptance } = await import("./local-provider/android-acceptance-worker.mjs");
     process.exitCode = launchAndroidAcceptance(process.argv.slice(2));
   } else if (["android", "android-session", "android-sdk", "android-provider-preflight"].includes(platform)) await android(platformArgument);
-  else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session, android-sdk or android-provider-preflight. Android requires a disposable emulator serial.");
+  else throw new Error("Choose windows, windows-session, windows-sdk, windows-sdk-signout-loopback, windows-sdk-refresh-loopback, android, android-session, android-sdk, android-provider-preflight or android-provider-acceptance. Android requires a disposable emulator serial.");
 }

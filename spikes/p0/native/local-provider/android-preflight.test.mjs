@@ -12,6 +12,37 @@ const inertMutation = {
   args: [{ refreshToken: "klaxon-p0-inert-android-preflight" }],
 };
 
+for (const lostAck of ["none", "setup", "remove"]) {
+  test("subscription route cleanup preserves other routes with lost acknowledgment at " + lostAck, async () => {
+    const baseline = ["host-1 tcp:3210 tcp:3210", "host-1 tcp:9988 tcp:9989"];
+    const subscription = "host-1 tcp:3212 tcp:41670";
+    let rows = [...baseline];
+    let actionStarted = false;
+    const adb = (command, option, ...args) => {
+      assert.equal(command, "reverse");
+      if (option === "--list") return rows.join("\n");
+      if (option === "--no-rebind") {
+        assert.deepEqual(args, ["tcp:3212", "tcp:41670"]);
+        rows.push(subscription);
+        if (lostAck === "setup") throw Error("Setup acknowledgment lost");
+        return "";
+      }
+      assert.equal(option, "--remove");
+      assert.deepEqual(args, ["tcp:3212"]);
+      rows = rows.filter(row => row !== subscription);
+      if (lostAck === "remove") throw Error("Removal acknowledgment lost");
+      return "";
+    };
+    await assert.rejects(withPreflightReverse(adb, 41670, () => {
+      actionStarted = true;
+      assert.deepEqual(rows, [...baseline, subscription]);
+      throw Error("reconnect check failed");
+    }, 3212), lostAck === "setup" ? /reverse mapping setup/ : /reconnect check failed/);
+    assert.equal(actionStarted, lostAck !== "setup");
+    assert.deepEqual(rows, baseline);
+  });
+}
+
 function adapters({ existing, competing, lostAck, missingMarker, staleReceipt, duplicate,
   invalidMutation, browserMutation, leavePeerOpen } = {}) {
   let mapping = existing;

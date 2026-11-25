@@ -4,11 +4,11 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { WebSocketServer } from "ws";
+import { androidSubscriptionPort } from "../../build-policy.mjs";
 
 const loopback = "127.0.0.1";
 const productOrigin = "http://tauri.localhost";
 const devicePort = 3210;
-const deviceSocket = "tcp:" + devicePort;
 const deviceOrigin = `http://${loopback}:${devicePort}`;
 const mutation = {
   path: "auth:refreshSession",
@@ -16,15 +16,15 @@ const mutation = {
   args: [{ refreshToken: "klaxon-p0-inert-android-preflight" }],
 };
 
-function reverseDestinations(adb) {
+function reverseDestinations(adb, deviceSocket) {
   return adb("reverse", "--list").split(/\r?\n/)
     .map(line => line.trim().split(/\s+/).slice(-2))
     .filter(([source]) => source === deviceSocket)
     .map(([, target]) => target);
 }
 
-function removeOwnedReverse(adb, destination) {
-  const current = reverseDestinations(adb);
+function removeOwnedReverse(adb, deviceSocket, destination) {
+  const current = reverseDestinations(adb, deviceSocket);
   if (!current.includes(destination)) return;
   assert.equal(current.length, 1);
   try {
@@ -32,14 +32,17 @@ function removeOwnedReverse(adb, destination) {
   } catch {
     // A lost acknowledgment can also occur on removal. Confirm device state below.
   }
-  assert.ok(!reverseDestinations(adb).includes(destination));
+  assert.ok(!reverseDestinations(adb, deviceSocket).includes(destination));
 }
 
 // hostPort must belong to the caller's already listening IPv4 loopback server.
-export async function withPreflightReverse(deviceAdb, hostPort, action) {
+export async function withPreflightReverse(deviceAdb, hostPort, action, sourcePort = devicePort) {
+  const deviceSocket = "tcp:" + sourcePort;
   try {
     assert.ok(Number.isInteger(hostPort) && hostPort > 0 && hostPort <= 65535);
-    assert.equal(reverseDestinations(deviceAdb).length, 0);
+    assert.ok(sourcePort === devicePort || sourcePort === androidSubscriptionPort);
+    assert.ok(sourcePort !== androidSubscriptionPort || hostPort !== devicePort);
+    assert.equal(reverseDestinations(deviceAdb, deviceSocket).length, 0);
   } catch {
     throw new Error("Android provider preflight failed during reverse mapping admission.");
   }
@@ -52,7 +55,7 @@ export async function withPreflightReverse(deviceAdb, hostPort, action) {
     try {
       deviceAdb("reverse", "--no-rebind", deviceSocket, destination);
       acknowledged = true;
-      assert.ok(isDeepStrictEqual(reverseDestinations(deviceAdb), [destination]));
+      assert.ok(isDeepStrictEqual(reverseDestinations(deviceAdb, deviceSocket), [destination]));
     } catch {
       throw new Error("Android provider preflight failed during reverse mapping setup.");
     }
@@ -60,7 +63,7 @@ export async function withPreflightReverse(deviceAdb, hostPort, action) {
   } finally {
     if (acknowledged || hostPort !== devicePort) {
       try {
-        removeOwnedReverse(deviceAdb, destination);
+        removeOwnedReverse(deviceAdb, deviceSocket, destination);
       } catch {
         throw new Error("Android provider preflight could not confirm reverse mapping cleanup.");
       }
@@ -84,7 +87,7 @@ async function matchesMutation(req) {
 }
 
 // Call inside the disposable install guard. withActivity supplies the verified app's CDP page and PID.
-export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId) {
+export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, appId, { reconnect = false } = {}) {
   const challenge = randomUUID();
   const httpPath = "/p0-android-provider/http?challenge=" + challenge;
   const webSocketPath = "/p0-android-provider/ws";
@@ -176,6 +179,7 @@ export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, 
 
     stage = "WebView WebSocket round trip";
     allowance = "websocket";
+    const wsPort = reconnect ? androidSubscriptionPort : devicePort;
     const wsReply = await page.evaluate(({ url, challenge }) => new Promise(resolve => {
       const socket = new WebSocket(url);
       function finish(reply) {
@@ -188,7 +192,7 @@ export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, 
       socket.addEventListener("message", event => finish(typeof event.data === "string" ? event.data : null), { once: true });
       socket.addEventListener("error", () => finish(null), { once: true });
       socket.addEventListener("close", () => finish(null), { once: true });
-    }), { url: deviceOrigin.replace(/^http/, "ws") + webSocketPath, challenge });
+    }), { url: `ws://${loopback}:${wsPort}${webSocketPath}`, challenge });
     assert.ok(!unexpected && observed === "websocket" && wsReply === webSocketReceipt);
 
     stage = "native refresh verification";
@@ -218,9 +222,12 @@ export async function exerciseAndroidProviderPreflight(withActivity, deviceAdb, 
     }
     return await withPreflightReverse(deviceAdb, server.address().port, async () => {
       try {
-        await withActivity(checkPage);
+        const check = () => withActivity(checkPage);
+        if (reconnect) await withPreflightReverse(deviceAdb, server.address().port, check, androidSubscriptionPort);
+        else await check();
         assert.ok(!unexpected && observed === "native");
-        return { webviewHttp: true, webviewWebSocket: true, nativeRefresh: "no-session" };
+        return { webviewHttp: true, webviewWebSocket: true, nativeRefresh: "no-session",
+          ...(reconnect && { subscriptionPort: androidSubscriptionPort }) };
       } catch {
         throw new Error("Android provider preflight failed during " + stage +
           (unexpected ? " (unexpected loopback request)." : "."));
