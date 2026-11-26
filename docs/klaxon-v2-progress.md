@@ -1,6 +1,14 @@
 # Klaxon 2.0 progress
 
-Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 gate accepted. P1-01 passed local and PR acceptance. P1-02 schema work is next. Will reports that physical Android synced with Windows powered off. Dot also passed a one-time scheduled browser read/write with Windows off. The [physical Android credential-storage check](#physical-android-hosted-session) passed. Will approved [P1-01 repository foundation](superpowers/plans/2026-11-26-p1-foundation.md). The [P0 gate decision](adr/p0-architecture.md#p0-gate-decision) records the browser fallback for Dot, the best-effort reminder route and their limits. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 gate accepted. P1-01 passed local and PR acceptance. P1-02 passed local schema and indexed-read verification. Will reports that physical Android synced with Windows powered off. Dot also passed a one-time scheduled browser read/write with Windows off. The [physical Android credential-storage check](#physical-android-hosted-session) passed. Will approved [P1-01 repository foundation](superpowers/plans/2026-11-26-p1-foundation.md). The [P0 gate decision](adr/p0-architecture.md#p0-gate-decision) records the browser fallback for Dot, the best-effort reminder route and their limits. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+
+## P1-02 schema and indexed reads
+
+Implementation `6c59d49` defines the 25 logical entities in section 5 of the plan plus the app-owned user record. Task reads use workspace-prefixed indexes for status, project rank, planned date and both deadline types. Point lookups detect duplicate task IDs within one workspace. Registered API functions and authenticated membership checks are the next step under P1-03. [Backend contract](../apps/backend/README.md)
+
+A clean install and `npm --prefix apps/backend run verify` passed strict TypeScript checking and 24 tests. The tests exercised all five task-list filters, duplicate IDs, cursor traversal across ties, invalid page sizes and independent date ranges. They also exercised the active reminder, external-link and import-mapping indexes. Legacy fixtures covered fractional task ranks, stable ordering of tied steps, a snoozed monthly reminder retaining day 31, and an empty leap-day note. The existing SQLite schema-17 migration probe passed.
+
+A disposable local Convex backend accepted the schema, rejected an invalid task priority and paginated six synthetic tasks across two workspaces. With a page size of one, the ready filter returned three tasks for one workspace and two for the other. Both workspaces could use the same public task ID. Each traversal ended with an empty terminal page. The operator verified removal of the test server and its temporary data.
 
 ## P1-01 shared build
 
@@ -712,7 +720,7 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P0-06 | Reminders | Focused and closed-window delivery passed once per device in each state, owner-reported | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
 | P0-07 | ADRs | [P0 decisions consolidated](adr/p0-architecture.md#p0-gate-decision), [physical Android storage test passed](#physical-android-hosted-session) | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Complete. Local and CI web, Windows and Android emulator checks passed | [Build and runtime acceptance plan](superpowers/plans/2026-11-26-p1-foundation.md) |
-| P1-02 | Schema | Queued | — |
+| P1-02 | Schema | Local verification passed | [Schema and indexed reads](#p1-02-schema-and-indexed-reads) |
 | P1-03 | Auth | Queued | — |
 | P1-04 | Task domain | Queued | — |
 | P1-05 | Mutation safety | Queued | — |
