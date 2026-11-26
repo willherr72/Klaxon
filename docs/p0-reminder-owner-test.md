@@ -67,7 +67,7 @@ The November 24 Windows-only run recorded one worker receipt and inconclusive lo
 
 ## Closed receiver window, browser allowed in background
 
-This pending P0-06 check uses ordinary Web Push. The operator needs fresh approval for the selected devices, the free receiver and one synthetic send per device. Follow the enrollment and private handoff above. Use the existing sender mode for exactly those targets.
+Will approved one ordinary Web Push reminder each on Windows Edge and Android Chrome for this closed-window check. The fresh free receiver is ready for enrollment. Both enrollments and an agreed send time are required before the operator uses the two-target sender.
 
 1. **Close the test window.** On Windows, close the dedicated Edge test window. On Android, close the receiver tab in Chrome and return to the home screen. Confirm that no receiver page or installed receiver window remains open. Keep the devices awake, online and unlocked so visibility can be observed. Leave the browser’s background settings as found. Record the actions and any background restriction. Explicit browser exit and Android Settings Force Stop belong to a different matrix row.
 2. **Observe once.** After Will confirms the windows are closed and agrees to the time, the operator sends the new occurrence once. Watch each device for five minutes from its actual sender attempt. Keep the receiver closed and leave the notification untapped. Record the first matching sighting, visible copy count and any observation gap. A first sighting after reopening is a separate result.
