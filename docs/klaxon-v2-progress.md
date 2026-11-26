@@ -1,6 +1,20 @@
 # Klaxon 2.0 progress
 
-Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 gate accepted. P1-01 passed local and PR acceptance. P1-02 passed local schema and indexed-read verification. Will reports that physical Android synced with Windows powered off. Dot also passed a one-time scheduled browser read/write with Windows off. The [physical Android credential-storage check](#physical-android-hosted-session) passed. Will approved [P1-01 repository foundation](superpowers/plans/2026-11-26-p1-foundation.md). The [P0 gate decision](adr/p0-architecture.md#p0-gate-decision) records the browser fallback for Dot, the best-effort reminder route and their limits. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+Development targets `v2` from v0.11.1 at `c89b655`. The P0 architecture gate passed, including physical Android credential storage and desktop-off sync. The P1 cloud foundation passed local verification. The status register below tracks implementation and outstanding acceptance checks. [P0 decision](adr/p0-architecture.md#p0-gate-decision) · [Physical Android evidence](#physical-android-hosted-session) · [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14)
+
+## P1 cloud foundation
+
+The registered backend functions derive the user from the current Convex Auth session and check workspace membership on every operation, including receipt replay. The Development browser client signs in, pages through live task results and retries a failed edit with its original operation ID and revision. The offline native foundation still serves the P1-01 build. [Backend contract](../apps/backend/README.md)
+
+The official disposable Convex backend exercised operator enrollment, sign-in, refresh rotation, revoked access and cross-owner denial. Two independently signed-in clients observed one task after simultaneous create retries. Concurrent renames against the same revision produced one committed rename and one conflict, and both subscriptions observed the winning revision. [Provider acceptance](../apps/backend/test/provider.session.mjs) · [Concurrent clients](../apps/backend/test/domain.session.mjs)
+
+Independent review found that expiry after a lost acknowledgment could discard the original operation ID. The browser now keeps the draft in page memory, binds it to the authenticated account and workspace, and resends the same request after reauthentication. A conflicting edit retains the user's draft for comparison with the latest task revision. Nine Chromium tests passed against controlled HTTP and WebSocket responses. A page reload ends this in-memory recovery window. [Browser verification](../apps/web/test/browser.test.mjs)
+
+A synthetic schema-17 SQLite database went through the source CLI, checksum verification and the registered import mutation. A retry returned the original run. The workspace export preserved the projected IDs across lanes, tasks, steps, reminders, captures and day notes. Restoring the archive and retrying returned one new workspace whose normalized export matched byte for byte. The rehearsal uses one bounded transaction per archive and leaves imported reminders inactive. Production migration, larger archives and cutover remain open. [End-to-end rehearsal](../apps/backend/test/migration.session.mjs) · [Import limits](v2-legacy-import.md) · [Backup format](backup-restore.md)
+
+The final P1 backend suite passed strict TypeScript and 93 tests, including 18 import cases. The importer checks reconciliation decisions and candidate hashes against the supplied projection. An older malformed copy retains its diagnostic while a newer valid winner imports. A repeated weekday in a legacy reminder now survives the round trip as a single scheduled weekday. Verification against original device data requires trusted source snapshots. [Migration checks](v2-legacy-import.md)
+
+Owners can inspect bounded job, integration and checkpoint summaries. The operations runbook covers quota checks and recovery. Shared-team headroom requires measurement against the intended deployment. [Operations](v2-operations.md)
 
 ## P1-02 schema and indexed reads
 
@@ -722,14 +736,14 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P0-06 | Reminders | Focused and closed-window delivery passed once per device in each state, owner-reported | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
 | P0-07 | ADRs | [P0 decisions consolidated](adr/p0-architecture.md#p0-gate-decision), [physical Android storage test passed](#physical-android-hosted-session) | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Complete. Local and CI web, Windows and Android emulator checks passed | [Build and runtime acceptance plan](superpowers/plans/2026-11-26-p1-foundation.md) |
-| P1-02 | Schema | Local verification passed | [Schema and indexed reads](#p1-02-schema-and-indexed-reads) |
-| P1-03 | Auth | Queued | — |
-| P1-04 | Task domain | Queued | — |
-| P1-05 | Mutation safety | Queued | — |
-| P1-06 | Reactive frontend | Queued | — |
-| P1-07 | Export/restore | Queued | — |
-| P1-08 | Legacy migration | Queued | — |
-| P1-09 | Observability | Queued | — |
+| P1-02 | Schema | Local and PR checks passed | [Schema and indexed reads](#p1-02-schema-and-indexed-reads) |
+| P1-03 | Auth | Local provider session and isolation verified | [Backend acceptance](#p1-cloud-foundation) |
+| P1-04 | Task domain | Domain and registered write tests passed | [Backend contract](../apps/backend/README.md) |
+| P1-05 | Mutation safety | Concurrent replay and conflict verified on local Convex | [Concurrent clients](../apps/backend/test/domain.session.mjs) |
+| P1-06 | Reactive frontend | Development browser, conflict and reauthentication checks passed | [Browser tests](../apps/web/test/browser.test.mjs) |
+| P1-07 | Export/restore | Registered restore replay and round trip verified | [Backup format](backup-restore.md) |
+| P1-08 | Legacy migration | Synthetic SQLite to Convex round trip verified | [Import limits](v2-legacy-import.md) |
+| P1-09 | Observability | Registered health queries verified locally | [Operations](v2-operations.md) |
 | P2-01 | Design system | Queued | — |
 | P2-02 | Task editing | Queued | — |
 | P2-03 | Inbox/capture | Queued | — |
