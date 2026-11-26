@@ -109,6 +109,8 @@ jobs:
           if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
             $env:PATH += ";$env:ProgramFiles\7-Zip"
           }
+          powershell.exe -NoProfile -NonInteractive -File ../ci/windows-reminder-notifier.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ../ci/windows-reminder-install.ps1
       - name: Build the offline Windows session fixture
         working-directory: spikes/p0
@@ -148,4 +150,8 @@ jobs:
         env:
           PROBE_EXIT: ${{ steps.reminder_install.outputs.notifier_exit }}
         run: |
-          if ($env:PROBE_EXIT -cne '0') { throw 'Notifier read failed. See the installer step for the API stage and error.' }
+          if ($env:PROBE_EXIT -ceq '42') {
+            Write-Output '::warning::Empty fixture schedule verified. Windows Server build 20348 returned 0x80070490 for the notification setting. Delivery remains unverified.'
+          } elseif ($env:PROBE_EXIT -cne '0') {
+            throw 'Notifier read failed. See the installer step for the API stage and error.'
+          }

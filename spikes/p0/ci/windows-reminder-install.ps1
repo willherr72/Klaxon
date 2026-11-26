@@ -221,15 +221,15 @@ try {
         $child = [Diagnostics.Process]::Start($start)
         $stdout = $child.StandardOutput.ReadToEndAsync()
         $stderr = $child.StandardError.ReadToEndAsync()
-        if ($child.WaitForExit(30000)) {
-            $probeExit = $child.ExitCode
-        } else {
+        $exited = $child.WaitForExit(30000)
+        if (-not $exited) {
             $child.Kill($true)
             if (-not $child.WaitForExit(5000)) { throw 'Notifier probe did not exit after termination.' }
             Write-Host 'The read-only notifier probe exceeded 30 seconds.'
         }
         Write-Host ($stdout.GetAwaiter().GetResult())
         Write-Host ($stderr.GetAwaiter().GetResult())
+        if ($exited) { $probeExit = $child.ExitCode }
     } catch {
         Write-Host "Notifier probe process failed: $($_.Exception.Message)"
     } finally {
