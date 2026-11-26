@@ -14,10 +14,14 @@
   import ProjectsView from './projects/ProjectsView.svelte';
   import CalendarView from './calendar/CalendarView.svelte';
   import ActivityView from './activity/ActivityView.svelte';
+  import PwaControls from './pwa/PwaControls.svelte';
+  import RemindersView from './reminders/RemindersView.svelte';
+  import { clearReminderPushDevice, reconcileReminderPushBinding } from './reminders/push-device';
   import { destinations, readRoute, routeHref, taskHref, type Route } from './planner-route';
   import PlannerShell from './planner-shell/PlannerShell.svelte';
   import { signIn, SignInError, type Session } from './session';
   import TaskDetail from './task-detail/TaskDetail.svelte';
+  import { createDraftRecovery } from './draft-recovery';
   import './development.css';
 
   let { origin }: { origin: string } = $props();
@@ -35,6 +39,7 @@
     recovery?: Recovery;
     editor?: { task: Task; title: string; status: EditableStatus };
     capture?: CaptureDraft;
+    children: Map<string, unknown>;
     route: Route;
     newTitle: string;
     filter: TaskStatus;
@@ -62,6 +67,7 @@
   const historyKey = savedPosition?.key ?? performance.timeOrigin;
   let routePosition: HistoryPosition = savedPosition ?? { index: 0 };
   let route = $state.raw(readRoute(location.hash, routePosition.taskView));
+  const childRecovery = createDraftRecovery(() => routeHref(route));
   let routeWarning = $state('');
   let detailDirty = $state(false);
   let pageDirty = $state(false);
@@ -127,6 +133,16 @@
   onMount(() => {
     routePosition = { ...routePosition, taskView: detailId ? route.view.id : undefined };
     writeHistory(route, routePosition, true);
+    const workers = navigator.serviceWorker;
+    if (!workers) return;
+    function openReminder(event: MessageEvent) {
+      if (workers.controller && event.source === workers.controller &&
+          event.data?.type === 'KLAXON_OPEN_REMINDERS' && event.data.route === '#/reminders') {
+        navigate('#/reminders');
+      }
+    }
+    workers.addEventListener('message', openReminder);
+    return () => workers.removeEventListener('message', openReminder);
   });
 
   $effect(() => {
@@ -172,6 +188,7 @@
     routePosition = position;
     if (routeHref(next) === routeHref(previous) && next.view.id === previous.view.id) return;
     routeWarning = '';
+    childRecovery.restore();
     route = next;
     if (previous.view.id !== next.view.id) {
       if (next.view.id === 'inbox') {
@@ -307,16 +324,22 @@
   }
 
   function clearSession(message = '', preserveDraft = false) {
-    if (preserveDraft && session && workspace && hasDraft) {
+    if (preserveDraft && session && workspace) {
+      void clearReminderPushDevice(session.client, workspace._id, workspace.publicId, false);
+    }
+    const children = preserveDraft ? childRecovery.capture() : new Map();
+    if (preserveDraft && session && workspace && (hasDraft || children.size)) {
       suspended.set(scopeKey(session, workspace), {
         recovery: pending ? { kind: 'unconfirmed', attempt: pending } : recovery,
         editor: editing && editDirty ? { task: editing, title: editTitle, status: editStatus } : undefined,
         capture: captureDirty ? captureDraft : undefined,
+        children,
         route,
         newTitle,
         filter,
       });
     }
+    childRecovery.restore();
     watchGeneration++;
     stopWatching = undefined;
     session = undefined;
@@ -405,7 +428,9 @@
           editStatus = draft.editor.status;
         }
       }
+      childRecovery.restore(draft?.children);
       workspace = personal;
+      void reconcileReminderPushBinding(active.client, personal._id);
       watchPage();
     } catch (error) {
       if (active !== session || destroyed) return;
@@ -486,9 +511,11 @@
     signingOut = true;
     signOutError = '';
     try {
+      const cleared = !workspace || await clearReminderPushDevice(active.client, workspace._id, workspace.publicId);
       await active.signOut();
       if (key) suspended.delete(key);
-      if (active === session) clearSession();
+      if (active === session) clearSession(cleared ? '' :
+        'Signed out. Reminder delivery cleanup could not be confirmed. You can turn off notifications for this site in browser settings.');
     } catch {
       if (active === session) signOutError = 'Sign-out could not be confirmed. Reconnect and try again.';
     } finally {
@@ -828,6 +855,12 @@
     onDirtyChange={dirty => pageDirty = dirty} onOpenTask={openTaskFrom} onUnauthenticated={active.expire} />
 {/snippet}
 
+{#snippet remindersPage(active: Session, personal: Workspace)}
+  <RemindersView client={active.client} workspaceId={personal._id} workspacePublicId={personal.publicId}
+    disabled={!connected || accountBusy || Boolean(detailId)} onOpenTask={openTaskFrom}
+    onDirtyChange={dirty => pageDirty = dirty} onUnauthenticated={active.expire} />
+{/snippet}
+
 {#snippet taskDetail()}
   {#if session && workspace && detailId}
     <div hidden={signingOut || Boolean(signOutError)}>
@@ -838,11 +871,12 @@
   {/if}
 {/snippet}
 
+<PwaControls blocked={hasDraft || suspended.size > 0 || signingIn || accountBusy} />
 {#if !session}
   {@render signInView()}
 {:else}
   {@const active = session}
-  {@const views = { inbox: inboxView, capture: capturePage, projects: projectsPage, calendar: calendarPage, activity: activityPage }}
+  {@const views = { inbox: inboxView, capture: capturePage, projects: projectsPage, calendar: calendarPage, reminders: remindersPage, activity: activityPage }}
   <PlannerShell destinations={workspace ? destinations : []} active={primaryView.id} routeKey={routeHref(route)}
     onNavigate={destination => navigate(destination.href)} detail={workspace && detailId ? taskDetail : undefined}>
     {#snippet status()}

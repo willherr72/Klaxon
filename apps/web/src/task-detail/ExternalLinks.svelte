@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { recoverDraft } from '../draft-recovery';
   import type { ConvexClient } from 'convex/browser';
   import { makeFunctionReference } from 'convex/server';
   import { onMount, tick, untrack } from 'svelte';
@@ -54,6 +55,7 @@
   let input = $state<HTMLInputElement>();
   let editing = $state.raw<Link>();
   let pending = $state(false);
+  let inFlight: Operation | undefined;
   let unconfirmed = $state.raw<Operation>();
   let conflict = $state.raw<Conflict>();
   let reviewed = $state(false);
@@ -64,6 +66,17 @@
   const locked = $derived(disabled || readOnly || pending || Boolean(unconfirmed || conflict || readError));
   const latest = $derived(reviewed && conflict ? rows.find(row => row.publicId === conflict?.command.publicId
     && row.revision >= (conflict.revision ?? 0)) : undefined);
+
+  const restored = recoverDraft('external-links', () => formDirty || Boolean(inFlight || unconfirmed || conflict) ? {
+    url, label, editing, conflict, unconfirmed: unconfirmed ?? inFlight,
+  } : undefined);
+  if (restored) {
+    url = restored.url;
+    label = restored.label;
+    editing = restored.editing;
+    conflict = restored.conflict;
+    unconfirmed = restored.unconfirmed;
+  }
 
   $effect(() => {
     const state = { dirty: formDirty || pending || Boolean(unconfirmed || conflict), busy: pending, unconfirmed: Boolean(unconfirmed) };
@@ -169,6 +182,7 @@
   async function send(operation: Operation) {
     if (!active || disabled || pending) return;
     pending = true;
+    inFlight = operation;
     unconfirmed = undefined;
     problem = '';
     feedback = '';
@@ -191,6 +205,7 @@
         unconfirmed = operation;
       }
     } finally {
+      inFlight = undefined;
       if (active) pending = false;
     }
   }

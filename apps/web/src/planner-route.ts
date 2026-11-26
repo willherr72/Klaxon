@@ -11,6 +11,7 @@ export const destinations = [
   { id: 'waiting', href: '#/waiting', kind: 'overview' },
   { id: 'capture', href: '#/capture', kind: 'page' },
   { id: 'activity', href: '#/activity', kind: 'page' },
+  { id: 'reminders', href: '#/reminders', kind: 'page' },
 ] as const satisfies readonly (PlannerDestination & { kind: 'page' | 'overview' })[];
 
 type Destination = typeof destinations[number];

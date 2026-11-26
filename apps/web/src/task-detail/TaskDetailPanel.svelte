@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { recoverDraft } from '../draft-recovery';
   import { onMount, tick, untrack } from 'svelte';
   import { conflictRevision, errorCode, taskStatuses, titleLimit } from '../contracts';
   import {
@@ -26,6 +27,7 @@
   let problem = $state('');
   let retry = $state.raw<Attempt>();
   let pending = $state(false);
+  let inFlight: Attempt | undefined;
   let conflict = $state.raw<Conflict>();
   let reviewing = $state(false);
   let reviewed = $state(false);
@@ -72,6 +74,19 @@
     down: stepMoveRank(steps, index, 1, Boolean(stepsCursor)),
   })));
 
+  const restored = recoverDraft('task-detail', () => dirty || busy ? {
+    base, newStep, stepEdit, stepTitle, conflict, draft: $state.snapshot(draft), retry: retry ?? inFlight,
+  } : undefined);
+  if (restored) {
+    base = restored.base;
+    newStep = restored.newStep;
+    stepEdit = restored.stepEdit;
+    stepTitle = restored.stepTitle;
+    conflict = restored.conflict;
+    draft = restored.draft;
+    retry = restored.retry;
+  }
+
   $effect(() => {
     const report = onDirtyChange;
     const value = dirty || busy;
@@ -88,6 +103,7 @@
   onMount(() => {
     active = true;
     watchTask();
+    if (restored?.base) void readSteps(restored.base._id);
     void loadProjects();
     return () => {
       active = false;
@@ -220,6 +236,7 @@
     if (!active || disabled || pending || linksBusy) return;
     const { command } = attempt.operation;
     pending = true;
+    inFlight = attempt;
     confirmedMessage = '';
     problem = '';
     retry = undefined;
@@ -248,6 +265,7 @@
         retry = attempt;
       }
     } finally {
+      inFlight = undefined;
       if (active) pending = false;
     }
   }

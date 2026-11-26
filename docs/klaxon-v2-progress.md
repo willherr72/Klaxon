@@ -8,7 +8,11 @@ The signed-in Development app opens on Today. A task can be captured, promoted, 
 
 On November 26, two authenticated sessions on the official disposable Convex runtime observed a locked meeting, reviewed a proposed task block and replayed plan approval. The resulting calendar had one generated half-hour block and the original meeting. A second session also found the task by title and undid a rename. Unit coverage includes stale undo, imported meeting privacy, DST, plan expiry and conflict detection. Planning uses contiguous estimates for up to 40 selected tasks on one day. [Live two-client test](../apps/backend/test/domain.session.mjs) · [Planning tests](../apps/backend/test/calendar.test.ts)
 
-Reminder tests cover recurring and task-linked reminders, snooze, invalidation and dormant restored reminders. P2 delivery, install/update and device acceptance are in progress. P0 notification observations belong to the spike receiver. [Reminder tests](../apps/backend/test/reminders.test.ts)
+Two Chromium sessions signed in independently to the same disposable local Convex workspace. One captured a note, and the other promoted it to a task. Both observed its rename and undo. A Monday-only reminder advanced exactly seven days when the second session dismissed it. Completion appeared in the first session, and reloading the page required sign-in. Run `npm --prefix apps/web run test:planner:local` on Windows with both app packages installed and the pinned local Convex binary. [Browser-to-backend test](../apps/web/test/planner.loopback.mjs)
+
+Reminder tests cover task-linked and recurring reminders, snooze, invalidation and dormant restored reminders. A scheduled delivery job reached a stub provider in local tests. Edge exercised synthetic worker receipts, notification click routing, offline loading and multi-tab updates. An ordinary notification from the integrated planner still needs a physical-device observation. P0 device results used the spike receiver. [Delivery tests](../apps/backend/test/delivery.test.ts) · [PWA tests](../apps/web/test/pwa.test.mjs)
+
+The official local backend also enrolled an inert browser subscription with fresh keys, rejected an invalid P-256 point, replayed an enrollment, and revoked the device. No reminder was created during that check. A separate Chromium touch-emulation walkthrough completed a daily task at 320px and verified focus on returning to Today. Session-expiry tests covered retrying the original operation after reopening task details, Calendar, Projects and Reminders under the same account and workspace. [Enrollment test](../apps/backend/test/delivery.session.mjs) · [Planner interaction tests](../apps/web/test/browser.test.mjs)
 
 ## P1 cloud foundation
 
@@ -760,9 +764,9 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P2-06 | Calendar | Day/week navigation and block editing exercised locally | [Calendar UI](../apps/web/test/calendar-ui.test.mjs) |
 | P2-07 | Planning constraints | Local two-client preview and apply verified | [Manual planner](#p2-manual-planner) |
 | P2-08 | Reminder domain | Domain and registered endpoint verification passed | [Lifecycle](../apps/backend/test/reminders.test.ts) |
-| P2-09 | Delivery | In progress | App-level delivery observation pending |
+| P2-09 | Delivery | Scheduler, encrypted transport preparation and worker exercised locally | Physical app-level delivery observation pending |
 | P2-10 | Activity/undo | Registered and browser checks passed for task edits | [Revision and replay](../apps/backend/test/activity.test.ts) |
-| P2-11 | PWA | In progress | Install, update and offline shell verification pending |
+| P2-11 | PWA | Manifest, offline shell, update and push receipt checks passed in Edge | [PWA tests](../apps/web/test/pwa.test.mjs) |
 | P3-01 | Public API | Queued | — |
 | P3-02 | Credentials | Queued | — |
 | P3-03 | Remote MCP | Queued | — |

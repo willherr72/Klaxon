@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { recoverDraft } from '../draft-recovery';
   import type { ConvexClient } from 'convex/browser';
   import { makeFunctionReference } from 'convex/server';
+  import { onDestroy } from 'svelte';
   import { errorCode } from '../contracts';
   type Entry = {eventId:string;actor:string;origin:string;action:string;createdAt:number;reason?:string;
     targetKind:string;targetPublicId:string;revision?:number;undoEligible:boolean};
@@ -20,7 +22,17 @@
   let notice = $state('');
   let error = $state('');
   let loadError = $state(false);
+  let alive = true;
+  onDestroy(() => { alive = false; });
   const format = new Intl.DateTimeFormat(undefined,{dateStyle:'medium',timeStyle:'short'});
+  const restored = recoverDraft('activity', () => selected || attempt ? {
+    selected, attempt,
+  } : undefined);
+  if (restored) {
+    selected = restored.selected;
+    attempt = restored.attempt;
+  }
+
   $effect(() => {
     page = undefined;
     loadError = false;
@@ -36,18 +48,20 @@
     pending = true;
     try {
       const result = await client.mutation(undo,attempt);
+      if (!alive) return;
       notice = 'Change undone at revision ' + result.revision + '.';
       error = '';
       selected = attempt = undefined;
     } catch (reason) {
+      if (!alive) return;
       const code = errorCode(reason);
-      if (code) {
+      if (code === 'UNAUTHENTICATED') onUnauthenticated();
+      else if (code) {
         selected = attempt = undefined;
-        if (code === 'UNAUTHENTICATED') onUnauthenticated();
         error = code === 'REVISION_CONFLICT' ? 'A newer edit prevented this undo. The latest task was preserved.'
           : 'This change cannot be undone.';
       } else error = 'The undo was not confirmed. Retry to check the same request.';
-    } finally { pending = false; }
+    } finally { if (alive) pending = false; }
   }
 </script>
 

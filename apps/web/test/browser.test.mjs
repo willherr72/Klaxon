@@ -125,12 +125,12 @@ async function buildDevelopment() {
   return output;
 }
 
-async function openDevelopment(t, { native = false, hash = '#/inbox', viewport } = {}) {
+async function openDevelopment(t, { native = false, hash = '#/inbox', viewport, touch = false } = {}) {
   const output = await (developmentBuild ??= buildDevelopment());
   const entry = (await serveDist(t, output)) + mount;
   const browser = await chromium.launch({ channel: process.env.KLAXON_BROWSER_CHANNEL });
   t.after(() => browser.close());
-  const context = await browser.newContext({ serviceWorkers: 'block', viewport });
+  const context = await browser.newContext({ serviceWorkers: 'block', viewport, isMobile: touch, hasTouch: touch });
   const transport = await interceptDevelopment(context, t, entry);
   if (native) await context.addInitScript(() => Object.defineProperty(globalThis, '__TAURI_INTERNALS__', { value: {} }));
   const page = await context.newPage();
@@ -712,4 +712,167 @@ test('Waiting is reachable from mobile More and opens a task with its follow-up 
   const inbox = await transport.queryAdded.next();
   assert.equal(inbox.args.filter.status, 'inbox');
   assert.equal(transport.activeQueries(), 1);
+});
+
+test('task detail retries the original revision and operation after forced reauthentication', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/tasks/recover-detail' });
+  const original = task('recover-detail', 'Original detail', 'inbox', 7);
+  const detail = page.getByRole('region', { name: 'Task details' });
+  await signIn(page);
+  (await transport.taskRequested.next()).respond(original);
+  await detail.getByLabel('Title', { exact: true }).fill('Private detail draft');
+  await detail.getByRole('button', { name: 'Save task' }).click();
+  const initial = await transport.writes.next();
+  assert.equal(initial.args.command.expectedRevision, 7);
+  transport.expire();
+  await page.getByText(/session expired/i).waitFor();
+  assert.equal(await detail.count(), 0);
+  async function checkOtherScope(username, workspaceId) {
+    await signIn(page, 'inert-password', username);
+    const requested = await transport.taskRequested.next();
+    assert.equal(requested.args.workspaceId, workspaceId);
+    requested.respond({ ...original, title: 'Different workspace detail' });
+    assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), 'Different workspace detail');
+    assert.equal(await detail.getByRole('button', { name: 'Retry change' }).count(), 0);
+    await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+    await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+  }
+  await checkOtherScope('test-other', 'other-personal-workspace');
+  transport.changeOwnerWorkspace();
+  await checkOtherScope('test-owner', 'replacement-workspace');
+  transport.restoreOwnerWorkspace();
+  await signIn(page);
+  (await transport.taskRequested.next()).respond({ ...original, revision: 8 });
+  assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), 'Private detail draft');
+  await detail.getByRole('button', { name: 'Retry change' }).click();
+  assert.deepEqual((await transport.writes.next()).args, initial.args);
+});
+
+for (const view of [
+  { route: 'calendar', edit: 'Scheduling preferences', field: 'Buffer (minutes)', value: '27',
+    save: 'Save preferences', retry: 'Retry change', mutation: 'planning:updatePreferences' },
+  { route: 'projects', edit: 'New project', field: 'Project name', value: 'Recovered project',
+    save: 'Create project', retry: 'Retry project change', mutation: 'tasks:apply' },
+  { route: 'reminders', edit: 'New reminder', field: 'Title', value: 'Recovered reminder',
+    save: 'Save reminder', retry: 'Retry reminder change', mutation: 'reminders:create' },
+]) {
+  test(`${view.route} retries the original request after forced reauthentication`, { timeout: 120_000 }, async t => {
+    const { page, transport } = await openDevelopment(t, { hash: `#/${view.route}` });
+    transport.calendarTray = view.route === 'calendar';
+    const field = page.getByLabel(view.field, { exact: true });
+    await signIn(page);
+    await page.getByRole('button', { name: view.edit, exact: true }).click();
+    await field.fill(view.value);
+    if (view.route === 'reminders') await page.getByLabel('Due date and time').fill('2099-03-08T10:30');
+    await page.getByRole('button', { name: view.save, exact: true }).click();
+    const initial = await transport.writes.next();
+    assert.equal(initial.name, view.mutation);
+    if (view.route === 'calendar') assert.equal(initial.args.expectedRevision, 0);
+    transport.expire();
+    await page.getByText(/session expired/i).waitFor();
+    assert.equal(await field.count(), 0);
+    await signIn(page);
+    assert.equal(await field.inputValue(), view.value);
+    await page.getByRole('button', { name: view.retry, exact: true }).click();
+    const retry = await transport.writes.next();
+    assert.equal(retry.name, view.mutation);
+    assert.deepEqual(retry.args, initial.args);
+  });
+}
+
+test('touch users can navigate Today, complete a daily task, and return to the planner', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, {
+    hash: '#/capture', touch: true, viewport: { width: 320, height: 760 },
+  });
+  assert.equal(await page.evaluate(() => globalThis.document.documentElement.clientWidth), 320);
+  async function checkAction(action) {
+    await action.waitFor();
+    await action.scrollIntoViewIfNeeded();
+    const bounds = await action.boundingBox();
+    const width = await page.evaluate(() => globalThis.document.documentElement.clientWidth);
+    assert.ok(bounds && bounds.width > 0 && bounds.x >= -1 && bounds.x + bounds.width <= width + 1,
+      `Action exceeds the ${width}px viewport: ${JSON.stringify(bounds)}`);
+    assert.ok(await action.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return element.contains(globalThis.document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
+    }), 'Action center should be reachable');
+    assert.ok(await page.evaluate(() => {
+      const rootElement = globalThis.document.documentElement;
+      return rootElement.scrollWidth <= rootElement.clientWidth;
+    }));
+  }
+
+  await page.getByLabel('Username').fill('test-owner');
+  await page.getByLabel('Password').fill('inert-password');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).tap();
+
+  const more = page.getByText('More', { exact: true });
+  await checkAction(more);
+  await more.tap();
+  const waiting = page.getByRole('link', { name: 'Waiting', exact: true });
+  await checkAction(waiting);
+  await waiting.focus();
+  await page.keyboard.press('Escape');
+  assert.ok(await more.evaluate(element => element === globalThis.document.activeElement));
+  await more.tap();
+  await waiting.tap();
+  await page.getByRole('heading', { name: 'Waiting', exact: true }).waitFor();
+  await transport.queryAdded.next();
+  transport.publish([]);
+
+  const todayLink = page.getByRole('link', { name: 'Today', exact: true });
+  await checkAction(todayLink);
+  await todayLink.tap();
+  const agenda = await transport.agendaRequested.next();
+  const item = { ...task('touch-today', 'Review the daily checklist'), plannedDate: agenda.args.localDate };
+  agenda.respond({ planned: [item] });
+
+  const schedule = page.getByRole('tab', { name: 'Schedule', exact: true });
+  const tasks = page.getByRole('tab', { name: 'Tasks', exact: true });
+  await checkAction(schedule);
+  await schedule.tap();
+  await page.getByRole('heading', { name: 'Schedule', exact: true }).waitFor();
+  await checkAction(tasks);
+  await tasks.tap();
+
+  const opener = page.getByRole('button', { name: item.title, exact: true });
+  const detail = page.getByRole('region', { name: 'Task details' });
+  const complete = detail.getByRole('button', { name: 'Complete task', exact: true });
+  const close = detail.getByRole('button', { name: 'Close task', exact: true });
+  await checkAction(opener);
+  await opener.tap();
+  const request = await transport.taskRequested.next();
+  assert.equal(request.args.publicId, item.publicId);
+  request.respond(item);
+  await checkAction(complete);
+  await checkAction(close);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await checkAction(complete);
+  await checkAction(close);
+  await page.setViewportSize({ width: 320, height: 760 });
+
+  await close.press('Enter');
+  await page.waitForURL('**/#/today');
+  await opener.and(page.locator(':focus')).waitFor();
+  await opener.tap();
+  const reopened = await transport.taskRequested.next();
+  reopened.respond(item);
+  await complete.tap();
+
+  const write = await transport.writes.next();
+  assert.equal(write.name, 'tasks:apply');
+  assert.equal(write.args.command.kind, 'task.update');
+  assert.equal(write.args.command.publicId, item.publicId);
+  assert.equal(write.args.command.expectedRevision, item.revision);
+  assert.deepEqual(write.args.command.patch, { status: 'done' });
+  const completed = { ...item, status: 'done', revision: item.revision + 1 };
+  write.succeed([completed]);
+  reopened.respond(completed);
+  await detail.getByText('Task completed.', { exact: true }).waitFor();
+  await detail.getByRole('button', { name: 'Reopen task', exact: true }).waitFor();
+  agenda.respond({});
+  await close.tap();
+  await page.waitForURL('**/#/today');
+  await tasks.waitFor();
+  await page.getByText('No tasks for today.', { exact: true }).waitFor();
 });

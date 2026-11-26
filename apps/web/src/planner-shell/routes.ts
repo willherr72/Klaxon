@@ -7,6 +7,7 @@ export const routeLabels = {
   waiting: 'Waiting',
   capture: 'Capture',
   activity: 'Activity',
+  reminders: 'Reminders',
   settings: 'Settings',
 } as const;
 

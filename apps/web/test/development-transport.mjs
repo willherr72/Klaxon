@@ -265,7 +265,7 @@ export async function interceptDevelopment(context, t, entry) {
                     }]);
                   },
                 });
-              } else if (['projects:list', 'steps:list', 'links:list', 'calendar:list', 'planning:getPreferences','planning:getDayPlan'].includes(modification.udfPath)
+              } else if (['projects:list', 'steps:list', 'links:list', 'calendar:list', 'planning:getPreferences','planning:getDayPlan', 'reminders:list', 'delivery:status'].includes(modification.udfPath)
                   || (fixture.calendarTray && modification.udfPath === 'tasks:list')) {
                 const [args] = modification.args;
                 assert.equal(args.workspaceId, personal._id);
@@ -276,6 +276,7 @@ export async function interceptDevelopment(context, t, entry) {
                   'planning:getPreferences': {timezone:'UTC',revision:0,workHours:[],breaks:[],bufferMinutes:0,
                     discretionaryMinutes:0,lockManuallyMovedBlocks:true},
                   'planning:getDayPlan': null,
+                  'delivery:status': { available: false, enabled: false, grantRevision: 0, device: null },
                 };
                 const value = Object.hasOwn(emptyPages,modification.udfPath) ? emptyPages[modification.udfPath]
                   : { page: [], isDone: true, continueCursor: 'end' };
@@ -309,10 +310,11 @@ export async function interceptDevelopment(context, t, entry) {
               transition();
             } else {
               const isCapture = message.udfPath === 'captures:apply';
-              if (!isCapture) assert.equal(message.udfPath, 'tasks:apply');
+              if (!isCapture) assert.ok(['tasks:apply', 'planning:updatePreferences', 'reminders:create'].includes(message.udfPath));
               assert.equal(args.workspaceId, personal._id);
               const queue = isCapture ? captureWrites : writes;
               queue.push({
+                name: message.udfPath,
                 args,
                 fail(errorData) {
                   send({ ...common, success: false, result: 'Synthetic mutation failure', errorData });

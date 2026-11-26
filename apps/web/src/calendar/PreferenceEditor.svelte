@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { recoverDraft } from '../draft-recovery';
   import { untrack } from 'svelte';
   import type { Preferences, PreferenceValues, WorkWindow } from './calendar-contract';
 
@@ -18,6 +19,18 @@
   let lockManuallyMovedBlocks = $state(initial.lockManuallyMovedBlocks);
   let windows = $state({ workHours: initial.workHours.map(windowDraft), breaks: initial.breaks.map(windowDraft) });
   let validation = $state('');
+
+  const restored = recoverDraft('preference-editor', () => ({
+    nextId, timezone, bufferMinutes, discretionaryMinutes, lockManuallyMovedBlocks, windows: $state.snapshot(windows),
+  }));
+  if (restored) {
+    nextId = restored.nextId;
+    timezone = restored.timezone;
+    bufferMinutes = restored.bufferMinutes;
+    discretionaryMinutes = restored.discretionaryMinutes;
+    lockManuallyMovedBlocks = restored.lockManuallyMovedBlocks;
+    windows = restored.windows;
+  }
 
   function asTime(minutes: number) {
     return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;

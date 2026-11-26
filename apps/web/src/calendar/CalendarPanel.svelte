@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { FunctionArgs } from 'convex/server';
+  import { recoverDraft } from '../draft-recovery';
   import { onDestroy, tick, untrack } from 'svelte';
   import { api, errorCode, pageSize, type TaskStatus } from '../contracts';
   import { addDays, calendarClock, height, labelDate, minuteMs, validDate, weekStart } from './calendar-clock';
@@ -14,7 +16,11 @@
   type TrayStatus = typeof taskStatuses[number];
   type TrayPage = { status: TrayStatus; rows: CalendarTask[]; cursor: string | null };
   type Read = 'preferences' | 'calendar' | 'plan' | 'tasks';
-  type Attempt = { execute: () => Promise<void>; reject?: (code: string, error: unknown) => void };
+  type Attempt =
+    | { kind: 'block'; args: FunctionArgs<typeof calendarApi.block>; keepPlacementDraft: boolean }
+    | { kind: 'preferences'; args: FunctionArgs<typeof calendarApi.savePreferences> }
+    | { kind: 'preview'; args: FunctionArgs<typeof calendarApi.preview>; preferencesRevision: number }
+    | { kind: 'apply'; args: FunctionArgs<typeof calendarApi.apply> };
   type BlockDraft = {
     publicId: string; block?: Block; task?: CalendarTask; timezone: string; title: string;
     start: string; end: string; originalStart: number; originalEnd: number; startOccurrence?: number; endOccurrence?: number;
@@ -62,7 +68,7 @@
   const range = $derived(calendarRead?.key === rangeKey ? calendarRead.value : undefined);
   const dayPlan = $derived(planRead?.date === date ? planRead.value : undefined);
   const tasks = $derived(Array.from(new Map(tray.flatMap(page => page.rows).map(task => [task.publicId, task])).values()));
-  const dirty = $derived(Boolean(draft || preferencesBase || review || pending || retry));
+  const dirty = $derived(Boolean(draft || preferencesBase || review || pending || retry || selectedIds.length));
   const locked = $derived(disabled || Boolean(pending || retry || checking));
   const editing = $derived(Boolean(draft || preferencesBase || review));
   const navigationDisabled = $derived(locked || editing);
@@ -72,6 +78,25 @@
   const endCandidates = $derived(draft && clock ? clock.candidates(draft.end) : []);
   const draftStart = $derived(draft && chooseInstant(startCandidates, draft.startOccurrence, draft.originalStart));
   const draftEnd = $derived(draft && chooseInstant(endCandidates, draft.endOccurrence, draft.originalEnd));
+
+  const restored = recoverDraft('calendar', () => dirty ? {
+    mode, selectedDate: selectedDate || date, selectedIds, preferencesBase, draft: $state.snapshot(draft),
+    proposed, conflicts, review, retry: pending ?? retry, staleEditor, confirmingRemove,
+  } : undefined);
+  if (restored) {
+    mode = restored.mode;
+    selectedDate = restored.selectedDate;
+    selectedIds = restored.selectedIds;
+    preferencesBase = restored.preferencesBase;
+    draft = restored.draft;
+    proposed = restored.proposed;
+    conflicts = restored.conflicts;
+    review = restored.review;
+    retry = restored.retry;
+    staleEditor = restored.staleEditor;
+    confirmingRemove = restored.confirmingRemove;
+    if (restored.retry) error = 'Could not confirm the change. Retry to check the same operation.';
+  }
 
   onDestroy(() => {
     alive = false;
@@ -188,6 +213,67 @@
     drag = undefined;
   }
 
+  async function execute(attempt: Attempt) {
+    switch (attempt.kind) {
+      case 'block': {
+        const { command } = attempt.args;
+        const receipt = await client.mutation(calendarApi.block, attempt.args);
+        if (!alive) return;
+        if (attempt.keepPlacementDraft && command.kind === 'block.update' && draft?.block) {
+          draft.block = { ...draft.block, title: command.title ?? undefined, revision: receipt.revision };
+          draft.title = command.title ?? '';
+          resetFeedback();
+          message = 'Time block title saved. Review the placement when ready.';
+          return;
+        }
+        closeBlock();
+        message = command.kind === 'block.remove' ? 'Time block removed.' : 'Time block saved.';
+        break;
+      }
+      case 'preferences':
+        await client.mutation(calendarApi.savePreferences, attempt.args);
+        if (!alive) return;
+        closePreferences();
+        message = 'Scheduling preferences saved.';
+        break;
+      case 'preview': {
+        const plan = await client.mutation(calendarApi.preview, attempt.args);
+        if (!alive) return;
+        review = { plan, preferencesRevision: attempt.preferencesRevision };
+        await tick();
+        if (alive) reviewHeading?.focus();
+        break;
+      }
+      case 'apply':
+        await client.mutation(calendarApi.apply, attempt.args);
+        if (!alive) return;
+        closePreview();
+        selectedIds = [];
+        message = 'Day plan applied.';
+        break;
+    }
+  }
+
+  function rejectAttempt(attempt: Attempt, code: string, reason: unknown) {
+    if (attempt.kind === 'block') {
+      if (code === 'CALENDAR_CONFLICT') {
+        proposed = undefined;
+        conflicts = placementConflicts(reason);
+      }
+      if (['REVISION_CONFLICT', 'BLOCK_LOCKED', 'BLOCK_UNAVAILABLE', 'TASK_CLOSED'].includes(code)) {
+        staleEditor = true;
+        proposed = undefined;
+        confirmingRemove = false;
+      }
+    } else if (attempt.kind === 'preferences' && code === 'REVISION_CONFLICT') {
+      staleEditor = true;
+    } else if (attempt.kind === 'apply'
+      && ['REVISION_CONFLICT', 'PLAN_CONTEXT_CHANGED', 'PLAN_EXPIRED', 'PLAN_UNAVAILABLE', 'PLAN_NOT_PENDING'].includes(code)) {
+      review = undefined;
+      void restoreFocus(previewTrigger);
+    }
+  }
+
   async function perform(attempt: Attempt) {
     if (!alive || pending || disabled) return;
     pending = attempt;
@@ -196,14 +282,14 @@
     message = '';
     error = '';
     try {
-      await attempt.execute();
+      await execute(attempt);
     } catch (reason) {
       if (!alive) return;
       const code = errorCode(reason);
       if (code === 'UNAUTHENTICATED') onUnauthenticated();
       else if (code) {
         error = writeError(code);
-        attempt.reject?.(code, reason);
+        rejectAttempt(attempt, code, reason);
       } else {
         retry = attempt;
         error = 'Could not confirm the change. Retry to check the same operation.';
@@ -366,32 +452,7 @@
     const args = { workspaceId, operationId: crypto.randomUUID(), command };
     const keepPlacementDraft = command.kind === 'block.update' && draft?.block
       && (draftStart !== draft.block.startAt || draftEnd !== draft.block.endAt);
-    void perform({
-      async execute() {
-        const receipt = await client.mutation(calendarApi.block, args);
-        if (!alive) return;
-        if (keepPlacementDraft && command.kind === 'block.update' && draft?.block) {
-          draft.block = { ...draft.block, title: command.title ?? undefined, revision: receipt.revision };
-          draft.title = command.title ?? '';
-          resetFeedback();
-          message = 'Time block title saved. Review the placement when ready.';
-          return;
-        }
-        closeBlock();
-        message = command.kind === 'block.remove' ? 'Time block removed.' : 'Time block saved.';
-      },
-      reject(code, reason) {
-        if (code === 'CALENDAR_CONFLICT') {
-          proposed = undefined;
-          conflicts = placementConflicts(reason);
-        }
-        if (code === 'REVISION_CONFLICT' || code === 'BLOCK_LOCKED' || code === 'BLOCK_UNAVAILABLE' || code === 'TASK_CLOSED') {
-          staleEditor = true;
-          proposed = undefined;
-          confirmingRemove = false;
-        }
-      },
-    });
+    void perform({ kind: 'block', args, keepPlacementDraft: Boolean(keepPlacementDraft) });
   }
 
   function blockAction(kind: 'block.update' | 'block.lock' | 'block.unlock' | 'block.remove') {
@@ -427,15 +488,7 @@
   function savePreferences(values: PreferenceValues, revision: number) {
     if (locked || staleEditor) return;
     const args = { workspaceId, operationId: crypto.randomUUID(), expectedRevision: revision, preferences: values };
-    void perform({
-      async execute() {
-        await client.mutation(calendarApi.savePreferences, args);
-        if (!alive) return;
-        closePreferences();
-        message = 'Scheduling preferences saved.';
-      },
-      reject(code) { if (code === 'REVISION_CONFLICT') staleEditor = true; },
-    });
+    void perform({ kind: 'preferences', args });
   }
 
   function reloadPreferences() {
@@ -460,13 +513,7 @@
     const preferencesRevision = preferences.revision;
     const args = { workspaceId, localDate: date, operationId: crypto.randomUUID(), taskPublicIds: [...selectedIds],
       expectedDayPlanRevision: dayPlan?.revision ?? null };
-    void perform({ async execute() {
-      const plan = await client.mutation(calendarApi.preview, args);
-      if (!alive) return;
-      review = { plan, preferencesRevision };
-      await tick();
-      if (alive) reviewHeading?.focus();
-    } });
+    void perform({ kind: 'preview', args, preferencesRevision });
   }
 
   function closePreview() {
@@ -479,21 +526,7 @@
     const plan = review?.plan;
     if (!plan || locked || planStale || Date.now() >= plan.expiresAt) return;
     const args = { workspaceId, operationId: crypto.randomUUID(), publicId: plan.publicId, expectedRevision: plan.revision };
-    void perform({
-      async execute() {
-        await client.mutation(calendarApi.apply, args);
-        if (!alive) return;
-        closePreview();
-        selectedIds = [];
-        message = 'Day plan applied.';
-      },
-      reject(code) {
-        if (['REVISION_CONFLICT', 'PLAN_CONTEXT_CHANGED', 'PLAN_EXPIRED', 'PLAN_UNAVAILABLE', 'PLAN_NOT_PENDING'].includes(code)) {
-          review = undefined;
-          void restoreFocus(previewTrigger);
-        }
-      },
-    });
+    void perform({ kind: 'apply', args });
   }
 
   function startDrag(event: DragEvent, item: Drag) {

@@ -20,9 +20,9 @@
   }
 
   const desktopRoutes = ['today', 'inbox', 'upcoming', 'calendar', 'projects', 'waiting'] as const;
-  const desktopUtilities = ['capture', 'activity', 'settings'] as const;
+  const desktopUtilities = ['capture', 'reminders', 'activity', 'settings'] as const;
   const mobileRoutes = ['today', 'inbox', 'calendar', 'capture', 'projects'] as const;
-  const mobileUtilities = ['upcoming', 'waiting', 'activity', 'settings'] as const;
+  const mobileUtilities = ['upcoming', 'waiting', 'reminders', 'activity', 'settings'] as const;
   const themeKey = 'klaxon.planner.theme';
 
   let {

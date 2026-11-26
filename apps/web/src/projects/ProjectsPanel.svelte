@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { recoverDraft } from '../draft-recovery';
   import { onDestroy, tick, untrack } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import type { FunctionArgs, FunctionReference, FunctionReturnType } from 'convex/server';
@@ -54,6 +55,21 @@
     return [...byArea].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
   });
   const otherLaneRows = $derived(board ? rows.filter(task => task.laneId && !lanes?.lanes.some(lane => lane._id === task.laneId)) : []);
+
+  const restored = recoverDraft('projects', () => dirty ? {
+    projectId, board, showLaneEditor, laneName, attempt, reviewRequired, projectCursors, taskCursors, draft: $state.snapshot(draft),
+  } : undefined);
+  if (restored) {
+    projectId = restored.projectId;
+    board = restored.board;
+    showLaneEditor = restored.showLaneEditor;
+    laneName = restored.laneName;
+    attempt = restored.attempt;
+    reviewRequired = restored.reviewRequired;
+    projectCursors = restored.projectCursors;
+    taskCursors = restored.taskCursors;
+    draft = restored.draft;
+  }
 
   $effect(() => {
     const value = dirty;

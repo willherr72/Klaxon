@@ -1,6 +1,7 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 import { developmentOrigin } from './build-config.mjs';
+import { plannerPwa } from './src/pwa/build.mjs';
 
 export default defineConfig(({ mode }) => {
   const origin = developmentOrigin(mode, process.env.KLAXON_PUBLIC_DEV_ORIGIN);
@@ -10,6 +11,7 @@ export default defineConfig(({ mode }) => {
     envPrefix: [],
     plugins: [
       svelte(),
+      origin && plannerPwa(),
       {
         name: 'klaxon-development-origin',
         transformIndexHtml: () => origin ? [{
