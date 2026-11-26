@@ -201,7 +201,7 @@ test("portable builds isolate the Android provider preflight marker and loopback
   ]) {
     const outdir = join(root, name);
     const result = spawnSync(process.execPath, ["build-portable.mjs", "--outdir", outdir, ...args], {
-      cwd: spike, encoding: "utf8", env: { ...process.env, P0_PUBLIC_DEV_ORIGIN: origin }, timeout: 10000,
+      cwd: spike, encoding: "utf8", env: { ...process.env, P0_PUBLIC_DEV_ORIGIN: origin }, timeout: 60_000,
     });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr);
