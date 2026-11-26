@@ -40,7 +40,7 @@ On a fresh Server 2022 fixture install, WinRT enumerated zero scheduled notifica
 |---|---|---|
 | App focused | Pass, one visible copy (owner report, Edge tab) | Pass, one visible copy (owner report, Chrome tab) |
 | Background, screen locked | Inconclusive for visible delivery. HTTP 201, one matching Edge worker receipt, display request resolved. Owner did not see the notification and reported a gap in observation. | HTTP 201, zero worker receipts at inspection. Owner saw no notification while locked or after unlocking. |
-| App window closed, browser permitted in background | Pending | Pending |
+| [Receiver window closed, browser permitted in background](../p0-reminder-owner-test.md#closed-receiver-window-browser-allowed-in-background) | Pending | Pending |
 | Browser explicitly quit or force-stopped | Pending | Pending |
 | Permission denied or revoked | Pending | Pending |
 | Offline at due time, then reconnect | Pending | Pending |
