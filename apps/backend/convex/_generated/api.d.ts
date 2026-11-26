@@ -10,6 +10,7 @@
 
 import type * as auth from "../auth.js";
 import type * as backups from "../backups.js";
+import type * as captures from "../captures.js";
 import type * as health from "../health.js";
 import type * as imports from "../imports.js";
 import type * as model_access from "../model/access.js";
@@ -42,6 +43,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   backups: typeof backups;
+  captures: typeof captures;
   health: typeof health;
   imports: typeof imports;
   "model/access": typeof model_access;

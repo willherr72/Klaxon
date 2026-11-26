@@ -38,11 +38,11 @@ function invalidState(): never {
   throw new ConvexError({ code: "INVALID_STATE" });
 }
 
-function checkPublicId(publicId: string) {
+export function checkPublicId(publicId: string) {
   if (!publicId || publicId.length > 128 || /[\s\x00-\x1f\x7f]/u.test(publicId)) invalid("publicId");
 }
 
-function requiredText(value: string, field: string, max: number) {
+export function requiredText(value: string, field: string, max: number) {
   const trimmed = value.trim();
   if (!trimmed || value.length > max) invalid(field);
   return trimmed;
@@ -89,7 +89,7 @@ function checkedEstimate(minutes: number) {
   return minutes;
 }
 
-function checkedTags(tags: string[]) {
+export function checkedTags(tags: string[]) {
   if (tags.length > 32) invalid("tags");
   return tags.map(tag => requiredText(tag, "tags", 128));
 }
@@ -98,7 +98,7 @@ function clearable<T>(value: T | null, check: (value: T) => T) {
   return value === null ? undefined : check(value);
 }
 
-function checkRevision(currentRevision: number, expectedRevision: number) {
+export function checkRevision(currentRevision: number, expectedRevision: number) {
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) invalid("expectedRevision");
   if (currentRevision !== expectedRevision) throw new ConvexError({ code: "REVISION_CONFLICT", currentRevision });
   if (currentRevision === Number.MAX_SAFE_INTEGER) invalidState();

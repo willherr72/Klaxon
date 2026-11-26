@@ -67,6 +67,18 @@ test("two signed-in clients observe one committed write, replay and conflict", {
       assert.equal(results[1 - winner].status, "rejected");
       assert.equal(results[1 - winner].reason.data?.code, "REVISION_CONFLICT");
       await both(page => page.length === 1 && page[0].title === updates[winner].command.patch.title && page[0].revision === 2);
+
+      const capture = { kind: "capture.create", publicId: "thought", body: "Review sample quote" };
+      await clients[0].mutation(ref("captures:apply"), { workspaceId, operationId: randomUUID(), command: capture });
+      const captureQuery = { workspaceId, paginationOpts: { numItems: 5, cursor: null } };
+      assert.equal((await clients[1].query(ref("captures:search"), { ...captureQuery, text: "quote" })).page[0].publicId, "thought");
+      const promote = { workspaceId, operationId: randomUUID(), command: {
+        kind: "capture.promote", publicId: "thought", expectedRevision: 1, taskPublicId: "quote", title: "Review estimate",
+      } };
+      const [promotion, promotionReplay] = await Promise.all(clients.map(client => client.mutation(ref("captures:apply"), promote)));
+      assert.deepEqual(promotionReplay, promotion);
+      await both(page => page.length === 2 && page.some(task => task.publicId === "quote" && task.source?.kind === "capture"));
+      assert.deepEqual((await clients[1].query(ref("captures:list"), captureQuery)).page, []);
     } finally {
       try {
         await Promise.all(sockets.map(socket => socket.close()));

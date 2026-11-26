@@ -155,6 +155,7 @@ export const workTables = {
     promotedTaskId: v.optional(v.id("tasks")),
     archivedAt: v.optional(instant),
   })
+    .index("by_workspace_inbox", ["workspaceId", "archivedAt", "promotedTaskId", "createdAt"])
     .index("by_workspace_local_date", ["workspaceId", "localDate"])
     .index("by_workspace_created_at", ["workspaceId", "createdAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"])
