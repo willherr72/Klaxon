@@ -15,7 +15,7 @@
 
 - [x] Add the v2 Tauri shell under `apps/native/` with a separate application identifier and data directory. Set its frontend asset path to the verified `apps/web/dist/` output. Build desktop and Android debug packages from the same staged assets. Keep signing and publishing in the existing release workflow.
 - [x] Record hashes of the browser-tested HTML and its referenced local assets. Require both packaging jobs to compare their input against that manifest. Exercise a mismatched asset case that fails before packaging. A matching input hash is evidence of artifact transfer. Also open the built Windows app and the Android app on a disposable emulator and verify the shared frontend renders.
-- [ ] Extend the existing `v2` PR validation workflow with those checks using the existing free CI capacity. Run the root frontend verification and synthetic migration probe alongside the foundation jobs. Record the head SHA, exact commands, package identities, runtime results and any skipped checks in the living register.
+- [x] Extend the existing `v2` PR validation workflow with those checks using the existing free CI capacity. Run the root frontend verification and synthetic migration probe alongside the foundation jobs. Record the head SHA, exact commands, package identities, runtime results and any skipped checks in the living register.
 
 ## Handoff to P1-02
 
