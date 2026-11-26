@@ -4,11 +4,14 @@ import { readPushReceipts, resetPushDevice, type PushDevice } from '../pwa/push-
 import { deliveryApi, type WireSubscription } from './delivery-contract';
 
 const deviceKey = 'klaxon:web-push-device:v1';
+const bindingKey = 'klaxon:web-push-binding:v1:';
 const devicePattern = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/;
 const cleanupTimeoutMs = 8_000;
 let epoch = 0;
 let bindingQueue = Promise.resolve();
 const knownBindings = new WeakMap<ConvexClient, Map<string, string>>();
+
+export type ReminderPushScope = { userId: string; workspaceId: string; workspacePublicId: string };
 
 export function pushDeviceEpoch() { return epoch; }
 
@@ -32,19 +35,44 @@ async function beforeAbort<T>(signal: AbortSignal | undefined, start: () => Prom
   finally { signal.removeEventListener('abort', onAbort); }
 }
 
-export function rememberPushBinding(client: ConvexClient, workspaceId: string, subscriptionPublicId: string) {
+function scopedBindingKey({ userId, workspaceId, workspacePublicId }: ReminderPushScope, deviceId: string) {
+  return bindingKey + JSON.stringify([deviceId, userId, workspaceId, workspacePublicId]);
+}
+
+function savedPushBinding(key: string) {
+  try {
+    const value = localStorage.getItem(key);
+    if (value && devicePattern.test(value)) return value;
+  } catch { /* A session can still use its live status. */ }
+}
+
+export function savePushBinding(scope: ReminderPushScope, deviceId: string, subscriptionPublicId: string) {
+  const key = scopedBindingKey(scope, deviceId);
+  if (localStorage.getItem(key) !== subscriptionPublicId) localStorage.setItem(key, subscriptionPublicId);
+}
+
+export function rememberPushBinding(client: ConvexClient, scope: ReminderPushScope, deviceId: string, subscriptionPublicId: string) {
   const bindings = knownBindings.get(client) ?? new Map<string, string>();
-  bindings.set(workspaceId, subscriptionPublicId);
+  bindings.set(scopedBindingKey(scope, deviceId), subscriptionPublicId);
   knownBindings.set(client, bindings);
 }
 
-export async function reconcileReminderPushBinding(client: ConvexClient, workspaceId: string) {
+export async function reconcileReminderPushBinding(client: ConvexClient, scope: ReminderPushScope) {
   const deviceId = installDeviceId();
   if (!deviceId) return;
   const started = epoch;
+  const { workspaceId, workspacePublicId } = scope;
   try {
     const { device } = await client.query(deliveryApi.status, { workspaceId, deviceId });
-    if (started === epoch && device) rememberPushBinding(client, workspaceId, device.publicId);
+    if (started !== epoch || !device) return;
+    const subscriptionPublicId = device.publicId;
+    rememberPushBinding(client, scope, deviceId, subscriptionPublicId);
+    if (savedPushBinding(scopedBindingKey(scope, deviceId)) === subscriptionPublicId) return;
+    // Upgrade an enrollment created before the page stored an ownership proof.
+    const live = await readPushReceipts();
+    if (started === epoch && live && matchesPushBinding({ workspacePublicId, subscriptionPublicId }, live)) {
+      savePushBinding(scope, deviceId, subscriptionPublicId);
+    }
   } catch { /* Workspace startup can proceed without delivery. */ }
 }
 
@@ -89,9 +117,9 @@ export function matchesPushBinding(expected: PushDevice, actual: PushDevice) {
 
 export async function disconnectLocalPush(binding: PushDevice, signal?: AbortSignal) {
   const registration = await beforeAbort(signal, scopedPushRegistration);
-  if (!registration) return;
+  if (!registration) return false;
   const batch = await beforeAbort(signal, readPushReceipts);
-  if (!batch || !matchesPushBinding(binding, batch)) return;
+  if (!batch || !matchesPushBinding(binding, batch)) return false;
   const subscription = await beforeAbort(signal, () => registration.pushManager.getSubscription());
   signal?.throwIfAborted();
   // Keep the binding lock until an already posted reset settles. The caller can
@@ -100,6 +128,7 @@ export async function disconnectLocalPush(binding: PushDevice, signal?: AbortSig
   signal?.throwIfAborted();
   if (subscription && !await subscription.unsubscribe()) throw new Error('Browser did not remove the push subscription');
   if (reset.status === 'rejected') throw reset.reason;
+  return true;
 }
 
 async function revokeInstall(client: ConvexClient, workspaceId: string, deviceId: string, signal: AbortSignal,
@@ -124,10 +153,12 @@ async function revokeInstall(client: ConvexClient, workspaceId: string, deviceId
 
 // Use the same client and workspace on sign-out and expiry. Only the signed-in
 // path can revoke the server route. Both paths preserve other worker bindings.
-export async function clearReminderPushDevice(client: ConvexClient, workspaceId: string, workspacePublicId: string, authenticated = true) {
+export async function clearReminderPushDevice(client: ConvexClient, scope: ReminderPushScope, authenticated = true) {
   epoch++;
   const deviceId = installDeviceId();
   if (!deviceId) return true;
+  const { workspaceId, workspacePublicId } = scope;
+  const key = scopedBindingKey(scope, deviceId);
   const cancellation = new AbortController();
   const { signal } = cancellation;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -141,11 +172,18 @@ export async function clearReminderPushDevice(client: ConvexClient, workspaceId:
       async function cleanLocal(subscriptionPublicId: string) {
         if (bindings.has(subscriptionPublicId)) return;
         bindings.add(subscriptionPublicId);
-        try { await disconnectLocalPush({ workspacePublicId, subscriptionPublicId }, signal); }
-        catch { localClean = false; }
+        try {
+          if (!await disconnectLocalPush({ workspacePublicId, subscriptionPublicId }, signal)) return;
+          const known = knownBindings.get(client);
+          if (known?.get(key) === subscriptionPublicId) known.delete(key);
+          try { if (savedPushBinding(key) === subscriptionPublicId) localStorage.removeItem(key); }
+          catch { /* A stale proof still requires a matching live worker. */ }
+        } catch { localClean = false; }
       }
 
-      const known = knownBindings.get(client)?.get(workspaceId);
+      const durable = savedPushBinding(key);
+      if (durable) await cleanLocal(durable);
+      const known = knownBindings.get(client)?.get(key);
       if (known) await cleanLocal(known);
       if (authenticated) await revokeInstall(client, workspaceId, deviceId, signal, cleanLocal);
       return localClean;

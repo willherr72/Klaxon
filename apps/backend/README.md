@@ -39,10 +39,11 @@ The source CLI reconciles schema-17 device snapshots before projection. A v1 rem
 
 Call `tasks:apply` with the workspace ID, a fresh operation UUID and a command. Existing records require their current revision. A successful retry with identical input returns the original result, including its activity event ID. Reusing that UUID with different input yields `OPERATION_ID_CONFLICT`. A stale revision yields `REVISION_CONFLICT` with the current revision. The server checks write permission on every attempt, including retries.
 
-On Windows with the pinned local Convex binary, run these checks sequentially from the repository root. Each starts its own loopback backend with synthetic accounts. They cover provider session rotation and sign-out, concurrent edits over two subscriptions, and a schema-17 SQLite import followed by export and restore. [Backup format](../../docs/backup-restore.md) · [Operator runbook](../../docs/v2-operations.md)
+On Windows with the pinned local Convex binary, run these checks sequentially from the repository root. Each starts its own loopback backend with synthetic accounts. They cover session rotation and sign-out, concurrent planner edits, schema-17 SQLite import and restore, and encrypted push enrollment and revocation. The push enrollment test creates zero reminders. [Backup format](../../docs/backup-restore.md) · [Operator runbook](../../docs/v2-operations.md)
 
 ```sh
 npm --prefix apps/backend run test:provider
 node --test apps/backend/test/domain.session.mjs
 node --test apps/backend/test/migration.session.mjs
+npm --prefix apps/backend run test:delivery:provider
 ```

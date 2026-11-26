@@ -28,14 +28,22 @@ before(async () => {
         import { configurePushDevice } from '../src/pwa/push-client';
         const params = new URLSearchParams(location.search);
         const mode = params.get('mode');
+        const userId = params.get('account') === 'b' ? 'user-b' : 'user-a';
+        const subscriptionPublicId = userId === 'user-b' ? 'sub-2' : 'sub-1';
+        const resumeKey = 'fixture:reload:' + userId;
+        const resumed = sessionStorage.getItem(resumeKey) === 'true';
+        const legacyFixture = mode === 'push-reload-legacy';
+        const newReloadFixture = mode === 'push-reload-failed' || mode === 'push-reload-delayed';
+        const subscriptionKey = 'fixture:browser-subscription';
         const at = Date.parse('2026-02-12T16:00:00Z');
         const occurrence = { publicId: 'occ-1', reminderPublicId: 'rem-1', reminderTitle: 'Check pressure',
           reminderRevision: 4, dueAt: at, triggerAt: at, timezone: 'America/Chicago', state: 'pending', deliveryState: 'not_requested' };
         let reminder = { publicId: 'rem-1', title: 'Check pressure', revision: 4, priority: 'normal', taskPublicId: 'pump',
           dueAt: at, timezone: 'America/Chicago', state: 'pending', dormant: true, overdue: true, occurrence };
-        const registered = ['push-cold', 'push-mismatch', 'push-cleanup-error', 'push-hung'].includes(mode);
+        const seedWorker = ['push-cold', 'push-mismatch', 'push-cleanup-error', 'push-hung'].includes(mode) || legacyFixture && !resumed;
+        const registered = seedWorker || resumed && (legacyFixture || newReloadFixture);
         let grant = { available: mode?.startsWith('push'), enabled: mode?.startsWith('push'), grantRevision: 3,
-          publicKey: 'BA', device: registered ? { publicId: 'sub-1', revision: 1, active: true, permission: 'granted' } : null };
+          publicKey: 'BA', device: registered ? { publicId: subscriptionPublicId, revision: 1, active: true, permission: 'granted' } : null };
         let attempt = { publicId: 'attempt-1', deviceId: 'fixture-device', channel: 'web_push', occurrencePublicId: 'occ-1',
           status: 'accepted_by_provider', createdAt: at, acceptedAt: at };
         const reads = [], writes = [], opened = [], push = [], subscriptions = [];
@@ -44,11 +52,10 @@ before(async () => {
         let workspaceId = $state('ws-1');
         let disabled = $state(false);
         let showReminders = $state(!registered);
-        let browserSubscription;
         let permission = registered ? 'granted' : 'default';
         const simulatedSubscription = { toJSON: () => ({ endpoint: 'https://push.fixture/device', keys: { p256dh: 'public', auth: 'test' } }),
-          async unsubscribe() { push.push('unsubscribe'); browserSubscription = undefined; return true; } };
-        if (registered) browserSubscription = simulatedSubscription;
+          async unsubscribe() { push.push('unsubscribe'); localStorage.removeItem(subscriptionKey); return true; } };
+        if (seedWorker) localStorage.setItem(subscriptionKey, 'true');
         const receipt = { reminderPublicId: 'rem-1', occurrencePublicId: 'occ-1', reminderRevision: 4,
           attemptPublicId: 'attempt-1', receivedAt: at };
         const results = (name, args) => {
@@ -78,8 +85,11 @@ before(async () => {
           async query(reference, args) {
             const name = getFunctionName(reference);
             reads.push([name, args]);
-            if (name === 'delivery:status' && mode === 'push-hung') {
+            if (name === 'delivery:status' && (mode === 'push-hung' || resumed && mode === 'push-reload-delayed')) {
               return new Promise(resolve => lateStatus = () => resolve(results(name, args)));
+            }
+            if (name === 'delivery:status' && resumed && (mode === 'push-reload-failed' || legacyFixture)) {
+              throw new Error('Fixture status unavailable');
             }
             return results(name, args);
           },
@@ -95,7 +105,7 @@ before(async () => {
             }
             if (name === 'reminders:remove') reminder = null;
             if (name === 'reminders:activate') reminder = { ...reminder, revision: 5, dormant: false };
-            if (name === 'delivery:register') grant = { ...grant, device: { publicId: 'sub-1', revision: 1, active: true, permission } };
+            if (name === 'delivery:register') grant = { ...grant, device: { publicId: subscriptionPublicId, revision: 1, active: true, permission } };
             if (name === 'delivery:revoke') grant = { ...grant, device: { ...grant.device, revision: 2, active: false } };
             if (name === 'delivery:acknowledge') {
               if (mode === 'push-retry' && writes.filter(([method]) => method === name).length === 1) throw Error('Unavailable');
@@ -104,7 +114,7 @@ before(async () => {
               return { acknowledgedAt: at };
             }
             publish();
-            return { targetPublicId: name === 'delivery:register' ? 'sub-1' : 'rem-1', revision: 1 };
+            return { targetPublicId: name === 'delivery:register' ? subscriptionPublicId : 'rem-1', revision: 1 };
           },
         };
         if (mode?.startsWith('push')) {
@@ -113,11 +123,11 @@ before(async () => {
             async requestPermission() { push.push('prompt'); permission = mode === 'push-denied' ? 'denied' : 'granted'; return permission; },
           } });
           const registration = { scope: location.origin + '/klaxon/', active: { scriptURL: location.origin + '/klaxon/pwa-sw.js' }, pushManager: {
-            async getSubscription() { return browserSubscription; },
+            async getSubscription() { return localStorage.getItem(subscriptionKey) ? simulatedSubscription : null; },
             async subscribe(args) {
               push.push(['subscribe', args.userVisibleOnly, Array.from(new Uint8Array(args.applicationServerKey))]);
-              browserSubscription = simulatedSubscription;
-              return browserSubscription;
+              localStorage.setItem(subscriptionKey, 'true');
+              return simulatedSubscription;
             },
           } };
           Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: {
@@ -125,26 +135,32 @@ before(async () => {
             addEventListener() {}, removeEventListener() {},
           } });
         }
+        const pushScope = () => ({ userId, workspaceId, workspacePublicId: 'personal' });
         globalThis.fixture = { reads, writes, opened, push, expired: () => expired,
           scope: () => workspaceId, switchWorkspace: () => workspaceId = 'ws-2', disable: () => disabled = true,
           rejectOldWrite: () => settle(new ConvexError('UNAUTHENTICATED')),
-          signOut: (authenticated = true) => clearReminderPushDevice(client, workspaceId, 'personal', authenticated),
-          resumeWorkspace: () => reconcileReminderPushBinding(client, workspaceId), showReminders: () => showReminders = true,
+          signOut: (authenticated = true) => clearReminderPushDevice(client, pushScope(), authenticated),
+          resumeWorkspace: () => reconcileReminderPushBinding(client, pushScope()), showReminders: () => showReminders = true,
           statusWaiting: () => Boolean(lateStatus), releaseLateStatus: () => lateStatus(),
           renewWorkerBinding: () => configurePushDevice({ workspacePublicId: 'personal', subscriptionPublicId: 'sub-1' }),
-          resetFailure: mode === 'push-cleanup-error', workerReceipts: [] };
+          resetFailure: mode === 'push-cleanup-error', workerReceipts: [],
+          workerSubscription: () => localStorage.getItem(subscriptionKey) === 'true',
+          nextLoadStartsOutsideReminders: () => sessionStorage.setItem(resumeKey, 'true') };
         globalThis.fixture.injectReceipt = () => globalThis.fixture.workerReceipts.push(receipt);
-        if (registered) void configurePushDevice({ workspacePublicId: 'personal', subscriptionPublicId: mode === 'push-mismatch' ? 'other-account' : 'sub-1' });
+        if (seedWorker) void configurePushDevice({ workspacePublicId: 'personal', subscriptionPublicId: mode === 'push-mismatch' ? 'other-account' : 'sub-1' });
       </script>
       <output aria-label="Draft state">{dirty ? 'Dirty' : 'Clean'}</output>
       {#if showReminders}
-        <RemindersView {client} {workspaceId} workspacePublicId={workspaceId === 'ws-1' ? 'personal' : 'other'} {disabled}
+        <RemindersView {client} {userId} {workspaceId} workspacePublicId={workspaceId === 'ws-1' ? 'personal' : 'other'} {disabled}
           onOpenTask={id => opened.push(id)} onDirtyChange={value => dirty = value} onUnauthenticated={() => expired++} />
       {/if}`),
     ]);
-    const pushFixture = `let binding;
-      export const configurePushDevice = async config => { binding = config; globalThis.fixture.push.push(['configure', config]); };
-      export const readPushReceipts = async () => binding ? { ...binding, receipts: [...globalThis.fixture.workerReceipts] } : null;
+    const pushFixture = `const key = 'fixture:worker-binding';
+      export const configurePushDevice = async config => { localStorage.setItem(key, JSON.stringify(config)); globalThis.fixture.push.push(['configure', config]); };
+      export const readPushReceipts = async () => {
+        const binding = JSON.parse(localStorage.getItem(key) ?? 'null');
+        return binding ? { ...binding, receipts: [...globalThis.fixture.workerReceipts] } : null;
+      };
       export const clearPushReceipts = async ids => {
         globalThis.fixture.push.push(['clear', ids]);
         globalThis.fixture.workerReceipts = globalThis.fixture.workerReceipts.filter(item => !ids.includes(item.attemptPublicId));
@@ -152,7 +168,7 @@ before(async () => {
       export const resetPushDevice = async () => {
         globalThis.fixture.push.push('reset');
         if (globalThis.fixture.resetFailure) throw Error('Worker reset failed');
-        binding = undefined;
+        localStorage.removeItem(key);
         globalThis.fixture.workerReceipts = [];
       };`;
     const result = await build({ root: scratch, base: './', configFile: false, logLevel: 'silent', plugins: [svelte(), {
@@ -181,7 +197,7 @@ async function open(t, mode = '') {
     await route.fulfill({ body, contentType: path.endsWith('.css') ? 'text/css' : path.endsWith('.js') ? 'text/javascript' : 'text/html' });
   });
   const page = await context.newPage();
-  if (['push-cold', 'push-mismatch', 'push-cleanup-error', 'push-hung'].includes(mode)) {
+  if (['push-cold', 'push-mismatch', 'push-cleanup-error', 'push-hung', 'push-reload-legacy'].includes(mode)) {
     await page.addInitScript(() => globalThis.localStorage.setItem('klaxon:web-push-device:v1', 'fixture-device'));
   }
   page.setDefaultTimeout(3000);
@@ -358,4 +374,64 @@ test('sign-out cleanup times out a hung status query and fences its late result'
   });
   assert.equal((await pushEvents(page)).length, 2);
   assert.deepEqual(await writes(page), []);
+});
+
+async function enrollBrowser(page) {
+  await button(page, 'Delivery settings').click();
+  await button(page, 'Enable on this browser').click();
+  await page.getByText('This browser is enrolled.', { exact: true }).waitFor();
+}
+
+async function reloadOutsideReminders(page) {
+  await page.evaluate(() => globalThis.fixture.nextLoadStartsOutsideReminders());
+  await page.reload();
+  assert.equal(await button(page, 'Delivery settings').count(), 0);
+  assert.equal(await page.evaluate(() => globalThis.fixture.workerSubscription()), true);
+}
+
+test('expiry after a fresh enrollment and reload cleans up despite a failed status read', async t => {
+  const page = await open(t, 'push-reload-failed');
+  await enrollBrowser(page);
+  await reloadOutsideReminders(page);
+  await page.evaluate(() => globalThis.fixture.resumeWorkspace());
+  assert.equal(await page.evaluate(() => globalThis.fixture.signOut(false)), true);
+  assert.deepEqual(await pushEvents(page), ['reset', 'unsubscribe']);
+  assert.deepEqual(await writes(page), []);
+});
+
+test('an existing enrollment migrates through a signed-in status read and survives reload for cleanup', async t => {
+  const page = await open(t, 'push-reload-legacy');
+  assert.equal(await button(page, 'Delivery settings').count(), 0);
+  await page.evaluate(() => globalThis.fixture.resumeWorkspace());
+  await reloadOutsideReminders(page);
+  await page.evaluate(() => globalThis.fixture.resumeWorkspace());
+  assert.equal(await page.evaluate(() => globalThis.fixture.signOut(false)), true);
+  assert.deepEqual(await pushEvents(page), ['reset', 'unsubscribe']);
+});
+
+test('a reloaded account can expire before status returns and another tab can enroll without late cleanup touching it', async t => {
+  const page = await open(t, 'push-reload-delayed');
+  await enrollBrowser(page);
+  await reloadOutsideReminders(page);
+  await page.evaluate(() => { void globalThis.fixture.resumeWorkspace(); });
+  await page.waitForFunction(() => globalThis.fixture.statusWaiting());
+  assert.equal(await page.evaluate(() => globalThis.fixture.signOut(false)), true);
+  assert.deepEqual(await pushEvents(page), ['reset', 'unsubscribe']);
+
+  const other = await page.context().newPage();
+  other.setDefaultTimeout(3000);
+  await other.goto(`${origin}${root}?mode=push-reload-delayed&account=b`);
+  await enrollBrowser(other);
+  await page.evaluate(async () => {
+    globalThis.fixture.releaseLateStatus();
+    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+  });
+  assert.equal(await page.evaluate(() => globalThis.fixture.signOut(false)), true);
+  assert.deepEqual(await pushEvents(page), ['reset', 'unsubscribe']);
+  assert.deepEqual(await writes(page), []);
+  assert.equal(await other.evaluate(() => globalThis.fixture.workerSubscription()), true);
+
+  await reloadOutsideReminders(other);
+  assert.equal(await other.evaluate(() => globalThis.fixture.signOut(false)), true);
+  assert.deepEqual(await pushEvents(other), ['reset', 'unsubscribe']);
 });

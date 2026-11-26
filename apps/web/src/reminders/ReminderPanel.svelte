@@ -10,7 +10,7 @@
     type ReminderWrite } from './reminder-contract';
   import { createDraft, mergeDraft, readDraft, reminderPatch, type ReminderDraft } from './reminder-draft';
 
-  let { client, workspaceId, workspacePublicId, disabled = false, onOpenTask, onUnauthenticated,
+  let { client, userId, workspaceId, workspacePublicId, disabled = false, onOpenTask, onUnauthenticated,
     onDirtyChange }: ReminderProps = $props();
   const tabs = { list: 'All reminders', due: 'Due', history: 'Occurrence history' } as const;
   type Tab = keyof typeof tabs;
@@ -430,6 +430,6 @@
     </div>
   {/if}
 
-  <DeliverySettings {client} {workspaceId} {workspacePublicId} disabled={disabled || dirty && !deliveryDirty}
+  <DeliverySettings {client} {userId} {workspaceId} {workspacePublicId} disabled={disabled || dirty && !deliveryDirty}
     {onUnauthenticated} onDirtyChange={value => { deliveryDirty = value; }} />
 </section>

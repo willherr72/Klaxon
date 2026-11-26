@@ -170,6 +170,10 @@
     return JSON.stringify([active.userId, personal._id, personal.publicId]);
   }
 
+  function reminderPushScope(active: Session, personal: Workspace) {
+    return { userId: active.userId, workspaceId: personal._id, workspacePublicId: personal.publicId };
+  }
+
   function writeHistory(next: Route, position: HistoryPosition, replace: boolean) {
     const state = { ...history.state, klaxonPlanner: { key: historyKey, ...position } };
     if (replace) history.replaceState(state, '', routeHref(next));
@@ -325,7 +329,7 @@
 
   function clearSession(message = '', preserveDraft = false) {
     if (preserveDraft && session && workspace) {
-      void clearReminderPushDevice(session.client, workspace._id, workspace.publicId, false);
+      void clearReminderPushDevice(session.client, reminderPushScope(session, workspace), false);
     }
     const children = preserveDraft ? childRecovery.capture() : new Map();
     if (preserveDraft && session && workspace && (hasDraft || children.size)) {
@@ -430,7 +434,7 @@
       }
       childRecovery.restore(draft?.children);
       workspace = personal;
-      void reconcileReminderPushBinding(active.client, personal._id);
+      void reconcileReminderPushBinding(active.client, reminderPushScope(active, personal));
       watchPage();
     } catch (error) {
       if (active !== session || destroyed) return;
@@ -511,7 +515,7 @@
     signingOut = true;
     signOutError = '';
     try {
-      const cleared = !workspace || await clearReminderPushDevice(active.client, workspace._id, workspace.publicId);
+      const cleared = !workspace || await clearReminderPushDevice(active.client, reminderPushScope(active, workspace));
       await active.signOut();
       if (key) suspended.delete(key);
       if (active === session) clearSession(cleared ? '' :
@@ -856,7 +860,7 @@
 {/snippet}
 
 {#snippet remindersPage(active: Session, personal: Workspace)}
-  <RemindersView client={active.client} workspaceId={personal._id} workspacePublicId={personal.publicId}
+  <RemindersView client={active.client} userId={active.userId} workspaceId={personal._id} workspacePublicId={personal.publicId}
     disabled={!connected || accountBusy || Boolean(detailId)} onOpenTask={openTaskFrom}
     onDirtyChange={dirty => pageDirty = dirty} onUnauthenticated={active.expire} />
 {/snippet}

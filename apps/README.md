@@ -29,4 +29,6 @@ Both commands verify the recorded web assets before invoking Tauri. The shell us
 
 ### Development configuration
 
-For a Development build, provide the public HTTPS origin in `KLAXON_PUBLIC_DEV_ORIGIN` and run `npm --prefix apps/web run build:development`. The domain contract and authenticated task UI are later P1 work. The [foundation acceptance plan](../docs/superpowers/plans/2026-11-26-p1-foundation.md) describes the checks for this stage.
+For a Development build, set `KLAXON_PUBLIC_DEV_ORIGIN` to the Development deployment’s public HTTPS origin and run `npm --prefix apps/web run build:development`. Serve `apps/web/dist/` from an HTTPS static host. Sign in with an enrolled account to open Today, capture a task, review a day plan or manage reminders. Workspace reads and writes require a connection. The PWA can reopen its cached sign-in screen offline, and a clean tab can explicitly reload to apply an update.
+
+On Windows with the pinned local Convex backend and both app packages installed, run `npm --prefix apps/web run test:planner:local` for the two-browser workflow. It exercises capture, promotion, a revision-safe undo, and weekly reminder dismissal and completion. [Backend setup](backend/README.md) · [Delivery settings](../docs/v2-operations.md#web-push-delivery)

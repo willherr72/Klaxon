@@ -7,11 +7,11 @@
   import { clearPushReceipts, configurePushDevice, readPushReceipts, type PushDevice } from '../pwa/push-client';
   import { deliveryApi, deliveryLabels, type DeliveryAttempt, type DeliveryStatus, type DeliveryWrite } from './delivery-contract';
   import { applicationServerKey, disconnectLocalPush, installDeviceId, matchesPushBinding, pushDeviceEpoch, rememberPushBinding,
-    scopedPushRegistration, wireSubscription, withPushBinding } from './push-device';
+    savePushBinding, scopedPushRegistration, wireSubscription, withPushBinding } from './push-device';
   import { dateLabel, type Page } from './reminder-contract';
 
-  let { client, workspaceId, workspacePublicId, disabled = false, onUnauthenticated, onDirtyChange }: {
-    client: ConvexClient; workspaceId: string; workspacePublicId: string; disabled?: boolean;
+  let { client, userId, workspaceId, workspacePublicId, disabled = false, onUnauthenticated, onDirtyChange }: {
+    client: ConvexClient; userId: string; workspaceId: string; workspacePublicId: string; disabled?: boolean;
     onUnauthenticated: () => void; onDirtyChange: (dirty: boolean) => void;
   } = $props();
   type Stage = { kind: 'write'; write: DeliveryWrite } |
@@ -50,6 +50,7 @@
 
   const current = () => alive && viewEpoch === pushDeviceEpoch();
   const identity = $derived(deviceId ? { workspaceId, deviceId } : undefined);
+  const pushScope = $derived({ userId, workspaceId, workspacePublicId });
 
   function binding(subscriptionPublicId: string): PushDevice { return { workspacePublicId, subscriptionPublicId }; }
 
@@ -83,13 +84,13 @@
   $effect(() => {
     void statusRetry;
     statusError = false;
-    if (!identity) return;
+    if (!identity || !deviceId) return;
     let active = true;
     const stop = client.onUpdate(deliveryApi.status, identity, result => {
       if (!active || !current()) return;
       status = result;
       statusError = false;
-      if (result.device) rememberPushBinding(client, workspaceId, result.device.publicId);
+      if (result.device) rememberPushBinding(client, pushScope, deviceId, result.device.publicId);
       void checkBrowser();
     }, reason => {
       if (!active || !current()) return;
@@ -137,6 +138,10 @@
       if (!current() || pending || status?.device?.publicId !== device.publicId) return;
       enrolled = Boolean(batch && matchesPushBinding(binding(device.publicId), batch));
       boundElsewhere = Boolean(batch && !enrolled);
+      if (enrolled && deviceId) {
+        try { savePushBinding(pushScope, deviceId, device.publicId); }
+        catch { /* Existing enrollment can still use this session's status. */ }
+      }
       if (enrolled && batch && !disabled) {
         const confirmed: string[] = [];
         for (const { attemptPublicId } of batch.receipts) {
@@ -239,6 +244,9 @@
         writeError = 'This browser is enrolled for another account or workspace.';
         return;
       }
+      if (!deviceId) throw new Error('Browser device ID unavailable');
+      // Save the signed-in registration proof before the worker can display a push.
+      savePushBinding(pushScope, deviceId, next.binding.subscriptionPublicId);
       await configurePushDevice(next.binding);
       if (!current()) return;
       enrolled = true;
@@ -252,8 +260,8 @@
     } else {
       const { write } = next;
       const receipt = await client.mutation(deliveryApi[write.kind], write.args);
-      if (write.kind === 'register') rememberPushBinding(client, workspaceId, receipt.targetPublicId);
       if (!current()) return;
+      if (write.kind === 'register') rememberPushBinding(client, pushScope, write.args.deviceId, receipt.targetPublicId);
       switch (write.kind) {
         case 'register':
           await perform({ kind: 'configure', binding: binding(receipt.targetPublicId), message: 'This browser is enrolled.' });

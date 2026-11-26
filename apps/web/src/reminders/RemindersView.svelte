@@ -7,9 +7,11 @@
 </script>
 
 {#key props.client}
-  {#key props.workspaceId}
-    {#key props.workspacePublicId}
-      <ReminderPanel {...props} />
+  {#key props.userId}
+    {#key props.workspaceId}
+      {#key props.workspacePublicId}
+        <ReminderPanel {...props} />
+      {/key}
     {/key}
   {/key}
 {/key}

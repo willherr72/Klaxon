@@ -4,6 +4,7 @@ import type { Task } from '../contracts';
 
 export type ReminderProps = {
   client: ConvexClient;
+  userId: string;
   workspaceId: string;
   workspacePublicId: string;
   onOpenTask: (publicId: string) => void;
