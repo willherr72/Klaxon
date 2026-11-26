@@ -2,6 +2,12 @@
 
 Development targets `v2` from v0.11.1 at `c89b655`. The P0 architecture gate passed, including physical Android credential storage and desktop-off sync. The P1 cloud foundation passed local verification. The status register below tracks implementation and outstanding acceptance checks. [P0 decision](adr/p0-architecture.md#p0-gate-decision) · [Physical Android evidence](#physical-android-hosted-session) · [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14)
 
+## P3 agent access
+
+The Development planner lets a workspace owner issue, scope, expire and revoke an agent credential from Settings. The versioned task API and MCP share workspace authorization, task revisions, operation receipts and Activity attribution. Each grant has a 60-request-per-minute quota. Planning context requires its own permission and includes bounded task, step, calendar and reminder sections with completeness indicators. [API contract](api/README.md)
+
+The official MCP client exercised handshake-era and July 2026 protocols against a disposable local Convex backend using a synthetic bearer credential. The test verifies task reads, concurrent create replay, revision conflicts, the scoped planning snapshot, Activity attribution and revocation. Separate signed-token tests exercise issuer and audience validation, owner consent and scope intersection using local signing keys. Hosted OAuth login and refresh, a remote MCP call from Will's Dot, and the desktop-off mobile witness remain open. [Independent client test](../apps/backend/test/agent.session.mjs) · [Signed-token tests](../apps/backend/test/agentMcp.test.ts) · [Dot playbook](dot-playbook.md)
+
 ## P2 manual planner
 
 The signed-in Development app opens on Today. A task can be captured, promoted, edited and scheduled from the same workspace. Browser checks exercise task permalinks, keyboard navigation, the mobile Tasks and Schedule switch, project lanes, and conflicts during task and calendar edits. Search covers task titles, descriptions, linked external IDs and day notes. The task history supports undo for revision-checked edits and lifecycle changes. [Browser entry tests](../apps/web/test/browser.test.mjs) · [Calendar interactions](../apps/web/test/calendar-ui.test.mjs)
@@ -775,10 +781,10 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P2-09 | Delivery | One scheduled notification displayed and acknowledged on physical Android Chrome | [Integrated planner observation](#physical-android-planner-reminder) |
 | P2-10 | Activity/undo | Registered and browser checks passed for task edits | [Revision and replay](../apps/backend/test/activity.test.ts) |
 | P2-11 | PWA | Manifest, offline shell, update and push receipt checks passed in Edge | [PWA tests](../apps/web/test/pwa.test.mjs) |
-| P3-01 | Public API | Queued | — |
-| P3-02 | Credentials | Queued | — |
-| P3-03 | Remote MCP | Queued | — |
-| P3-04 | Context | Queued | — |
+| P3-01 | Public API | Task and context endpoints verified locally. Further operation families remain. | [P3 agent access](#p3-agent-access) |
+| P3-02 | Credentials | Local owner issuance, membership, scopes, expiry, quota and revocation verified. | [P3 agent access](#p3-agent-access) |
+| P3-03 | Remote MCP | Two SDK protocol modes verified on loopback. Hosted connector and issuer acceptance remain open. | [P3 agent access](#p3-agent-access) |
+| P3-04 | Context | Bounded snapshot verified with separate planning permission, privacy and local-day checks. | [P3 agent access](#p3-agent-access) |
 | P3-05 | Bulk plans | Queued | — |
 | P3-06 | Autonomy | Queued | — |
 | P3-07 | Dot playbook | Queued | — |

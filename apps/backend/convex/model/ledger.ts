@@ -68,9 +68,12 @@ export const ledgerTables = {
     userId: v.id("users"),
     label: v.string(),
     tokenHash: v.string(),
+    oauthPrincipal: v.optional(v.object({ issuer: v.string(), subject: v.string(), clientId: v.string() })),
     scopes: v.array(v.string()),
     expiresAt: instant,
     revokedAt: v.optional(instant),
+    rateWindowStartedAt: v.optional(instant),
+    rateWindowRequests: v.optional(v.number()),
   })
     .index("by_token_hash", ["tokenHash"])
     .index("by_workspace_user", ["workspaceId", "userId"])

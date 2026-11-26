@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -147,6 +148,75 @@ async function signIn(page, password = 'inert-password', username = 'test-owner'
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 }
+
+test('Settings issues only a bearer hash, retries the same issuance and clears one-time disclosure across sessions', async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/settings' });
+  await signIn(page);
+  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
+  assert.equal(await page.getByRole('link', { name: 'Settings', exact: true }).getAttribute('aria-current'), 'page');
+  await page.getByLabel('Credential label').fill('Task helper');
+  await page.getByRole('button', { name: 'Issue credential' }).click();
+  const issue = await transport.agentWrites.next();
+  assert.equal(issue.name, 'agentCredentials:issue');
+  assert.deepEqual(Object.keys(issue.args).sort(), ['expiresAt', 'label', 'scopes', 'tokenHash', 'workspaceId']);
+  assert.deepEqual(issue.args.scopes, ['tasks:read']);
+  assert.match(issue.args.tokenHash, /^[a-f0-9]{64}$/);
+  issue.fail();
+  const retry = page.getByRole('button', { name: 'Retry issuance' });
+  await retry.click();
+  const repeated = await transport.agentWrites.next();
+  assert.deepEqual(repeated.args, issue.args);
+  const principal = { issuer: 'https://issuer.test', subject: 'agent-account', clientId: 'client-1' };
+  const row = { publicId: 'credential-1', label: issue.args.label, scopes: issue.args.scopes,
+    expiresAt: issue.args.expiresAt, createdAt: Date.now(), oauthBindingAvailable: true, oauthCandidate: principal };
+  repeated.succeed(row);
+  const disclosure = page.getByLabel('Bearer token');
+  await disclosure.waitFor();
+  const bearer = await disclosure.inputValue();
+  assert.match(bearer, /^klx_[a-f0-9]{64}$/);
+  assert.equal(createHash('sha256').update(bearer).digest('hex'), issue.args.tokenHash);
+  const stored = await page.evaluate(() => [
+    ...Object.values(globalThis.localStorage), ...Object.values(globalThis.sessionStorage), globalThis.history.state,
+  ]);
+  assert.ok(!JSON.stringify(stored).includes(bearer));
+  await page.getByRole('button', { name: 'Hide token' }).click();
+  await disclosure.waitFor({ state: 'detached' });
+  await page.getByText('OAuth setup identifiers', { exact: true }).click();
+  await page.getByText('personal-public', { exact: true }).waitFor();
+  await page.getByText(row.publicId, { exact: true }).waitFor();
+  assert.equal(await page.getByText(issue.args.tokenHash, { exact: true }).count(), 0);
+  assert.equal(await page.getByText(issue.args.workspaceId, { exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Enable OAuth for Task helper' }).click();
+  const review = page.getByRole('region', { name: 'Credential access confirmation' });
+  for (const value of Object.values(principal)) await review.getByText(value, { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Confirm OAuth access' }).click();
+  const grant = await transport.agentWrites.next();
+  assert.equal(grant.name, 'agentCredentials:bindOAuth');
+  assert.deepEqual(grant.args, { workspaceId: issue.args.workspaceId, publicId: row.publicId, expectedPrincipal: principal });
+  grant.succeed({ ...row, oauthBound: true });
+  await page.getByText('OAuth enabled', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Revoke Task helper' }).click();
+  await page.getByRole('button', { name: 'Confirm revocation' }).click();
+  const revoke = await transport.agentWrites.next();
+  assert.equal(revoke.name, 'agentCredentials:revoke');
+  assert.equal(revoke.args.publicId, row.publicId);
+  revoke.succeed({ ...row, oauthBound: false, revokedAt: Date.now() });
+  await page.getByText('Revoked', { exact: true }).waitFor();
+  assert.equal(await page.getByText('OAuth enabled', { exact: true }).count(), 0);
+  await page.getByLabel('Credential label').fill('Pending credential');
+  await page.getByRole('checkbox', { name: 'Read planning' }).check();
+  await page.getByRole('button', { name: 'Issue credential' }).click();
+  const late = await transport.agentWrites.next();
+  assert.deepEqual(late.args.scopes, ['tasks:read', 'planning:read']);
+  transport.expire();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
+  await signIn(page, 'inert-password', 'test-other');
+  await page.getByRole('heading', { name: 'Settings', exact: true }).waitFor();
+  late.succeed({ ...row, label: late.args.label, publicId: 'credential-2' });
+  assert.equal(await disclosure.count(), 0);
+  assert.equal(await page.getByText('Task helper', { exact: true }).count(), 0);
+  assert.equal(await page.getByText('Pending credential', { exact: true }).count(), 0);
+});
 
 test('Activity reviews an inverse and shows a stale revision without overwriting the task', {timeout:120_000}, async t => {
   const {page} = await openDevelopment(t,{hash:'#/activity'});

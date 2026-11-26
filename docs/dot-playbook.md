@@ -16,6 +16,10 @@ OpenAI documents a cloud computer for Dot, ongoing work and owner-selected app a
 
 Dot checked that the unique synthetic title was absent, clicked **Create** once, and saw **Server acknowledged the write** at approximately 15:32:32 UTC. An explicit **Read tasks** request returned the same stable ID and title exactly once at 15:32:39.299 UTC. No other tasks were touched. Independent cross-client owner confirmation remains unverified.
 
+## MCP client rehearsal
+
+The official SDK exercised tool discovery, task reads and write replay with a workspace-scoped bearer against the disposable local service. Hosted connector availability, issuer sign-in and refresh still require a run from Will’s Dot. The operator can use Settings and the API guide to prepare a short-lived grant when that run is authorized. [API and OAuth setup](api/README.md#mcp-and-optional-oauth) · [Local client test](../apps/backend/test/agent.session.mjs)
+
 ## Acceptance run
 
 Will reports that he edited the hosted task while Windows was off in his [physical desktop-off smoke](klaxon-v2-progress.md#remaining-p0-tests). The actor for every check below must be the owner's Dot. If the owner has no supported connector or authorized browser session, record which route was unavailable and retain manual planning.

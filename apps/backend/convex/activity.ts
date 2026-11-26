@@ -16,8 +16,10 @@ export const list = query({
       q.eq("workspaceId",workspaceId)).order("desc").paginate(boundedPage(paginationOpts));
     const page = await Promise.all(result.page.map(async event => {
       const principal = event.actor;
+      const credential = principal.kind === "agent" ? await ctx.db.get("agentCredentials", principal.credentialId) : null;
+      const agentLabel = credential?.workspaceId === workspaceId ? `Agent - ${credential.label}` : "Agent";
       const actor = principal.kind === "user" ? (principal.userId === userId ? "You" : "Workspace member")
-        : principal.kind === "system" ? "Automation" : principal.kind === "integration" ? "Integration" : "Agent";
+        : principal.kind === "system" ? "Automation" : principal.kind === "integration" ? "Integration" : agentLabel;
       const inverse = event.undoEligible && role !== "reader" ? await ctx.db.query("taskUndoChanges")
         .withIndex("by_workspace_event",q => q.eq("workspaceId",workspaceId).eq("eventId",event._id)).unique() : null;
       return {eventId:event._id,actor,origin:event.origin,action:event.action,createdAt:event.createdAt,reason:event.reason,

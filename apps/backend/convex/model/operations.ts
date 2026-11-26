@@ -28,6 +28,7 @@ export type OperationChange = {
   beforeRevision?: number;
   inverse?: Omit<Model["taskUndoChanges"]["document"], "_id" | "_creationTime" | "workspaceId" | "eventId">;
   reason?: "Reversed a reviewed task change";
+  agentReason?: string;
 };
 
 export type OperationResult = {
@@ -175,7 +176,7 @@ export async function runOperation(
     beforeRevision: change.beforeRevision,
     afterRevision: change.revision,
     undoEligible: Boolean(change.inverse),
-    reason: change.reason,
+    reason: actor.kind === "agent" ? change.agentReason : change.reason,
   });
   if (change.inverse) {
     await db.insert("taskUndoChanges", {workspaceId:workspace._id,eventId:activityEventId,...change.inverse});

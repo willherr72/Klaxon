@@ -90,12 +90,14 @@ export async function interceptDevelopment(context, t, entry) {
   const captureWrites = messages();
   const agendaRequested = messages();
   const upcomingRequested = messages();
+  const agentWrites = messages();
+  const agentRows = new Map();
   let currentTokens = tokens;
   let personal = workspace;
   let ownerWorkspace = workspace;
   let rotationRequested = false;
   const fixture = {
-    sockets, queryAdded, taskRequested, writes, captureQueries, captureWrites, agendaRequested, upcomingRequested,
+    sockets, queryAdded, taskRequested, writes, captureQueries, captureWrites, agendaRequested, upcomingRequested, agentWrites,
     signOuts: 0, httpRequests: 0,
   };
   t.after(() => assert.deepEqual(unexpected, [], 'unexpected Convex traffic'));
@@ -158,6 +160,7 @@ export async function interceptDevelopment(context, t, entry) {
     const queries = new Set();
     const taskQueries = new Set();
     const captures = new Set();
+    const agentQueries = new Set();
     const send = message => socket.send(JSON.stringify(message));
     function transition(modifications = [], changes = {}) {
       const startVersion = version;
@@ -205,7 +208,7 @@ export async function interceptDevelopment(context, t, entry) {
             for (const modification of message.modifications) {
               const { queryId } = modification;
               if (modification.type === 'Remove') {
-                assert.ok(queries.delete(queryId) || taskQueries.delete(queryId) || captures.delete(queryId));
+                assert.ok(queries.delete(queryId) || taskQueries.delete(queryId) || captures.delete(queryId) || agentQueries.delete(queryId));
                 updates.push({ type: 'QueryRemoved', queryId });
               } else if (modification.udfPath === 'tasks:get') {
                 taskQueries.add(queryId);
@@ -226,6 +229,11 @@ export async function interceptDevelopment(context, t, entry) {
                   eventId:'event-local',actor:'You',origin:'app',action:'task.update',createdAt:1700000000000,
                   targetKind:'task',targetPublicId:'primer-id',revision:2,undoEligible:true,
                 }],isDone:true,continueCursor:'end'}});
+              } else if (modification.udfPath === 'agentCredentials:list') {
+                assert.equal(modification.args[0].workspaceId, personal._id);
+                agentQueries.add(queryId);
+                updates.push({ type: 'QueryUpdated', queryId, journal: null, logLines: [],
+                  value: { page: agentRows.get(personal._id) ?? [], isDone: true, continueCursor: 'end' } });
               } else if (modification.udfPath === 'organization:search') {
                 const [args] = modification.args;
                 assert.equal(args.workspaceId,personal._id);
@@ -308,6 +316,22 @@ export async function interceptDevelopment(context, t, entry) {
               assert.deepEqual(args, {});
               succeed(personal);
               transition();
+            } else if (['agentCredentials:issue', 'agentCredentials:revoke', 'agentCredentials:bindOAuth'].includes(message.udfPath)) {
+              assert.equal(args.workspaceId, personal._id);
+              agentWrites.push({
+                name: message.udfPath, args,
+                fail() {
+                  send({ ...common, success: false, result: 'Synthetic response failure' });
+                },
+                succeed(row) {
+                  const previous = agentRows.get(args.workspaceId) ?? [];
+                  const rows = [...previous.filter(item => row.publicId !== item.publicId), row];
+                  agentRows.set(args.workspaceId, rows);
+                  succeed(message.udfPath === 'agentCredentials:bindOAuth'
+                    ? { publicId: row.publicId, oauthBound: true } : row);
+                  publish(agentQueries, rows);
+                },
+              });
             } else {
               const isCapture = message.udfPath === 'captures:apply';
               if (!isCapture) assert.ok(['tasks:apply', 'planning:updatePreferences', 'reminders:create'].includes(message.udfPath));

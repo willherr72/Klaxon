@@ -10,6 +10,9 @@
 
 import type * as activity from "../activity.js";
 import type * as agenda from "../agenda.js";
+import type * as agentCredentials from "../agentCredentials.js";
+import type * as agentPlanningContext from "../agentPlanningContext.js";
+import type * as agentTasks from "../agentTasks.js";
 import type * as auth from "../auth.js";
 import type * as backups from "../backups.js";
 import type * as calendar from "../calendar.js";
@@ -18,9 +21,18 @@ import type * as delivery from "../delivery.js";
 import type * as deliveryTransport from "../deliveryTransport.js";
 import type * as deliveryWorker from "../deliveryWorker.js";
 import type * as health from "../health.js";
+import type * as http from "../http.js";
 import type * as imports from "../imports.js";
 import type * as links from "../links.js";
 import type * as model_access from "../model/access.js";
+import type * as model_agentBindings from "../model/agentBindings.js";
+import type * as model_agentCredentials from "../model/agentCredentials.js";
+import type * as model_agentHttp from "../model/agentHttp.js";
+import type * as model_agentMcp from "../model/agentMcp.js";
+import type * as model_agentOAuth from "../model/agentOAuth.js";
+import type * as model_agentPlanningContext from "../model/agentPlanningContext.js";
+import type * as model_agentPlanningContextHttp from "../model/agentPlanningContextHttp.js";
+import type * as model_agentTasks from "../model/agentTasks.js";
 import type * as model_backupFormat from "../model/backupFormat.js";
 import type * as model_backupStore from "../model/backupStore.js";
 import type * as model_calendarOverlap from "../model/calendarOverlap.js";
@@ -63,6 +75,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   activity: typeof activity;
   agenda: typeof agenda;
+  agentCredentials: typeof agentCredentials;
+  agentPlanningContext: typeof agentPlanningContext;
+  agentTasks: typeof agentTasks;
   auth: typeof auth;
   backups: typeof backups;
   calendar: typeof calendar;
@@ -71,9 +86,18 @@ declare const fullApi: ApiFromModules<{
   deliveryTransport: typeof deliveryTransport;
   deliveryWorker: typeof deliveryWorker;
   health: typeof health;
+  http: typeof http;
   imports: typeof imports;
   links: typeof links;
   "model/access": typeof model_access;
+  "model/agentBindings": typeof model_agentBindings;
+  "model/agentCredentials": typeof model_agentCredentials;
+  "model/agentHttp": typeof model_agentHttp;
+  "model/agentMcp": typeof model_agentMcp;
+  "model/agentOAuth": typeof model_agentOAuth;
+  "model/agentPlanningContext": typeof model_agentPlanningContext;
+  "model/agentPlanningContextHttp": typeof model_agentPlanningContextHttp;
+  "model/agentTasks": typeof model_agentTasks;
   "model/backupFormat": typeof model_backupFormat;
   "model/backupStore": typeof model_backupStore;
   "model/calendarOverlap": typeof model_calendarOverlap;

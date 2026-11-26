@@ -20,6 +20,7 @@
   import { destinations, readRoute, routeHref, taskHref, type Route } from './planner-route';
   import PlannerShell from './planner-shell/PlannerShell.svelte';
   import { signIn, SignInError, type Session } from './session';
+  import AgentCredentials from './settings/AgentCredentials.svelte';
   import TaskDetail from './task-detail/TaskDetail.svelte';
   import { createDraftRecovery } from './draft-recovery';
   import './development.css';
@@ -876,11 +877,22 @@
 {/snippet}
 
 <PwaControls blocked={hasDraft || suspended.size > 0 || signingIn || accountBusy} />
+{#snippet settingsPage(active: Session, personal: Workspace)}
+  {#key active}
+    {#key personal._id}
+      <AgentCredentials client={active.client} workspaceId={personal._id} workspacePublicId={personal.publicId}
+        disabled={!connected || accountBusy || Boolean(detailId)}
+        onDirtyChange={dirty => pageDirty = dirty} onUnauthenticated={active.expire} />
+    {/key}
+  {/key}
+{/snippet}
+
 {#if !session}
   {@render signInView()}
 {:else}
   {@const active = session}
-  {@const views = { inbox: inboxView, capture: capturePage, projects: projectsPage, calendar: calendarPage, reminders: remindersPage, activity: activityPage }}
+  {@const views = { inbox: inboxView, capture: capturePage, projects: projectsPage, calendar: calendarPage,
+    reminders: remindersPage, activity: activityPage, settings: settingsPage }}
   <PlannerShell destinations={workspace ? destinations : []} active={primaryView.id} routeKey={routeHref(route)}
     onNavigate={destination => navigate(destination.href)} detail={workspace && detailId ? taskDetail : undefined}>
     {#snippet status()}

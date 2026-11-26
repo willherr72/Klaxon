@@ -136,7 +136,7 @@ export async function withLocalProvider(action) {
       stdio: "ignore",
       timeout: 120_000,
     });
-    await action({ url, adminKey, generated: join(project, "convex", "_generated") });
+    await action({ url, siteUrl, adminKey, generated: join(project, "convex", "_generated") });
   } catch (error) {
     failures.push(error);
   } finally {
