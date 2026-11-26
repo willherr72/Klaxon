@@ -14,6 +14,8 @@ Reminder tests cover task-linked and recurring reminders, snooze, invalidation a
 
 The official local backend also enrolled an inert browser subscription with fresh keys, rejected an invalid P-256 point, replayed an enrollment, and revoked the device. No reminder was created during that check. A separate Chromium touch-emulation walkthrough completed a daily task at 320px and verified focus on returning to Today. Session-expiry tests covered retrying the original operation after reopening task details, Calendar, Projects and Reminders under the same account and workspace. [Enrollment test](../apps/backend/test/delivery.session.mjs) · [Planner interaction tests](../apps/web/test/browser.test.mjs)
 
+The Development build at `90bdec4` also ran in Chrome 133 on a disposable Android 16 (API 36, x86_64) emulator. In airplane mode it showed the offline sign-in message. With the page’s online signal simulated and Convex HTTP and WebSocket responses supplied by a local fixture, touch navigation opened Today, switched between Tasks and Schedule, opened the selected task and reached New reminder. Closing task details with Enter returned focus to the task opener. The emulator and ADB routes were removed. This covered Android Chrome interaction and focus. Physical notification delivery and TalkBack remain unverified.
+
 ## P1 cloud foundation
 
 The registered backend functions derive the user from the current Convex Auth session and check workspace membership on every operation, including receipt replay. The Development browser client signs in, pages through live task results and retries a failed edit with its original operation ID and revision. The offline native foundation still serves the P1-01 build. [Backend contract](../apps/backend/README.md)
