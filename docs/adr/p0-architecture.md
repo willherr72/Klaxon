@@ -2,7 +2,7 @@
 
 ## P0 gate decision
 
-The physical Android credential-storage check passed. P1 is queued for the phase decision. The following decisions guide the v2 prototype. V1 remains authoritative until migration and restore are verified.
+The physical Android credential-storage check passed. Will approved starting P1-01 after the physical test. The [foundation plan](../superpowers/plans/2026-11-26-p1-foundation.md) defines the first shared build. The following decisions guide the v2 prototype. V1 remains authoritative until migration and restore are verified.
 
 | Area | Decision and evidence limit |
 |---|---|
