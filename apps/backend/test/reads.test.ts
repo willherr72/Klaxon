@@ -187,6 +187,31 @@ test.each([0, 1.5, 51])("rejects invalid task page size %s", async (numItems) =>
   }))).rejects.toThrow(/between 1 and 50/);
 });
 
+test("reads a full 50-item page and honors a previously returned end cursor", async () => {
+  const t = testBackend();
+  const workspace = await t.run(async ({ db }) => {
+    const workspace = await insertWorkspace(db, "pagination");
+    for (let i = 0; i < 51; i++) {
+      await db.insert("tasks", taskRecord(workspace, String(i)));
+    }
+    return workspace;
+  });
+  const read = (cursor: string | null, numItems: number, endCursor?: string) =>
+    t.query(({ db }) => listTasks(db, workspace, { kind: "status", status: "ready" },
+      { cursor, numItems, endCursor }));
+
+  const first = await read(null, 50);
+  expect(first.page).toHaveLength(50);
+  expect(first.pageStatus).not.toBe("SplitRequired");
+  const last = await read(first.continueCursor, 50);
+  expect(last.isDone).toBe(true);
+  expect(new Set([...first.page, ...last.page].map(task => task._id)).size).toBe(51);
+
+  const prefix = await read(null, 8);
+  const bounded = await read(null, 50, prefix.continueCursor);
+  expect(bounded.page.map(task => task._id)).toEqual(prefix.page.map(task => task._id));
+});
+
 test.each<TaskFilter>([
   { kind: "planned", from: "2026-02-30", until: "2026-03-03" },
   { kind: "deadlineDate", from: "2026-03-01", until: "2026-03-01" },

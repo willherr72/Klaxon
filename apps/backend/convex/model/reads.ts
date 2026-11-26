@@ -6,6 +6,7 @@ type Model = DataModelFromSchemaDefinition<typeof schema>;
 type Reader = GenericDatabaseReader<Model>;
 type WorkspaceId = GenericId<"workspaces">;
 type Task = Model["tasks"]["document"];
+const maxPageSize = 50;
 
 export type TaskFilter =
   | { kind: "status"; status: Task["status"] }
@@ -28,8 +29,8 @@ function isCalendarDate(value: string) {
 
 // [from, until) lets adjacent days or windows share a boundary without repeating rows.
 export function listTasks(db: Reader, workspaceId: WorkspaceId, filter: TaskFilter,
-  page: Pick<PaginationOptions, "cursor" | "numItems">) {
-  if (!Number.isInteger(page.numItems) || page.numItems < 1 || page.numItems > 50) {
+  page: Pick<PaginationOptions, "cursor" | "numItems" | "endCursor">) {
+  if (!Number.isInteger(page.numItems) || page.numItems < 1 || page.numItems > maxPageSize) {
     throw new RangeError("Request between 1 and 50 tasks per page");
   }
   if (filter.kind === "planned" || filter.kind === "deadlineDate") {
@@ -38,7 +39,8 @@ export function listTasks(db: Reader, workspaceId: WorkspaceId, filter: TaskFilt
     }
   }
   const tasks = db.query("tasks");
-  const options = { cursor: page.cursor, numItems: page.numItems, maximumRowsRead: 50 };
+  // Leave room for a full indexed page before the database requests a split.
+  const options = { cursor: page.cursor, endCursor: page.endCursor, numItems: page.numItems, maximumRowsRead: maxPageSize + 1 };
   switch (filter.kind) {
     case "status":
       return tasks.withIndex("by_workspace_status", q =>
