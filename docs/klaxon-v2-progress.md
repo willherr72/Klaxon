@@ -10,11 +10,17 @@ On November 26, two authenticated sessions on the official disposable Convex run
 
 Two Chromium sessions signed in independently to the same disposable local Convex workspace. One captured a note, and the other promoted it to a task. Both observed its rename and undo. A Monday-only reminder advanced exactly seven days when the second session dismissed it. Completion appeared in the first session, and reloading the page required sign-in. Run `npm --prefix apps/web run test:planner:local` on Windows with both app packages installed and the pinned local Convex binary. [Browser-to-backend test](../apps/web/test/planner.loopback.mjs)
 
-Reminder tests cover task-linked and recurring reminders, snooze, invalidation and dormant restored reminders. A scheduled delivery job reached a stub provider in local tests. Edge exercised synthetic worker receipts, notification click routing, offline loading and multi-tab updates. An ordinary notification from the integrated planner still needs a physical-device observation. P0 device results used the spike receiver. [Delivery tests](../apps/backend/test/delivery.test.ts) · [PWA tests](../apps/web/test/pwa.test.mjs)
+Reminder tests cover task-linked and recurring reminders, snooze, invalidation and dormant restored reminders. A scheduled delivery job reached a stub provider in local tests. Edge exercised synthetic worker receipts, notification click routing, offline loading and multi-tab updates. The integrated planner also passed the [physical Android reminder check](#physical-android-planner-reminder). [Delivery tests](../apps/backend/test/delivery.test.ts) · [PWA tests](../apps/web/test/pwa.test.mjs)
 
 The official local backend also enrolled an inert browser subscription with fresh keys, rejected an invalid P-256 point, replayed an enrollment, and revoked the device. No reminder was created during that check. A separate Chromium touch-emulation walkthrough completed a daily task at 320px and verified focus on returning to Today. Session-expiry tests covered retrying the original operation after reopening task details, Calendar, Projects and Reminders under the same account and workspace. [Enrollment test](../apps/backend/test/delivery.session.mjs) · [Planner interaction tests](../apps/web/test/browser.test.mjs)
 
-A Development worktree build also ran in Chrome 133 on a disposable Android 16 (API 36, x86_64) emulator. In airplane mode it showed the offline sign-in message. With the page’s online signal simulated and Convex HTTP and WebSocket responses supplied by a local fixture, touch navigation opened Today, switched between Tasks and Schedule, opened the selected task and reached New reminder. Closing task details with Enter returned focus to the task opener. The emulator and ADB routes were removed. This covered Android Chrome interaction and focus. Physical notification delivery and TalkBack remain unverified.
+A Development worktree build also ran in Chrome 133 on a disposable Android 16 (API 36, x86_64) emulator. In airplane mode it showed the offline sign-in message. With the page’s online signal simulated and Convex HTTP and WebSocket responses supplied by a local fixture, touch navigation opened Today, switched between Tasks and Schedule, opened the selected task and reached New reminder. Closing task details with Enter returned focus to the task opener. The emulator and ADB routes were removed. This covered Android Chrome interaction and focus. TalkBack remains unverified.
+
+### Physical Android planner reminder
+
+On November 26, 2026, the Development build from `2e15aaf` scheduled one nonrecurring reminder on a fresh Convex Development deployment. It was due at 18:00:20 UTC. The push service accepted the single attempt at 18:00:21.908 UTC (HTTP 201). Will saw one **Klaxon reminder** notification in Chrome on his Samsung Galaxy S26 Ultra. His screenshots show the notification at 12:00 p.m. Central and the corresponding planner entry marked **Fired**. The backend recorded the browser acknowledgment at 18:01:18.901 UTC. The exact display time, screen-lock state and tab state were not recorded.
+
+Will confirmed removing the browser enrollment. The operator verified the device route was inactive, revoked it server-side, and verified workspace Web Push was off. The temporary tunnel and static host were stopped, the local staging directory was removed, and the public site returned HTTP 530. The disposable Convex deployment is separate from the retired frontend.
 
 ## P1 cloud foundation
 
@@ -766,7 +772,7 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P2-06 | Calendar | Day/week navigation and block editing exercised locally | [Calendar UI](../apps/web/test/calendar-ui.test.mjs) |
 | P2-07 | Planning constraints | Local two-client preview and apply verified | [Manual planner](#p2-manual-planner) |
 | P2-08 | Reminder domain | Domain and registered endpoint verification passed | [Lifecycle](../apps/backend/test/reminders.test.ts) |
-| P2-09 | Delivery | Scheduler, encrypted transport preparation and worker exercised locally | Physical app-level delivery observation pending |
+| P2-09 | Delivery | One scheduled notification displayed and acknowledged on physical Android Chrome | [Integrated planner observation](#physical-android-planner-reminder) |
 | P2-10 | Activity/undo | Registered and browser checks passed for task edits | [Revision and replay](../apps/backend/test/activity.test.ts) |
 | P2-11 | PWA | Manifest, offline shell, update and push receipt checks passed in Edge | [PWA tests](../apps/web/test/pwa.test.mjs) |
 | P3-01 | Public API | Queued | — |
