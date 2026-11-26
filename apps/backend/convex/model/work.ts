@@ -9,6 +9,7 @@ import {
   provider,
   source,
   taskStatus,
+  unarchivedTaskStatus,
   timezone,
   weekday,
   workspaceMutableFields,
@@ -22,12 +23,13 @@ const workWindow = v.object({
 
 export const workTables = {
   // App-owned user ID supplied by the Convex Auth component's create callback.
-  users: defineTable({}),
+  users: defineTable({ personalWorkspaceId: v.optional(v.id("workspaces")) }),
 
   workspaces: defineTable({
     ...mutableFields,
     ownerId: v.id("users"),
     name: v.string(),
+    legacyImport: v.optional(v.literal(true)),
   })
     .index("by_owner", ["ownerId"])
     .index("by_public_id", ["publicId"]),
@@ -115,6 +117,7 @@ export const workTables = {
     followUpDate: v.optional(localDate),
     completedAt: v.optional(instant),
     archivedAt: v.optional(instant),
+    archivedFromStatus: v.optional(unarchivedTaskStatus),
   })
     .index("by_workspace_status", ["workspaceId", "status"])
     .index("by_workspace_planned_date", ["workspaceId", "plannedDate"])
@@ -138,6 +141,9 @@ export const workTables = {
     rank: v.number(),
   })
     .index("by_workspace_task_rank", ["workspaceId", "taskId", "rank", "publicId"])
+    .index("by_workspace_public_id", ["workspaceId", "publicId"]),
+
+  retiredStepIds: defineTable({ workspaceId: v.id("workspaces"), publicId: v.string(), deletedAt: instant })
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
   captures: defineTable({

@@ -1,12 +1,12 @@
-import type { DataModelFromSchemaDefinition, GenericDatabaseReader, PaginationOptions } from "convex/server";
+import type { DataModelFromSchemaDefinition, GenericDatabaseReader } from "convex/server";
 import type { GenericId } from "convex/values";
 import type schema from "../schema";
+import { boundedPage, type Page } from "./pagination";
 
 type Model = DataModelFromSchemaDefinition<typeof schema>;
 type Reader = GenericDatabaseReader<Model>;
 type WorkspaceId = GenericId<"workspaces">;
 type Task = Model["tasks"]["document"];
-const maxPageSize = 50;
 
 export type TaskFilter =
   | { kind: "status"; status: Task["status"] }
@@ -29,18 +29,14 @@ function isCalendarDate(value: string) {
 
 // [from, until) lets adjacent days or windows share a boundary without repeating rows.
 export function listTasks(db: Reader, workspaceId: WorkspaceId, filter: TaskFilter,
-  page: Pick<PaginationOptions, "cursor" | "numItems" | "endCursor">) {
-  if (!Number.isInteger(page.numItems) || page.numItems < 1 || page.numItems > maxPageSize) {
-    throw new RangeError("Request between 1 and 50 tasks per page");
-  }
+  page: Page) {
+  const options = boundedPage(page);
   if (filter.kind === "planned" || filter.kind === "deadlineDate") {
     if (!isCalendarDate(filter.from) || !isCalendarDate(filter.until) || filter.from >= filter.until) {
       throw new RangeError("Expected an increasing pair of YYYY-MM-DD calendar dates");
     }
   }
   const tasks = db.query("tasks");
-  // Leave room for a full indexed page before the database requests a split.
-  const options = { cursor: page.cursor, endCursor: page.endCursor, numItems: page.numItems, maximumRowsRead: maxPageSize + 1 };
   switch (filter.kind) {
     case "status":
       return tasks.withIndex("by_workspace_status", q =>

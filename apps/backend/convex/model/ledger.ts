@@ -161,6 +161,7 @@ export const ledgerTables = {
     format: v.union(v.literal("legacy_sqlite"), v.literal("portable_json")),
     exportFormatVersion: v.number(),
     sourceSchemaVersion: v.number(),
+    destinationTimezone: v.optional(timezone),
     state: v.union(
       v.literal("staged"),
       v.literal("running"),

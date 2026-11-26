@@ -21,14 +21,14 @@ export const mutableFields = {
 export const workspaceRecordFields = { workspaceId, ...recordFields };
 export const workspaceMutableFields = { workspaceId, ...mutableFields };
 
-export const taskStatus = v.union(
+export const unarchivedTaskStatus = v.union(
   v.literal("inbox"),
   v.literal("ready"),
   v.literal("in_progress"),
   v.literal("waiting"),
   v.literal("done"),
-  v.literal("archived"),
 );
+export const taskStatus = v.union(unarchivedTaskStatus, v.literal("archived"));
 
 export const priority = v.union(
   v.literal("none"),
