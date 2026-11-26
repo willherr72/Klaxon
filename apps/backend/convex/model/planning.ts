@@ -107,6 +107,8 @@ export const planningTables = {
       v.literal("cancelled"),
     ),
     acknowledgedAt: v.optional(instant),
+    firedAt: v.optional(instant),
+    rolledOverAt: v.optional(instant),
     jobId: v.optional(v.id("_scheduled_functions")),
   })
     .index("by_workspace_occurrence_key", ["workspaceId", "occurrenceKey"])

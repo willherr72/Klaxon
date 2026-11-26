@@ -108,6 +108,14 @@ test("two signed-in clients observe one committed write, replay and conflict", {
       assert.equal(reviewed.length, 2);
       assert.ok(reviewed.some(b => b.publicId === "meeting" && b.locked && b.startAt === +day));
       assert.ok(reviewed.some(b => b.taskPublicId === "quote" && b.endAt - b.startAt === 1_800_000));
+      const search = await clients[1].query(ref("organization:search"),{workspaceId,text:"estimate"});
+      assert.ok(search.tasks.some(task => task.publicId === "quote"));
+      const edit = await write(0,{workspaceId,operationId:randomUUID(),command:{kind:"task.update",publicId:"quote",
+        expectedRevision:2,patch:{title:"Draft change"}}});
+      const inverse = {workspaceId,eventId:edit.activityEventId,expectedRevision:3,operationId:randomUUID()};
+      const undone = await clients[1].mutation(ref("activity:undo"),inverse);
+      assert.deepEqual(await clients[0].mutation(ref("activity:undo"),inverse),undone);
+      assert.equal((await clients[1].query(ref("tasks:get"),{workspaceId,publicId:"quote"})).title,"Review estimate");
     } finally {
       try {
         await Promise.all(sockets.map(socket => socket.close()));

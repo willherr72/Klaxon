@@ -31,6 +31,7 @@ export const integrationTables = {
   })
     .index("by_workspace_task", ["workspaceId", "taskId"])
     .index("by_workspace_removed_task", ["workspaceId", "removedAt", "taskId"])
+    .index("by_workspace_external_id_removed", ["workspaceId", "externalObjectId", "removedAt"])
     // A managed mirror is unique within a connection and object. Manual links can share it.
     .index("by_workspace_connection_external_id", [
       "workspaceId", "connectionId", "externalObjectId", "relationship",
@@ -99,18 +100,31 @@ export const integrationTables = {
     .index("by_workspace_connection_stream", ["workspaceId", "connectionId", "stream"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
+  pushDeliveryGrants: defineTable({
+    workspaceId: v.id("workspaces"), userId: v.id("users"), enabled: v.boolean(),
+    enabledAt: v.optional(instant), updatedAt: instant, revision: v.optional(v.number()),
+  }).index("by_workspace_user", ["workspaceId","userId"]),
+
+  pushSubscriptionSecrets: defineTable({
+    subscriptionId: v.id("pushSubscriptions"), sealed: v.string(), iv: v.string(),
+  }).index("by_subscription", ["subscriptionId"]),
+
   pushSubscriptions: defineTable({
     ...workspaceMutableFields,
     userId: v.id("users"),
     deviceId: v.string(),
     channel: notificationChannel,
     subscriptionHash: v.optional(v.string()),
+    permission: v.optional(v.union(v.literal("default"),v.literal("denied"),v.literal("granted"))),
+    approvedAt: v.optional(instant),
     // Reference to protected Web Push endpoint and encryption details, when used.
     secretRef: v.optional(v.string()),
     lastSeenAt: v.optional(instant),
     revokedAt: v.optional(instant),
   })
     .index("by_workspace_user_device", ["workspaceId", "userId", "deviceId", "channel"])
+    .index("by_workspace_channel", ["workspaceId","channel","revokedAt"])
+    .index("by_workspace_subscription_hash", ["workspaceId","subscriptionHash"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
   deliveryAttempts: defineTable({
@@ -118,6 +132,11 @@ export const integrationTables = {
     occurrenceId: v.id("reminderOccurrences"),
     occurrenceKey: v.string(),
     subscriptionId: v.optional(v.id("pushSubscriptions")),
+    userId: v.optional(v.id("users")),
+    subscriptionRevision: v.optional(v.number()),
+    leaseUntil: v.optional(instant),
+    finishedAt: v.optional(instant),
+    providerStatus: v.optional(v.number()),
     deviceId: v.string(),
     channel: notificationChannel,
     attempt: v.number(),
@@ -125,6 +144,7 @@ export const integrationTables = {
       v.literal("scheduled"),
       v.literal("attempted"),
       v.literal("accepted_by_provider"),
+      v.literal("uncertain"),
       v.literal("acknowledged"),
       v.literal("failed"),
       v.literal("cancelled"),
@@ -135,5 +155,7 @@ export const integrationTables = {
     error: v.optional(diagnostic),
   })
     .index("by_workspace_occurrence_device", ["workspaceId", "occurrenceKey", "deviceId", "attempt"])
+    .index("by_workspace_occurrence_subscription", ["workspaceId","occurrenceKey","subscriptionId","attempt"])
+    .index("by_workspace_user_created_at", ["workspaceId","userId","createdAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 };

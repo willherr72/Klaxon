@@ -7,6 +7,7 @@ import { runOperation } from "./model/operations";
 import { listTasks, taskByPublicId } from "./model/reads";
 import { applyTaskDomainCommand, taskDomainCommand } from "./model/taskDomain";
 import { taskStatus } from "./model/values";
+import { taskInverse } from "./model/taskUndo";
 
 const filterValidator = v.union(
   v.object({ kind: v.literal("status"), status: taskStatus }),
@@ -41,8 +42,11 @@ export const apply = mutation({
     return runOperation(ctx.db, {
       workspace, actor: { kind: "user", userId }, origin: "app", action: command.kind,
       operationId, targetPublicId: command.publicId, expectedRevision, input: command,
-    }, async ({ db }) => ({
-      ...await applyTaskDomainCommand(db, workspaceId, command), beforeRevision: expectedRevision,
-    }));
+    }, async ({db}) => {
+      const before = expectedRevision !== undefined && command.kind.startsWith("task.")
+        ? await taskByPublicId(db,workspaceId,command.publicId) : null;
+      const change = await applyTaskDomainCommand(db,workspaceId,command);
+      return {...change,beforeRevision:expectedRevision,inverse:before ? taskInverse(before,command,change.revision) : undefined};
+    });
   },
 });

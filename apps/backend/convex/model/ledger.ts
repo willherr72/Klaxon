@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { taskDomainCommand } from "./taskDomainCommands";
 import {
   actor,
   deadline,
@@ -7,6 +8,7 @@ import {
   instant,
   localDate,
   timezone,
+  unarchivedTaskStatus,
   workspaceMutableFields,
   workspaceRecordFields,
 } from "./values";
@@ -92,6 +94,16 @@ export const ledgerTables = {
   })
     .index("by_workspace_actor_operation", ["workspaceId", "actorKey", "operationId"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
+
+  taskUndoChanges: defineTable({
+    workspaceId: v.id("workspaces"),
+    eventId: v.id("activityEvents"),
+    command: taskDomainCommand,
+    completedAt: v.optional(instant),
+    archivedAt: v.optional(instant),
+    archivedFromStatus: v.optional(unarchivedTaskStatus),
+    rankTieBreak: v.optional(v.number()),
+  }).index("by_workspace_event", ["workspaceId","eventId"]),
 
   activityEvents: defineTable({
     ...workspaceRecordFields,

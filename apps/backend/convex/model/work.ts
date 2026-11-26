@@ -93,6 +93,7 @@ export const workTables = {
   })
     .index("by_workspace_rank", ["workspaceId", "rank", "createdAt", "publicId"])
     .index("by_workspace_project_rank", ["workspaceId", "projectId", "rank"])
+    .index("by_workspace_project_active_rank", ["workspaceId", "projectId", "archivedAt", "rank"])
     .index("by_workspace_default", ["workspaceId", "isDefault"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
@@ -133,7 +134,8 @@ export const workTables = {
     .searchIndex("search_title", {
       searchField: "title",
       filterFields: ["workspaceId", "status", "projectId"],
-    }),
+    })
+    .searchIndex("search_description", { searchField: "description", filterFields: ["workspaceId"] }),
 
   taskSteps: defineTable({
     ...workspaceMutableFields,
@@ -172,5 +174,6 @@ export const workTables = {
     source: v.optional(source),
   })
     .index("by_workspace_local_date", ["workspaceId", "localDate"])
-    .index("by_workspace_public_id", ["workspaceId", "publicId"]),
+    .index("by_workspace_public_id", ["workspaceId", "publicId"])
+    .searchIndex("search_body", { searchField: "body", filterFields: ["workspaceId"] }),
 };

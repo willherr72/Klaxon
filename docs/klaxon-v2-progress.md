@@ -2,6 +2,14 @@
 
 Development targets `v2` from v0.11.1 at `c89b655`. The P0 architecture gate passed, including physical Android credential storage and desktop-off sync. The P1 cloud foundation passed local verification. The status register below tracks implementation and outstanding acceptance checks. [P0 decision](adr/p0-architecture.md#p0-gate-decision) · [Physical Android evidence](#physical-android-hosted-session) · [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14)
 
+## P2 manual planner
+
+The signed-in Development app opens on Today. A task can be captured, promoted, edited and scheduled from the same workspace. Browser checks exercise task permalinks, keyboard navigation, the mobile Tasks and Schedule switch, project lanes, and conflicts during task and calendar edits. Search covers task titles, descriptions, linked external IDs and day notes. The task history supports undo for revision-checked edits and lifecycle changes. [Browser entry tests](../apps/web/test/browser.test.mjs) · [Calendar interactions](../apps/web/test/calendar-ui.test.mjs)
+
+On November 26, two authenticated sessions on the official disposable Convex runtime observed a locked meeting, reviewed a proposed task block and replayed plan approval. The resulting calendar had one generated half-hour block and the original meeting. A second session also found the task by title and undid a rename. Unit coverage includes stale undo, imported meeting privacy, DST, plan expiry and conflict detection. Planning uses contiguous estimates for up to 40 selected tasks on one day. [Live two-client test](../apps/backend/test/domain.session.mjs) · [Planning tests](../apps/backend/test/calendar.test.ts)
+
+Reminder tests cover recurring and task-linked reminders, snooze, invalidation and dormant restored reminders. P2 delivery, install/update and device acceptance are in progress. P0 notification observations belong to the spike receiver. [Reminder tests](../apps/backend/test/reminders.test.ts)
+
 ## P1 cloud foundation
 
 The registered backend functions derive the user from the current Convex Auth session and check workspace membership on every operation, including receipt replay. The Development browser client signs in, pages through live task results and retries a failed edit with its original operation ID and revision. The offline native foundation still serves the P1-01 build. [Backend contract](../apps/backend/README.md)
@@ -744,17 +752,17 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P1-07 | Export/restore | Registered restore replay and round trip verified | [Backup format](backup-restore.md) |
 | P1-08 | Legacy migration | Synthetic SQLite to Convex round trip verified | [Import limits](v2-legacy-import.md) |
 | P1-09 | Observability | Registered health queries verified locally | [Operations](v2-operations.md) |
-| P2-01 | Design system | Queued | — |
-| P2-02 | Task editing | Queued | — |
-| P2-03 | Inbox/capture | Queued | — |
-| P2-04 | Today | Queued | — |
-| P2-05 | Organization | Queued | — |
-| P2-06 | Calendar | Queued | — |
-| P2-07 | Planning constraints | Queued | — |
-| P2-08 | Reminder domain | Queued | — |
-| P2-09 | Delivery | Queued | — |
-| P2-10 | Activity/undo | Queued | — |
-| P2-11 | PWA | Queued | — |
+| P2-01 | Design system | Desktop and narrow-browser checks passed | [Shell](../apps/web/test/planner-shell.test.mjs) |
+| P2-02 | Task editing | Editor, lifecycle, steps and links verified with Chromium | [Task details](../apps/web/test/task-detail.test.mjs) |
+| P2-03 | Inbox/capture | Browser triage and two-client promotion passed | [Manual planner](#p2-manual-planner) |
+| P2-04 | Today | Desktop sections and mobile view selection exercised | [Agenda](../apps/backend/test/agenda.test.ts) |
+| P2-05 | Organization | Projects, lanes, Upcoming, Waiting and command search verified locally | [Project views](../apps/web/test/projects-ui.test.mjs) |
+| P2-06 | Calendar | Day/week navigation and block editing exercised locally | [Calendar UI](../apps/web/test/calendar-ui.test.mjs) |
+| P2-07 | Planning constraints | Local two-client preview and apply verified | [Manual planner](#p2-manual-planner) |
+| P2-08 | Reminder domain | Domain and registered endpoint verification passed | [Lifecycle](../apps/backend/test/reminders.test.ts) |
+| P2-09 | Delivery | In progress | App-level delivery observation pending |
+| P2-10 | Activity/undo | Registered and browser checks passed for task edits | [Revision and replay](../apps/backend/test/activity.test.ts) |
+| P2-11 | PWA | In progress | Install, update and offline shell verification pending |
 | P3-01 | Public API | Queued | — |
 | P3-02 | Credentials | Queued | — |
 | P3-03 | Remote MCP | Queued | — |

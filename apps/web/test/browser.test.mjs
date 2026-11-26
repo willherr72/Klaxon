@@ -7,7 +7,7 @@ import { extname, join, relative, sep } from 'node:path';
 import test, { after } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { interceptDevelopment, deployment, task } from './development-transport.mjs';
+import { capture, interceptDevelopment, deployment, task } from './development-transport.mjs';
 
 const mount = '/klaxon/foundation/';
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -125,12 +125,12 @@ async function buildDevelopment() {
   return output;
 }
 
-async function openDevelopment(t, { native = false } = {}) {
+async function openDevelopment(t, { native = false, hash = '#/inbox', viewport } = {}) {
   const output = await (developmentBuild ??= buildDevelopment());
   const entry = (await serveDist(t, output)) + mount;
   const browser = await chromium.launch({ channel: process.env.KLAXON_BROWSER_CHANNEL });
   t.after(() => browser.close());
-  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const context = await browser.newContext({ serviceWorkers: 'block', viewport });
   const transport = await interceptDevelopment(context, t, entry);
   if (native) await context.addInitScript(() => Object.defineProperty(globalThis, '__TAURI_INTERNALS__', { value: {} }));
   const page = await context.newPage();
@@ -138,7 +138,7 @@ async function openDevelopment(t, { native = false } = {}) {
   page.on('pageerror', error => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, [], 'runtime errors'));
   page.setDefaultTimeout(5_000);
-  await page.goto(entry);
+  await page.goto(entry + hash);
   return { page, transport };
 }
 
@@ -147,6 +147,48 @@ async function signIn(page, password = 'inert-password', username = 'test-owner'
   await page.getByLabel('Password').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 }
+
+test('Activity reviews an inverse and shows a stale revision without overwriting the task', {timeout:120_000}, async t => {
+  const {page} = await openDevelopment(t,{hash:'#/activity'});
+  await signIn(page);
+  await page.getByRole('heading',{name:'Activity',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Review undo'}).click();
+  await page.getByRole('button',{name:'Confirm undo'}).click();
+  await page.getByRole('alert').filter({hasText:'A newer edit'}).waitFor();
+});
+
+test('Projects and Calendar open from planner navigation with the authenticated workspace', {timeout:120_000}, async t => {
+  const {page,transport} = await openDevelopment(t,{hash:'#/projects'});
+  transport.calendarTray = true;
+  await signIn(page);
+  await page.getByRole('heading',{name:'Projects',exact:true}).waitFor();
+  await page.getByRole('link',{name:'Calendar',exact:true}).click();
+  await page.getByRole('heading',{name:'Calendar',exact:true}).waitFor();
+  await page.getByLabel('Calendar date').waitFor();
+  assert.match(await page.getByLabel('Calendar date').inputValue(),/^\d{4}-\d\d-\d\d$/);
+});
+
+test('keyboard command search opens the matching task and quick capture from the planner', {timeout:120_000}, async t => {
+  const {page,transport} = await openDevelopment(t);
+  await signIn(page);
+  await page.getByRole('heading',{name:'Inbox',exact:true}).waitFor();
+  await page.getByRole('button',{name:'Search and commands'}).focus();
+  await page.keyboard.press('Control+k');
+  const dialog = page.getByRole('dialog',{name:'Search and commands'});
+  await dialog.getByLabel('Search workspace').fill('primer');
+  await dialog.getByRole('button',{name:'Review primer'}).click();
+  const request = await transport.taskRequested.next();
+  assert.equal(request.args.publicId,'primer-id');
+  const record = task('primer-id','Review primer');
+  delete record.source;
+  request.respond(record);
+  await page.getByText('Source unavailable', {exact:true}).waitFor();
+  await page.getByRole('button',{name:'Close task'}).click();
+  await page.getByRole('button',{name:'Search and commands'}).click();
+  await dialog.getByRole('button',{name:'Quick capture',exact:true}).click();
+  await page.waitForURL('**/#/capture');
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName === 'TEXTAREA');
+});
 
 test('Development signs in and shows bounded, reactive task pages and session states', { timeout: 120_000 }, async t => {
   const { page, transport } = await openDevelopment(t);
@@ -417,9 +459,257 @@ test('sign-out asks for explicit confirmation while a save outcome is unknown', 
 });
 
 test('a native webview keeps the offline headline even with a Development build', { timeout: 120_000 }, async t => {
-  const { page, transport } = await openDevelopment(t, { native: true });
+  const { page, transport } = await openDevelopment(t, { native: true, hash: '' });
   await page.getByRole('heading', { name: 'Klaxon', exact: true }).waitFor();
   assert.equal(await page.getByLabel('Username').count(), 0);
   assert.equal(transport.httpRequests, 0);
   assert.equal(transport.sockets.size, 0);
+});
+
+test('Capture saves a free-text thought and Inbox searches, edits, and promotes it with one operation', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/capture', viewport: { width: 390, height: 760 } });
+  await signIn(page);
+  const body = page.getByLabel('Capture text');
+  await body.fill('Follow up with the crew');
+  assert.equal(transport.activeQueries(), 0);
+  await page.getByRole('button', { name: 'Save capture' }).click();
+  const creation = await transport.captureWrites.next();
+  assert.deepEqual(creation.args.command, {
+    kind: 'capture.create', publicId: creation.args.command.publicId, body: 'Follow up with the crew',
+  });
+  creation.succeed();
+  await page.getByText('Capture saved.').waitFor();
+  assert.equal(await body.inputValue(), '');
+  await page.getByRole('link', { name: 'Inbox', exact: true }).click();
+  const { args: list } = await transport.captureQueries.next();
+  assert.deepEqual(list, { workspaceId: 'personal-workspace', paginationOpts: { cursor: null, numItems: 25 } });
+  const created = capture(creation.args.command.publicId, creation.args.command.body);
+  const thought = capture('old-thought', 'A thought from the old app', { kind: 'legacy', source: 'thoughts' });
+  transport.publishCaptures([created, thought]);
+  await page.getByText(thought.body, { exact: true }).waitFor();
+  await page.getByText('Legacy thought', { exact: true }).waitFor();
+  await page.getByLabel('Search captures').fill('follow up');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  assert.deepEqual((await transport.captureQueries.next()).args, { ...list, text: 'follow up' });
+  transport.publishCaptures([created], 'search-next');
+  await page.getByRole('button', { name: 'Next capture page' }).click();
+  assert.deepEqual((await transport.captureQueries.next()).args, {
+    ...list, paginationOpts: { cursor: 'search-next', numItems: 25 }, text: 'follow up',
+  });
+  transport.publishCaptures([]);
+  await page.getByText('No matching captures.').waitFor();
+  await page.getByRole('button', { name: 'Previous capture page' }).click();
+  await transport.captureQueries.next();
+  transport.publishCaptures([created]);
+
+  await page.getByRole('button', { name: 'Edit capture' }).click();
+  await page.getByLabel('Capture text').fill('Follow up with the west crew');
+  await page.getByLabel('Tags').fill('crew\nfollow-up');
+  await page.getByRole('button', { name: 'Save changes' }).click();
+  const edit = await transport.captureWrites.next();
+  assert.deepEqual(edit.args.command, {
+    kind: 'capture.update', publicId: created.publicId, expectedRevision: 1,
+    body: 'Follow up with the west crew', tags: ['crew', 'follow-up'],
+  });
+  const edited = { ...created, body: edit.args.command.body, tags: edit.args.command.tags, revision: 2 };
+  edit.succeed([edited]);
+  await page.getByText(edited.body, { exact: true }).waitFor();
+
+  await page.getByRole('button', { name: 'Promote to task' }).click();
+  await page.getByLabel('Promoted task title').fill('Confirm crew schedule');
+  await page.getByRole('button', { name: 'Create task', exact: true }).click();
+  const promotion = await transport.captureWrites.next();
+  assert.equal(promotion.args.command.expectedRevision, 2);
+  assert.equal(promotion.args.command.title, 'Confirm crew schedule');
+  promotion.fail();
+  await page.getByRole('button', { name: 'Retry capture change' }).click();
+  const retry = await transport.captureWrites.next();
+  assert.deepEqual(retry.args, promotion.args);
+  retry.succeed([{ ...edited, revision: 3, promotedTaskId: 'internal-task-id' }]);
+  const createdTask = await page.getByRole('link', { name: 'Open created task' }).getAttribute('href');
+  assert.equal(createdTask, `#/tasks/${encodeURIComponent(promotion.args.command.taskPublicId)}`);
+  transport.publishCaptures([thought]);
+  await page.getByRole('button', { name: 'Archive capture' }).click();
+  const archive = await transport.captureWrites.next();
+  assert.deepEqual(archive.args.command, { kind: 'capture.archive', publicId: thought.publicId, expectedRevision: 1 });
+  archive.succeed([{ ...thought, archivedAt: 2, revision: 2 }]);
+  await page.getByText('Capture archived.').waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Archive capture' }).count(), 0);
+});
+
+test('Capture pauses writes offline and resumes an unconfirmed write only for its signed-in owner', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/capture' });
+  await signIn(page);
+  const body = page.getByLabel('Capture text');
+  const save = page.getByRole('button', { name: 'Save capture' });
+  await body.fill('Keep this in the owner’s session');
+  await page.context().setOffline(true);
+  await page.getByText('Offline. Task changes are paused.').waitFor();
+  assert.ok(await save.isDisabled());
+  assert.equal(await body.inputValue(), 'Keep this in the owner’s session');
+  await page.context().setOffline(false);
+  await save.click();
+  const write = await transport.captureWrites.next();
+  transport.expire();
+  await page.getByText(/session expired/i).waitFor();
+
+  await signIn(page, 'inert-password', 'test-other');
+  assert.equal(await body.inputValue(), '');
+  const retry = page.getByRole('button', { name: 'Retry capture change' });
+  assert.equal(await retry.count(), 0);
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+
+  await signIn(page);
+  await retry.click();
+  const resumed = await transport.captureWrites.next();
+  assert.deepEqual(resumed.args, write.args);
+  resumed.succeed();
+  await page.getByText('Capture saved.').waitFor();
+  assert.equal(await body.inputValue(), '');
+});
+
+test('hash navigation and browser Back keep drafts until resolved and restore task link focus', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/inbox' });
+  await signIn(page);
+  await transport.queryAdded.next();
+  const original = task('crew/brief%', 'Crew brief');
+  transport.publish([original]);
+  const title = page.getByRole('link', { name: 'Crew brief' });
+  await page.getByRole('button', { name: 'Edit Crew brief' }).press('Enter');
+  await page.getByLabel('Task title').fill('Unsaved title');
+  await page.evaluate(() => { globalThis.location.hash = '#/capture'; });
+  await page.getByRole('alert').getByText(/save or discard/i).waitFor();
+  assert.equal(new URL(page.url()).hash, '#/inbox');
+  assert.equal(await page.getByLabel('Task title').inputValue(), 'Unsaved title');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+
+  await title.press('Enter');
+  const detail = page.getByRole('region', { name: 'Task details' });
+  const requested = await transport.taskRequested.next();
+  assert.deepEqual(requested.args, { workspaceId: 'personal-workspace', publicId: 'crew/brief%' });
+  requested.respond(original);
+  const detailTitle = detail.getByLabel('Title', { exact: true });
+  assert.equal(await detailTitle.inputValue(), 'Crew brief');
+  assert.equal(new URL(page.url()).hash, '#/tasks/crew%2Fbrief%25');
+  await detailTitle.fill('Unsaved detail title');
+  await page.evaluate(() => globalThis.history.back());
+  await page.getByRole('alert').getByText(/save or discard/i).waitFor();
+  await page.waitForURL('**/#/tasks/crew%2Fbrief%25');
+  assert.equal(await detailTitle.inputValue(), 'Unsaved detail title');
+  await detail.getByRole('button', { name: /close task/i }).click();
+  await page.getByRole('button', { name: 'Discard and close' }).click();
+  await page.waitForFunction(() => globalThis.document.activeElement?.textContent === 'Crew brief');
+
+  await page.getByRole('link', { name: 'Capture', exact: true }).click();
+  await page.getByLabel('Capture text').fill('Keep this draft');
+  await page.evaluate(() => globalThis.history.back());
+  await page.getByRole('alert').getByText(/save or discard/i).waitFor();
+  await page.waitForURL('**/#/capture');
+  assert.equal(await page.getByLabel('Capture text').inputValue(), 'Keep this draft');
+  await page.getByRole('button', { name: 'Discard capture draft' }).click();
+  await page.evaluate(() => globalThis.history.back());
+  await page.waitForURL('**/#/inbox');
+  await page.getByRole('heading', { name: 'Inbox', exact: true }).waitFor();
+  await page.evaluate(() => globalThis.history.forward());
+  await page.waitForURL('**/#/capture');
+  assert.equal(await page.getByLabel('Capture text').inputValue(), '');
+});
+
+test('a direct task permalink survives sign-in at mobile width', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/tasks/from%2Flink', viewport: { width: 390, height: 760 } });
+  await signIn(page);
+  const requested = await transport.taskRequested.next();
+  assert.equal(requested.args.publicId, 'from/link');
+  requested.respond(task('from/link', 'Opened from link'));
+  const detail = page.getByRole('region', { name: 'Task details' });
+  assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), 'Opened from link');
+  assert.ok(await page.getByRole('heading', { name: 'Inbox', exact: true }).isHidden());
+  await detail.getByRole('button', { name: /close task/i }).click();
+  await page.getByRole('heading', { name: 'Inbox', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, '#/inbox');
+});
+
+test('Today opens by default, preserves its place around task details, and shows the mobile Schedule tab', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '', viewport: { width: 390, height: 760 } });
+  await signIn(page);
+  await page.getByRole('heading', { name: 'Today', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, '#/today');
+  const today = await transport.agendaRequested.next();
+  assert.equal(today.args.workspaceId, 'personal-workspace');
+  assert.equal(today.args.timezone, 'UTC');
+  const planned = { ...task('planned/today', 'Review the planned checklist'), plannedDate: today.args.localDate };
+  const due = { ...task('due-today', 'Submit today’s report'), deadline: { kind: 'date', date: today.args.localDate } };
+  today.respond({ planned: [planned], dueToday: [due] });
+
+  const detail = page.getByRole('region', { name: 'Task details' });
+  for (const item of [planned, due]) {
+    await page.getByText(item.title, { exact: true }).click();
+    const requested = await transport.taskRequested.next();
+    assert.equal(requested.args.publicId, item.publicId);
+    requested.respond(item);
+    assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), item.title);
+    await detail.getByRole('button', { name: 'Close task' }).click();
+    await page.waitForURL('**/#/today');
+  }
+
+  await page.getByRole('tab', { name: 'Schedule' }).click();
+  await page.getByRole('heading', { name: 'Schedule', exact: true }).waitFor();
+  assert.ok(await page.getByText(due.title, { exact: true }).isHidden());
+  await page.getByRole('tab', { name: 'Tasks' }).click();
+  await page.getByText(due.title, { exact: true }).waitFor();
+});
+
+test('Upcoming shows its selected week and opens planned task details from a direct route', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/upcoming' });
+  await signIn(page);
+  await page.getByRole('heading', { name: 'Upcoming', exact: true }).waitFor();
+  const upcoming = await transport.upcomingRequested.next();
+  const original = task('fleet/check', 'Check the fleet');
+  upcoming.respond([{ kind: 'planned', publicId: original.publicId, title: original.title, date: upcoming.args.from }]);
+  await page.getByRole('button', { name: original.title }).click();
+  const requested = await transport.taskRequested.next();
+  assert.equal(requested.args.publicId, original.publicId);
+  requested.respond(original);
+  const detail = page.getByRole('region', { name: 'Task details' });
+  assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), original.title);
+  await detail.getByRole('button', { name: 'Close task' }).click();
+  await page.waitForURL('**/#/upcoming');
+  assert.equal(await page.getByRole('button', { name: original.title }).count(), 1);
+
+  await page.getByRole('button', { name: 'Next week' }).click();
+  const next = await transport.upcomingRequested.next();
+  assert.equal(Date.parse(next.args.from) - Date.parse(upcoming.args.from), 7 * 86_400_000);
+  next.respond([]);
+  await page.getByText('Nothing planned or due this week.').waitFor();
+});
+
+test('Waiting is reachable from mobile More and opens a task with its follow-up context', { timeout: 120_000 }, async t => {
+  const { page, transport } = await openDevelopment(t, { hash: '#/capture', viewport: { width: 390, height: 760 } });
+  await signIn(page);
+  await page.getByText('More', { exact: true }).click();
+  await page.getByRole('link', { name: 'Waiting', exact: true }).click();
+  await page.getByRole('heading', { name: 'Waiting', exact: true }).waitFor();
+  assert.equal(new URL(page.url()).hash, '#/waiting');
+  assert.deepEqual((await transport.queryAdded.next()).args, {
+    workspaceId: 'personal-workspace', filter: { kind: 'status', status: 'waiting' }, paginationOpts: { cursor: null, numItems: 25 },
+  });
+  const waiting = {
+    ...task('waiting-task', 'Verify the delivery', 'waiting'), waitingPerson: 'Morgan',
+    waitingReason: 'Awaiting tracking number', followUpDate: '2026-12-03',
+  };
+  transport.publish([waiting]);
+  await page.getByText('Morgan · Awaiting tracking number').waitFor();
+  await page.getByRole('button', { name: waiting.title }).click();
+  const requested = await transport.taskRequested.next();
+  assert.equal(requested.args.publicId, waiting.publicId);
+  requested.respond(waiting);
+  const detail = page.getByRole('region', { name: 'Task details' });
+  assert.equal(await detail.getByLabel('Title', { exact: true }).inputValue(), waiting.title);
+  await detail.getByRole('button', { name: 'Close task' }).click();
+  await page.waitForURL('**/#/waiting');
+  await page.getByRole('button', { name: waiting.title }).waitFor();
+  await page.getByRole('link', { name: 'Inbox', exact: true }).click();
+  const inbox = await transport.queryAdded.next();
+  assert.equal(inbox.args.filter.status, 'inbox');
+  assert.equal(transport.activeQueries(), 1);
 });
