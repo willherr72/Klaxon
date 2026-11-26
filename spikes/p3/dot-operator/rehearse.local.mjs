@@ -33,8 +33,18 @@ test("the staged local deployment attests one scoped task and denies its revoked
       const grant = await anon.mutation(ref("auth:signInWithUsernamePassword"), account);
       assert.equal(grant.status, "complete");
       assert.equal(grant.tokens.userId, userId);
-      const owner = new ConvexHttpClient(url, { auth: grant.tokens.accessToken, logger: false });
+      let owner = new ConvexHttpClient(url, { auth: grant.tokens.accessToken, logger: false });
       const workspace = await owner.mutation(ref("workspaces:ensurePersonal"), {});
+      await owner.mutation(ref("agentCredentials:issue"), { workspaceId: workspace._id,
+        scopes: ["tasks:read", "tasks:write"], tokenHash: randomBytes(32).toString("hex"),
+        label: "Dot disposable task fixture", expiresAt: Date.now() + 600_000 });
+      await admin.function("dotOperator:retire", undefined, {});
+      const password = randomBytes(32).toString("hex");
+      const recovered = await admin.function("dotOperator:recoverBeforeConsent", undefined, { password });
+      assert.deepEqual(recovered, { userId, username: account.username });
+      const next = await anon.mutation(ref("auth:signInWithUsernamePassword"), { username: recovered.username, password });
+      assert.equal(next.status, "complete");
+      owner = new ConvexHttpClient(url, { auth: next.tokens.accessToken, logger: false });
       const bearer = "klx_" + randomBytes(32).toString("hex");
       const cred = await owner.mutation(ref("agentCredentials:issue"), { workspaceId: workspace._id,
         scopes: ["tasks:read", "tasks:write"], tokenHash: createHash("sha256").update(bearer).digest("hex"),

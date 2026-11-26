@@ -3,8 +3,17 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkDiscovery, freshSnapshot } from "./operator.mjs";
+import { checkDiscovery, freshSnapshot, readInitialization } from "./operator.mjs";
 import { cleanup, designatedTarget, stage, stageEnvironment } from "./staging.mjs";
+
+test("initialization accepts the negotiated SDK event stream and ordinary JSON", async () => {
+  const rpc = { jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-11-25" } };
+  assert.deepEqual(await readInitialization(Response.json(rpc)), rpc);
+  const event = "event: message\r\ndata: " + JSON.stringify(rpc) + "\r\n\r\n";
+  const headers = { "content-type": "text/event-stream; charset=utf-8" };
+  assert.deepEqual(await readInitialization(new Response(event, { headers })), rpc);
+  await assert.rejects(readInitialization(new Response(": heartbeat\n\n", { headers })), /Missing streamed/);
+});
 
 test("discovery verifies the public challenge, pinned issuer and exact task scopes before handoff", async () => {
   const site = "https://fixture.example";

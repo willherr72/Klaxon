@@ -80,6 +80,22 @@ function tokenFor(target, config) {
   return data + "." + sign("RSA-SHA256", Buffer.from(data), config.privateKey).toString("base64url");
 }
 
+export async function readInitialization(response) {
+  if (response.headers.get("content-type")?.split(";")[0].trim() === "text/event-stream") {
+    const blocks = (await response.text()).split(/\r?\n\r?\n/);
+    for (const block of blocks) {
+      const data = block.split(/\r?\n/).filter(line => line.startsWith("data:"))
+        .map(line => line.slice(5).replace(/^ /, "")).join("\n");
+      if (data) {
+        const rpc = JSON.parse(data);
+        if (rpc.id === 1) return rpc;
+      }
+    }
+    throw new Error("Missing streamed MCP initialization");
+  }
+  return response.json();
+}
+
 async function mcpStatus(resource, token) {
   const response = await fetch(resource, {
     method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
@@ -90,7 +106,7 @@ async function mcpStatus(resource, token) {
     } }),
   });
   if (response.ok) {
-    const rpc = await response.json();
+    const rpc = await readInitialization(response);
     check(rpc.id === 1 && rpc.result?.protocolVersion === "2025-11-25" &&
       rpc.result?.serverInfo?.name === "klaxon" && rpc.result?.capabilities?.tools,
       "Unexpected MCP initialization response");
@@ -146,7 +162,7 @@ async function prompt(message, expiresAt) {
 
 async function operate(mode) {
   const target = designatedTarget(process.env);
-  const config = ["run", "connect"].includes(mode) ? readFixtureConfig(target) : null;
+  const config = ["run", "connect", "retry"].includes(mode) ? readFixtureConfig(target) : null;
   const { project, directory } = await stage({ recovery: mode === "retire" });
   const require = createRequire(pathToFileURL(join(backend, "package.json")));
   const { ConvexHttpClient } = require("convex/browser");
@@ -180,7 +196,7 @@ async function operate(mode) {
       return;
     }
     const env = cli(project, target, ["env", "list", "--names-only"]);
-    if (mode === "connect" || mode === "setup-discovery") {
+    if (mode === "connect" || mode === "setup-discovery" || mode === "retry") {
       const names = env.stdout.trim();
       const dormant = !names && /No environment variables set/.test(env.stderr);
       const setupOnly = names === "DOT_OAUTH_SETUP_ORIGIN" &&
@@ -188,6 +204,10 @@ async function operate(mode) {
       check((dormant || setupOnly) &&
         await admin.function("dotOperator:retirementMarker", undefined, {}) === "klaxon-dot-disposable-v1",
         "Expected an inactive disposable fixture");
+      if (mode === "retry") {
+        check(dormant, "Expected completed configuration teardown");
+        cli(project, target, ["deploy", "--yes", "--typecheck", "enable"]);
+      }
     } else {
       const tables = cli(project, target, ["data"]);
       const spec = JSON.parse(cli(project, target, ["function-spec"]).stdout);
@@ -197,7 +217,9 @@ async function operate(mode) {
       deployed = true;
       cli(project, target, ["deploy", "--yes", "--typecheck", "enable"]);
     }
-    check(await admin.function("dotOperator:requireEmpty", undefined, {}) === true, "Fresh database verification failed");
+    if (mode !== "retry") {
+      check(await admin.function("dotOperator:requireEmpty", undefined, {}) === true, "Fresh database verification failed");
+    }
     if (mode === "setup-discovery") {
       deployed = true;
       cli(project, target, ["deploy", "--yes", "--typecheck", "enable"]);
@@ -217,7 +239,14 @@ async function operate(mode) {
 
     phase = "synthetic owner and scoped grant setup";
     const account = { username: "dot-owner-" + randomUUID(), password: randomBytes(32).toString("hex") };
-    const userId = await admin.function("dotOperator:enroll", undefined, account);
+    let userId;
+    if (mode === "retry") {
+      const recovered = await admin.function("dotOperator:recoverBeforeConsent", undefined, { password: account.password });
+      account.username = recovered.username;
+      userId = recovered.userId;
+    } else {
+      userId = await admin.function("dotOperator:enroll", undefined, account);
+    }
     const anonymous = new ConvexHttpClient(target.url, { logger: false });
     grant = await anonymous.mutation(ref("auth:signInWithUsernamePassword"), account);
     check(grant.status === "complete" && grant.tokens.userId === userId, "Synthetic owner session verification failed");
@@ -248,8 +277,10 @@ async function operate(mode) {
       createOperationId, updateOperationId,
     });
     const baseline = await inspect(false, false);
+    phase = "hosted issuer discovery";
     cli(project, target, ["env", "set", "DOT_OAUTH_ENABLED"], "true");
     await checkDiscovery(target.site, config.resource);
+    phase = "authenticated MCP initialization";
     check(await mcpStatus(config.resource, tokenFor(target, config)) === 200, "Independent OAuth MCP verification failed");
     console.log(JSON.stringify({ ...baseline, serverUrl: config.resource, title: originalTitle, updatedTitle, reason,
       createOperationId, updateOperationId }));
@@ -290,7 +321,7 @@ async function checkStage() {
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   const [mode, ...extra] = process.argv.slice(2);
   try {
-    check(["check-stage", "stage-only", "setup-discovery", "connect", "run", "retire"].includes(mode) && !extra.length,
+    check(["check-stage", "stage-only", "setup-discovery", "connect", "run", "retry", "retire"].includes(mode) && !extra.length,
       "Expected check-stage, stage-only, setup-discovery, connect, run, or retire");
     if (mode === "check-stage") await checkStage();
     else await operate(mode);
