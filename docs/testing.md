@@ -1,5 +1,11 @@
 # Testing and release baseline
 
+## V2 foundation
+
+Run `npm --prefix apps/backend run verify` for strict TypeScript checks and the registered endpoint tests. The real-provider suites require the pinned Convex binary on Windows and run sequentially on loopback. The migration suite starts with a synthetic SQLite file, exercises the actual command-line exporter and registered import, and checks byte-identical re-export of the restored workspace. It covers repeated weekdays in a legacy rule, which v1 evaluates by weekday membership. [Commands](../apps/backend/README.md#task-writes-and-live-verification)
+
+Run `npm --prefix apps/web run verify` followed by `npm --prefix apps/web run test:browser` for the web build and Chromium interaction tests. The Development browser fixtures control the HTTP and WebSocket responses. The live concurrency suite independently verifies the registered backend and two real SDK subscriptions. [Browser tests](../apps/web/test/browser.test.mjs) · [Live clients](../apps/backend/test/domain.session.mjs)
+
 ## P0-01, November 23, 2026
 
 Baseline commit c89b655a4e04c38cc8155a8e76a977d156942727. The package and native configuration agree on 0.11.1. The latest release inspected included the updater-compatible Windows NSIS installer, Android arm64 APK and release manifest. [GitHub release](https://github.com/willherr72/Klaxon/releases/tag/v0.11.1)

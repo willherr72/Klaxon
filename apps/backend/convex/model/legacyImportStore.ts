@@ -196,9 +196,13 @@ export async function writeLegacyArchive(
         taskIds.set(row.publicId, id);
         return { kind: "task", id };
       }
+      // V1 checks weekday membership, so duplicate entries describe one occurrence.
+      const recurrence = row.recurrence?.kind === "weekly"
+        ? { kind: "weekly" as const, weekdays: [...new Set(row.recurrence.weekdays)] }
+        : row.recurrence;
       const id = await db.insert("reminders", {
         ...common, dueAt: row.dueAt, state: row.state, snoozeUntil: row.snoozeUntil,
-        timezone: archive.timezone, recurrence: row.recurrence, recurrenceBasis: row.recurrenceBasis,
+        timezone: archive.timezone, recurrence, recurrenceBasis: row.recurrenceBasis,
       });
       return { kind: "reminder", id };
     }
