@@ -204,6 +204,39 @@ try {
     } finally { $record.Dispose() }
     Write-Host "Verified HKCU uninstall identity for $product and installed executable SHA-256 $installedHash"
     Write-Host "Installer SHA-256 $installerHash"
+
+    # Query WinRT while the verified shortcut exists. Score the child independently after teardown.
+    $probeExit = 1
+    $child = $null
+    try {
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in '-Mta','-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'windows-reminder-notifier.ps1')) {
+            $start.ArgumentList.Add($argument)
+        }
+        $child = [Diagnostics.Process]::Start($start)
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if ($child.WaitForExit(30000)) {
+            $probeExit = $child.ExitCode
+        } else {
+            $child.Kill($true)
+            if (-not $child.WaitForExit(5000)) { throw 'Notifier probe did not exit after termination.' }
+            Write-Host 'The read-only notifier probe exceeded 30 seconds.'
+        }
+        Write-Host ($stdout.GetAwaiter().GetResult())
+        Write-Host ($stderr.GetAwaiter().GetResult())
+    } catch {
+        Write-Host "Notifier probe process failed: $($_.Exception.Message)"
+    } finally {
+        if ($child) { $child.Dispose() }
+    }
+    try { "notifier_exit=$probeExit" >> $env:GITHUB_OUTPUT }
+    catch { Write-Host "Could not publish notifier result: $($_.Exception.Message)" }
 } catch {
     Write-Host "Installation verification failed. $($_.Exception.Message)"
     throw

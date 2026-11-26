@@ -95,6 +95,7 @@ jobs:
         working-directory: spikes/p0
         run: node native/smoke.mjs windows
       - name: Verify the installed reminder fixture shortcut and uninstall on the disposable runner
+        id: reminder_install
         if: github.event.repository.private == false
         working-directory: spikes/p0/native
         env:
@@ -142,3 +143,9 @@ jobs:
         env:
           CARGO_PROFILE_DEV_DEBUG: "0"
         run: cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --target-dir native/src-tauri/target/sign-out-http --features p0-local-provider --lib
+      - name: Check read-only access to the installed fixture notification schedule
+        if: "!cancelled() && steps.reminder_install.outcome == 'success'"
+        env:
+          PROBE_EXIT: ${{ steps.reminder_install.outputs.notifier_exit }}
+        run: |
+          if ($env:PROBE_EXIT -cne '0') { throw 'Notifier read failed. See the installer step for the API stage and error.' }
