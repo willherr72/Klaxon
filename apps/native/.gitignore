@@ -1,0 +1,4 @@
+/.android/
+/src-tauri/gen/
+/src-tauri/lib/
+/src-tauri/target/

@@ -1,0 +1,282 @@
+name: V2 validation
+
+on:
+  pull_request:
+    branches: [v2]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: V2 backend schema and indexed reads
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/backend
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run verify
+
+  validate:
+    name: Frontend and migration rehearsal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      fixture-id: ${{ steps.fixture.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Verify shared frontend and repository tooling
+        run: |
+          npm ci
+          npm run verify -- --frontend
+      - name: Test Android verification harness
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Rehearse migration with synthetic data
+        run: |
+          python3 spikes/migration/probe.py
+          python3 -B -m unittest discover -s tools/migration -v
+      - name: Check synthetic reminder evidence and one-time push fixture
+        run: |
+          npm ci --prefix spikes/p0/reminder-push --ignore-scripts --no-audit --no-fund
+          node --test spikes/p0/reminder-evidence.test.mjs spikes/p0/reminder-push/*.test.mjs
+      - name: Check the native Android alarm receipt contract on the JVM
+        run: JAVA_HOME="$JAVA_HOME_17_X64" node spikes/p0/native/android-alarm-visible/test-host.mjs
+      - name: Build portable fixture
+        working-directory: spikes/p0
+        run: |
+          npm ci
+          npm run build
+      - name: Exercise the built fixture in headless Chromium
+        working-directory: spikes/p0
+        run: |
+          npx --no-install playwright-core install --with-deps --only-shell chromium
+          npm run test:portable
+      - name: Attach tested portable fixture
+        id: fixture
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: klaxon-p0-portable-fixture-${{ github.run_attempt }}
+          path: spikes/p0/dist/index.html
+          if-no-files-found: error
+          retention-days: 1
+
+  web:
+    name: V2 shared web application
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      web-id: ${{ steps.web.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install the frontend and headless Chromium
+        working-directory: apps/web
+        run: |
+          npm ci
+          npx --no-install playwright-core install --with-deps --only-shell chromium
+      - name: Verify the v2 web application and its native asset manifest
+        run: |
+          npm --prefix apps/web run verify
+          npm --prefix apps/web run test:browser
+          node --test apps/native/asset-manifest.test.mjs
+          node apps/native/asset-manifest.mjs record
+      - name: Upload the browser-tested v2 assets
+        id: web
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: klaxon-v2-web-${{ github.run_attempt }}
+          path: |
+            apps/web/dist/
+            apps/web/asset-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+
+  foundation:
+    name: V2 packaged frontend on ${{ matrix.platform }}
+    needs: web
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: android
+            runner: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - if: matrix.platform == 'android'
+        uses: ./.github/actions/android-build-setup
+        with:
+          targets: x86_64-linux-android
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.web.outputs.web-id }}
+          path: apps/web
+          merge-multiple: true
+      - run: npm ci --prefix apps/native
+      - run: npm ci --prefix spikes/p0
+      - name: Verify the Evergreen WebView2 Runtime
+        if: matrix.platform == 'windows'
+        run: ./spikes/p0/ci/webview2-runtime.ps1
+      - run: npm --prefix apps/native run build:${{ matrix.platform }}
+      - if: matrix.platform == 'windows'
+        run: node apps/native/smoke/check.mjs windows apps/native/src-tauri/target/debug/klaxon-v2.exe
+      - name: Enable Android emulator acceleration
+        if: matrix.platform == 'android'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Open the v2 application on a disposable Android emulator
+        if: matrix.platform == 'android'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          arch: x86_64
+          target: google_apis
+          avd-name: klaxon-p1-foundation
+          disable-animations: true
+          script: |
+            adb -s emulator-5554 shell cmd connectivity airplane-mode enable
+            adb -s emulator-5554 shell svc wifi disable
+            AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt" node apps/native/smoke/check.mjs android apps/native/src-tauri/gen/android/app/build/outputs/apk/x86_64/debug/app-x86_64-debug.apk emulator-5554
+
+  windows:
+    name: Unsigned Windows WebView2 rehearsal
+    needs: validate
+    # WebView2 automation on Server 2025: https://github.com/actions/runner-images/issues/14738
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Get the browser-tested fixture
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.validate.outputs.fixture-id }}
+          path: spikes/p0/native/.frontend
+          merge-multiple: true
+      - name: Verify the Evergreen WebView2 Runtime
+        run: ./spikes/p0/ci/webview2-runtime.ps1
+      - name: Exercise the current-user DPAPI session fixture
+        run: |
+          $env:P0_SESSION_POWERSHELL = Join-Path $PSHOME 'pwsh.exe'
+          node --test spikes/p0/native/session.test.mjs
+      - name: Build isolated Tauri executable
+        working-directory: spikes/p0
+        run: cargo build --locked --manifest-path native/src-tauri/Cargo.toml --features custom-protocol
+      - name: Install the native smoke test dependencies
+        working-directory: spikes/p0
+        run: npm ci
+      - name: Run the fixture in the Windows executable
+        working-directory: spikes/p0
+        run: node native/smoke.mjs windows
+      - name: Verify the installed reminder fixture shortcut and uninstall on the disposable runner
+        id: reminder_install
+        if: github.event.repository.private == false
+        working-directory: spikes/p0/native
+        env:
+          KLAXON_P0_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          CARGO_NET_OFFLINE: "true"
+        run: |
+          npm.cmd ci --prefix ../../.. --ignore-scripts --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node ../../../node_modules/@tauri-apps/cli/tauri.js build --debug --ci --bundles nsis --config windows-reminder-identity.json -- --locked --offline --bin klaxon-p0-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
+            $env:PATH += ";$env:ProgramFiles\7-Zip"
+          }
+          powershell.exe -NoProfile -NonInteractive -File ../ci/windows-reminder-notifier.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -NonInteractive -File ../ci/windows-reminder-queue.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ../ci/windows-reminder-process.test.ps1
+          ../ci/windows-reminder-install.ps1
+      - name: Build the offline Windows session fixture
+        working-directory: spikes/p0
+        run: node native/package.mjs --target windows --session
+      - name: Check packaged DPAPI resume and sign-out in WebView2
+        working-directory: spikes/p0
+        run: node native/smoke.mjs windows-session
+      - name: Check packaged DPAPI handoff to the offline Convex SDK
+        working-directory: spikes/p0
+        run: node native/smoke.mjs windows-sdk
+      - name: Check native refresh responses and DPAPI recovery after interruption
+        working-directory: spikes/p0
+        run: cargo test --locked --manifest-path native/src-tauri/Cargo.toml --features p0-session --lib
+      - name: Check packaged Windows sign-out against a disposable loopback issuer
+        working-directory: spikes/p0
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          node native/package.mjs --target windows --session --sign-out-http
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node native/smoke.mjs windows-sdk-signout-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe
+      - name: Check cold refresh over HTTP with the same unsigned fixture
+        working-directory: spikes/p0
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --target-dir native/src-tauri/target/sign-out-http --features p0-windows-sign-out-http --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node native/smoke.mjs windows-sdk-refresh-loopback native/src-tauri/target/sign-out-http/debug/windows_session.exe
+      - name: Check the local provider grant and protected record contracts
+        working-directory: spikes/p0
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: cargo test --locked --offline --manifest-path native/src-tauri/Cargo.toml --target-dir native/src-tauri/target/sign-out-http --features p0-local-provider --lib
+      - name: Check read-only access to the installed fixture notification schedule
+        if: "!cancelled() && steps.reminder_install.outcome == 'success'"
+        env:
+          PROBE_EXIT: ${{ steps.reminder_install.outputs.notifier_exit }}
+        run: |
+          if ($env:PROBE_EXIT -ceq '42') {
+            Write-Output '::warning::Empty fixture schedule verified. Windows Server build 20348 returned 0x80070490 for the notification setting. Delivery remains unverified.'
+          } elseif ($env:PROBE_EXIT -cne '0') {
+            throw 'Notifier read failed. See the installer step for the API stage and error.'
+          }
+      - name: Check that a fresh Windows process can find and cancel the scheduled fixture reminder
+        if: "!cancelled() && steps.reminder_install.outcome == 'success' && (steps.reminder_install.outputs.notifier_exit == '0' || steps.reminder_install.outputs.notifier_exit == '42')"
+        env:
+          QUEUE_RESULT: ${{ steps.reminder_install.outputs.queue_result }}
+        run: |
+          if ($env:QUEUE_RESULT -cne 'passed') {
+            throw 'Scheduled reminder persistence or cancellation was not verified. See the installer step for individual process results and cleanup.'
+          }

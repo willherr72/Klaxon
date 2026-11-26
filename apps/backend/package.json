@@ -1,0 +1,31 @@
+{
+  "name": "klaxon-backend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.12.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run --config test/vitest.config.ts",
+    "test:provider": "node --test test/provider.session.mjs",
+    "test:agent:provider": "node --test test/agent.session.mjs",
+    "verify": "npm run check && npm test",
+    "test:delivery:provider": "node --test test/delivery.session.mjs"
+  },
+  "dependencies": {
+    "@convex-dev/auth": "2.1.0",
+    "@modelcontextprotocol/server": "2.4.0",
+    "convex": "1.51.0",
+    "jose": "6.2.18",
+    "web-push": "4.0.0"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/web-push": "3.6.4",
+    "convex-test": "0.0.75",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  }
+}

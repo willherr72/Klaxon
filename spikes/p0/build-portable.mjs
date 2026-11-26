@@ -1,0 +1,86 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+import { build } from "esbuild";
+import { compile } from "svelte/compiler";
+import { androidProviderPreflightConnections, convexDevelopmentOriginPattern, hostedProviderConnections } from "./build-policy.mjs";
+
+const { values } = parseArgs({ options: {
+  outdir: { type: "string", default: "dist" }, session: { type: "boolean" }, "windows-tasks": { type: "boolean" },
+  "loopback-account": { type: "boolean" },
+  "android-provider-preflight": { type: "boolean" },
+  "android-provider-hosted": { type: "boolean" },
+} });
+const developmentOrigin = process.env.P0_PUBLIC_DEV_ORIGIN ?? "";
+const loopbackAccount = values["loopback-account"];
+if (loopbackAccount && (developmentOrigin || values.session || values["windows-tasks"] ||
+    values["android-provider-preflight"] || values["android-provider-hosted"])) {
+  throw new Error("The loopback account fixture requires a browser build without a configured deployment");
+}
+const origin = loopbackAccount ? "http://127.0.0.1:3210" : developmentOrigin;
+const androidProviderPreflight = values["android-provider-preflight"];
+const androidProviderHosted = values["android-provider-hosted"];
+if (androidProviderPreflight && (!values.session || values["windows-tasks"] || origin)) {
+  throw new Error("Android provider preflight requires the offline session frontend without Windows tasks");
+}
+if (androidProviderHosted && (!values.session || values["windows-tasks"] || !origin)) {
+  throw Error("Android hosted provider requires a hosted origin and the Android session frontend");
+}
+if (values.session && origin && !androidProviderHosted) throw new Error("The packaged session fixture runs offline");
+if (values["windows-tasks"] && !values.session) throw new Error("Task transport requires the offline session fixture");
+if (developmentOrigin && !convexDevelopmentOriginPattern.test(developmentOrigin)) {
+  throw new Error("P0_PUBLIC_DEV_ORIGIN must be a plain HTTPS Convex deployment origin");
+}
+
+const bundle = await build({
+  entryPoints: [values.session ? "native/packaged-session/main.js" : "portable/main.js"],
+  bundle: true, write: false, minify: true, legalComments: "none",
+  conditions: ["browser"],
+  define: { P0_PORTABLE_ORIGIN: JSON.stringify(origin), P0_WINDOWS_TASKS: String(!!values["windows-tasks"]) },
+  plugins: [{
+    name: "svelte",
+    setup(builder) {
+      builder.onLoad({ filter: /\.svelte$/ }, async ({ path }) => ({
+        contents: compile(await readFile(path, "utf8"), { filename: path }).js.code,
+      }));
+    },
+  }],
+});
+
+const script = bundle.outputFiles[0].text.replace(/<\/script/gi, "<\\/script").replace(/\r\n/g, "\n");
+const style = (await readFile("portable/style.css", "utf8")).replace(/\r\n/g, "\n");
+const hash = text => "sha256-" + createHash("sha256").update(text).digest("base64");
+let connections = origin ? origin + " " + origin.replace(/^http/, "ws") : "'none'";
+const scriptHashes = [hash(script)];
+let marker = "";
+let providerScript = "";
+await mkdir(values.outdir, { recursive: true });
+if (androidProviderPreflight || androidProviderHosted) {
+  connections = androidProviderHosted ? hostedProviderConnections(origin) : androidProviderPreflightConnections;
+  marker = androidProviderHosted ? `<meta name="p0-hosted-provider" content="${origin}">\n` :
+    '<meta name="p0-android-provider-preflight" content="loopback-only">\n';
+  const provider = await build({
+    entryPoints: ["native/local-provider/client.js"], bundle: true, write: false,
+    format: "iife", platform: "browser", minify: true, legalComments: "none",
+    define: androidProviderHosted ? { P0_PROVIDER_ORIGIN: JSON.stringify(origin) } : {},
+  });
+  const asset = provider.outputFiles[0].contents;
+  const integrity = hash(asset);
+  scriptHashes.push(integrity);
+  providerScript = `<script src="./local-provider.js" integrity="${integrity}"></script>`;
+  await writeFile(join(values.outdir, "local-provider.js"), asset);
+}
+const policy = [
+  "default-src 'none'", "base-uri 'none'", "form-action 'none'",
+  "script-src " + scriptHashes.map(value => "'" + value + "'").join(" "),
+  "style-src '" + hash(style) + "'", "connect-src " + connections,
+].join("; ");
+const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${policy}">
+${marker}<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klaxon · Device check</title><style>${style}</style></head>
+<body><main id="app"></main><script>${script}</script>${providerScript}</body></html>`;
+await writeFile(join(values.outdir, "index.html"), html);
+console.log(`Built ${join(values.outdir, "index.html")} (${origin || "local fixture"})`);

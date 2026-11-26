@@ -1,0 +1,37 @@
+{
+  "name": "klaxon-web",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.12.0"
+  },
+  "scripts": {
+    "dev": "vite --mode offline",
+    "dev:development": "vite --mode development",
+    "build": "vite build",
+    "build:development": "vite build --mode development",
+    "lint": "eslint . --max-warnings 0",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "node --test test/config.test.mjs test/build.test.mjs",
+    "test:browser": "node --test --test-concurrency=1 test/browser.test.mjs test/planner-shell.test.mjs test/task-detail.test.mjs test/projects-ui.test.mjs test/calendar-ui.test.mjs test/reminders-ui.test.mjs test/pwa.test.mjs test/agent-plan-review.test.mjs test/autonomy-policy.test.mjs",
+    "test:planner:local": "node --test test/planner.loopback.mjs",
+    "verify": "npm run lint && npm run check && npm test && npm run build"
+  },
+  "dependencies": {
+    "convex": "1.51.0",
+    "svelte": "5.55.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@sveltejs/vite-plugin-svelte": "4.0.4",
+    "@tsconfig/svelte": "5.0.8",
+    "eslint": "10.15.0",
+    "eslint-plugin-svelte": "3.24.1",
+    "globals": "17.14.0",
+    "playwright-core": "1.65.1",
+    "svelte-check": "4.4.8",
+    "typescript": "5.6.3",
+    "typescript-eslint": "8.74.0",
+    "vite": "5.4.21"
+  }
+}

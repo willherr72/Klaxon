@@ -1,0 +1,150 @@
+.task-detail-editor {
+  min-inline-size: 0;
+  color: var(--planner-text, #242320);
+  font: 0.875rem/1.45 system-ui, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.task-detail-editor .task-detail-heading,
+.task-detail-editor .task-detail-actions,
+.task-detail-editor .task-detail-project {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.task-detail-editor .task-detail-heading { justify-content: space-between; }
+.task-detail-editor :is(h2, h3, p) { margin: 0; }
+.task-detail-editor h2 { font-size: 1.25rem; }
+.task-detail-editor h3 { font-size: 1rem; }
+
+.task-detail-editor,
+.task-detail-editor :is(form, fieldset, .task-detail-section) {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.task-detail-editor fieldset {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.task-detail-editor .task-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr));
+  gap: 0.75rem;
+}
+
+.task-detail-editor label {
+  display: grid;
+  min-inline-size: 0;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+
+.task-detail-editor :is(input, select, button, textarea, summary) {
+  box-sizing: border-box;
+  min-block-size: var(--planner-target, 44px);
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  border: 1px solid var(--planner-control-border, #847f75);
+  border-radius: var(--planner-radius, 0.4rem);
+  padding: 0.45rem 0.6rem;
+  background: var(--planner-surface, #fff);
+  color: inherit;
+  font: inherit;
+}
+
+.task-detail-editor :is(input:not([type="checkbox"]), select, textarea) { inline-size: 100%; }
+.task-detail-editor textarea { resize: vertical; }
+.task-detail-editor :is(button, summary, input[type="checkbox"]):not(:disabled) { cursor: pointer; }
+.task-detail-editor :is(input, select, button, textarea):disabled { opacity: 0.65; }
+.task-detail-editor :focus-visible {
+  outline: 2px solid var(--planner-focus, #a65100);
+  outline-offset: 2px;
+}
+
+.task-detail-editor button.task-detail-primary {
+  background: var(--planner-accent, #a65100);
+  border-color: var(--planner-accent, #a65100);
+  color: var(--planner-on-accent, #fff);
+}
+
+.task-detail-editor .task-detail-destructive { color: var(--planner-error, #a1222a); }
+.task-detail-editor .task-detail-project-field { flex: 1 1 12rem; min-inline-size: 0; }
+.task-detail-editor .task-detail-project-field label { margin-block-end: 0.25rem; }
+.task-detail-editor .task-detail-project button { align-self: end; }
+.task-detail-editor summary { display: list-item; }
+.task-detail-editor details[open] > :not(summary) { margin-block-start: 0.75rem; }
+
+.task-detail-editor .task-detail-section {
+  border-block-start: 1px solid var(--planner-border, #d6d3cc);
+  padding-block-start: 0.75rem;
+}
+
+.task-detail-editor :is(.task-detail-steps, .task-detail-links) {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding-inline-start: 1.5rem;
+}
+
+.task-detail-editor :is(.task-detail-steps, .task-detail-links) li {
+  min-inline-size: 0;
+  border-block-end: 1px solid var(--planner-border, #d6d3cc);
+  padding-block-end: 0.5rem;
+}
+
+.task-detail-editor label.task-detail-check {
+  display: flex;
+  min-block-size: var(--planner-target, 44px);
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.task-detail-editor .task-detail-check input {
+  inline-size: 1.125rem;
+  min-block-size: 1.125rem;
+  flex: none;
+  margin: 0;
+  accent-color: var(--planner-accent, #a65100);
+}
+
+.task-detail-editor .task-detail-steps button { min-inline-size: var(--planner-target, 44px); }
+.task-detail-editor .task-detail-source { color: var(--planner-text-muted, #5d5a54); }
+.task-detail-editor .task-detail-feedback { color: var(--planner-success, #246348); }
+.task-detail-editor .task-detail-feedback:empty { display: block; block-size: 0; }
+.task-detail-editor .task-detail-notice {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid var(--planner-warning, #794500);
+  border-radius: var(--planner-radius, 0.4rem);
+  padding: 0.75rem;
+}
+
+.task-detail-editor .task-detail-comparison { margin: 0; }
+.task-detail-editor .task-detail-comparison dd { margin-inline-start: 0; white-space: pre-wrap; }
+.task-detail-editor .task-detail-comparison dt { font-weight: 650; }
+
+.task-detail-editor dialog {
+  box-sizing: border-box;
+  max-inline-size: min(28rem, calc(100vw - 2rem));
+  padding: 1rem;
+  border: 1px solid var(--planner-control-border, #847f75);
+  border-radius: var(--planner-radius, 0.4rem);
+  background: var(--planner-surface, #fff);
+  color: inherit;
+}
+
+.task-detail-editor dialog :is(p, .task-detail-actions) { margin-block-start: 0.75rem; }
+.task-detail-editor dialog::backdrop { background: rgb(0 0 0 / 45%); }
+
+.task-detail-editor .task-detail-links a {
+  display: inline-flex;
+  min-block-size: var(--planner-target, 44px);
+  align-items: center;
+  color: var(--planner-accent, #a65100);
+}

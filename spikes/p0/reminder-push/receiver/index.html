@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Klaxon reminder test</title>
+  <script type="module" src="./page.mjs"></script>
+</head>
+<body>
+  <main>
+    <h1>Klaxon reminder test</h1>
+    <p>Select this device in the disposable test profile.</p>
+    <label>Device
+      <select id="target">
+        <option value="">Choose device</option>
+        <option value="windows-edge">Windows Edge</option>
+        <option value="android-chrome">Android Chrome</option>
+      </select>
+    </label>
+    <p><button id="enable">Enable test reminders</button> <button id="save">Save private subscription</button></p>
+    <p>Keep the exported subscription private. Hand it to the test operator using the approved private channel.</p>
+    <p><button id="read">Read worker receipt</button> <button id="remove">Remove test subscription</button></p>
+    <output id="status" aria-live="polite"></output>
+    <h2>Worker receipts</h2>
+    <p>Match the occurrence ID to the reminder you saw on this device. Record that observation separately.</p>
+    <ul id="receipts"></ul>
+  </main>
+</body>
+</html>

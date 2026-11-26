@@ -1,0 +1,127 @@
+import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { test } from "node:test";
+import { ConvexClient, ConvexHttpClient } from "convex/browser";
+import { makeFunctionReference as ref } from "convex/server";
+import { withLocalProvider } from "./provider.local.mjs";
+
+async function until(check) {
+  const deadline = Date.now() + 30_000;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error("Timed out observing the task subscription");
+    await delay(50);
+  }
+}
+
+test("two signed-in clients observe one committed write, replay and conflict", { timeout: 180_000 }, async () => {
+  await withLocalProvider(async ({ url, adminKey }) => {
+    const admin = new ConvexHttpClient(url, { logger: false });
+    admin.setAdminAuth(adminKey);
+    const credentials = { username: "p1-" + randomUUID(), password: randomBytes(24).toString("base64url") };
+    await admin.function("auth:enrollWithUsernamePassword", undefined, credentials);
+    const anonymous = new ConvexHttpClient(url, { logger: false });
+    const grants = [];
+    const sockets = [];
+    try {
+      for (let i = 0; i < 2; i++) {
+        const result = await anonymous.mutation(ref("auth:signInWithUsernamePassword"), credentials);
+        assert.equal(result.status, "complete");
+        grants.push(result.tokens);
+      }
+      const clients = grants.map(grant => new ConvexHttpClient(url, { auth: grant.accessToken, logger: false }));
+      const workspace = await clients[0].mutation(ref("workspaces:ensurePersonal"), {});
+      const workspaceId = workspace._id;
+      const rows = [undefined, undefined];
+      let queryFailed = false;
+      for (const [index, grant] of grants.entries()) {
+        const socket = new ConvexClient(url, { unsavedChangesWarning: false, logger: false });
+        sockets.push(socket);
+        let signedIn = false;
+        socket.setAuth(async () => grant.accessToken, authenticated => { signedIn = authenticated; });
+        await until(() => signedIn);
+        socket.onUpdate(ref("tasks:list"), {
+          workspaceId, filter: { kind: "status", status: "inbox" }, paginationOpts: { numItems: 10, cursor: null },
+        }, result => { rows[index] = result.page; }, () => { queryFailed = true; });
+      }
+      const both = predicate => until(() => {
+        assert.equal(queryFailed, false, "Authenticated subscription failed");
+        return rows.every(page => page && predicate(page));
+      });
+      await both(page => page.length === 0);
+      const publicId = randomUUID();
+      const create = { workspaceId, operationId: randomUUID(),
+        command: { kind: "task.create", publicId, title: "First title", status: "inbox" } };
+      const write = (index, args) => clients[index].mutation(ref("tasks:apply"), args);
+      const [first, replay] = await Promise.all([write(0, create), write(1, create)]);
+      assert.deepEqual(replay, first);
+      assert.equal(first.revision, 1);
+      await both(page => page.length === 1 && page[0].publicId === publicId && page[0].revision === 1);
+      const rename = title => ({ workspaceId, operationId: randomUUID(),
+        command: { kind: "task.update", publicId, expectedRevision: 1, patch: { title } } });
+      const updates = [rename("Session A"), rename("Session B")];
+      const results = await Promise.allSettled(updates.map((request, index) => write(index, request)));
+      const winner = results.findIndex(result => result.status === "fulfilled");
+      assert.ok(winner >= 0);
+      assert.equal(results[winner].value.revision, 2);
+      assert.equal(results[1 - winner].status, "rejected");
+      assert.equal(results[1 - winner].reason.data?.code, "REVISION_CONFLICT");
+      await both(page => page.length === 1 && page[0].title === updates[winner].command.patch.title && page[0].revision === 2);
+
+      const capture = { kind: "capture.create", publicId: "thought", body: "Review sample quote" };
+      await clients[0].mutation(ref("captures:apply"), { workspaceId, operationId: randomUUID(), command: capture });
+      const captureQuery = { workspaceId, paginationOpts: { numItems: 5, cursor: null } };
+      assert.equal((await clients[1].query(ref("captures:search"), { ...captureQuery, text: "quote" })).page[0].publicId, "thought");
+      const promote = { workspaceId, operationId: randomUUID(), command: {
+        kind: "capture.promote", publicId: "thought", expectedRevision: 1, taskPublicId: "quote", title: "Review estimate",
+      } };
+      const [promotion, promotionReplay] = await Promise.all(clients.map(client => client.mutation(ref("captures:apply"), promote)));
+      assert.deepEqual(promotionReplay, promotion);
+      await both(page => page.length === 2 && page.some(task => task.publicId === "quote" && task.source?.kind === "capture"));
+      assert.deepEqual((await clients[1].query(ref("captures:list"), captureQuery)).page, []);
+
+      const day = new Date(Date.now() + 7 * 86_400_000);
+      day.setUTCHours(12, 0, 0, 0);
+      const localDate = day.toISOString().slice(0, 10);
+      const estimate = { kind: "task.update", publicId: "quote", expectedRevision: 1,
+        patch: { plannedDate: localDate, estimateMinutes: 30 } };
+      await write(0, { workspaceId, operationId: randomUUID(), command: estimate });
+      const agenda = await clients[1].query(ref("agenda:today"), { workspaceId, timezone: "UTC", localDate, asOf: +day });
+      assert.equal(agenda.planned.items[0].publicId, "quote");
+      const calendar = { workspaceId, localDate, timezone: "UTC", view: "day" };
+      const reserve = { workspaceId, operationId: randomUUID(), command: { kind: "block.create", publicId: "meeting",
+        startAt: +day, endAt: +day + 3_600_000, timezone: "UTC", title: "Reserved hour", locked: true } };
+      await clients[0].mutation(ref("calendar:apply"), reserve);
+      assert.deepEqual((await clients[1].query(ref("calendar:list"), calendar)).blocks.map(b => b.publicId), ["meeting"]);
+      await clients[0].mutation(ref("planning:updatePreferences"), {workspaceId, operationId: randomUUID(), expectedRevision: 0,
+        preferences: { timezone: "UTC", workHours: [{weekday: (day.getUTCDay() + 6) % 7, startMinute: 540, endMinute: 1020}],
+          breaks: [], bufferMinutes: 0, discretionaryMinutes: 0, lockManuallyMovedBlocks: true }});
+      const preview = await clients[1].mutation(ref("planning:preview"), {workspaceId, operationId: randomUUID(), localDate,
+        taskPublicIds: ["quote"], expectedDayPlanRevision: null});
+      assert.equal(preview.placements.length, 1);
+      assert.equal(preview.placements[0].taskPublicId, "quote");
+      assert.equal((await clients[0].query(ref("calendar:list"), calendar)).blocks.length, 1);
+      const apply = {workspaceId, operationId: randomUUID(), publicId: preview.publicId, expectedRevision: preview.revision};
+      const applied = await clients[0].mutation(ref("planning:apply"), apply);
+      assert.deepEqual(await clients[1].mutation(ref("planning:apply"), apply), applied);
+      const reviewed = (await clients[1].query(ref("calendar:list"), calendar)).blocks;
+      assert.equal(reviewed.length, 2);
+      assert.ok(reviewed.some(b => b.publicId === "meeting" && b.locked && b.startAt === +day));
+      assert.ok(reviewed.some(b => b.taskPublicId === "quote" && b.endAt - b.startAt === 1_800_000));
+      const search = await clients[1].query(ref("organization:search"),{workspaceId,text:"estimate"});
+      assert.ok(search.tasks.some(task => task.publicId === "quote"));
+      const edit = await write(0,{workspaceId,operationId:randomUUID(),command:{kind:"task.update",publicId:"quote",
+        expectedRevision:2,patch:{title:"Draft change"}}});
+      const inverse = {workspaceId,eventId:edit.activityEventId,expectedRevision:3,operationId:randomUUID()};
+      const undone = await clients[1].mutation(ref("activity:undo"),inverse);
+      assert.deepEqual(await clients[0].mutation(ref("activity:undo"),inverse),undone);
+      assert.equal((await clients[1].query(ref("tasks:get"),{workspaceId,publicId:"quote"})).title,"Review estimate");
+    } finally {
+      try {
+        await Promise.all(sockets.map(socket => socket.close()));
+      } finally {
+        await Promise.all(grants.map(grant => anonymous.mutation(ref("auth:signOut"), { refreshToken: grant.refreshToken })));
+      }
+    }
+  });
+});

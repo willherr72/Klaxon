@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Klaxon v2",
+  "mainBinaryName": "klaxon-v2",
+  "version": "0.1.0",
+  "identifier": "dev.klaxon.v2",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "beforeBuildCommand": {
+      "cwd": "../../..",
+      "script": "node apps/native/asset-manifest.mjs verify"
+    }
+  },
+  "app": {
+    "windows": [{ "title": "Klaxon v2", "width": 720, "height": 640 }],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; connect-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.ico", "icons/icon.png"]
+  }
+}

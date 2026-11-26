@@ -1,0 +1,8 @@
+{
+  "name": "klaxon-p0-reminder-push",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "web-push": "4.0.0"
+  }
+}

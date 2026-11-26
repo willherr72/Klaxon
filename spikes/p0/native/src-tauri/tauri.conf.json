@@ -1,0 +1,18 @@
+{
+  "productName": "Klaxon P0 Native",
+  "version": "0.1.0",
+  "identifier": "dev.klaxon.p0native",
+  "build": {
+    "frontendDist": "../.frontend"
+  },
+  "app": {
+    "windows": [{ "title": "Klaxon P0 Native", "width": 720, "height": 640 }],
+    "security": {
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'none'; connect-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../../../../src-tauri/icons/icon.ico", "../../../../src-tauri/icons/icon.png"]
+  }
+}

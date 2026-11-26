@@ -1,0 +1,19 @@
+{
+  "name": "klaxon-p0-convex-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build-portable.mjs",
+    "test:portable": "node --test portable.test.mjs account-session.test.mjs reminder-readback.test.mjs native/android-alarm/check.test.mjs native/android-install.test.mjs native/android-forward.test.mjs native/package.test.mjs native/windows-process.test.mjs native/packaged-session/task-session.test.mjs native/packaged-session/profile.test.mjs native/packaged-session/auth-loopback.test.mjs native/local-provider/hosted-controls.test.mjs native/local-provider/hosted-provision.test.mjs native/local-provider/observation.test.mjs native/local-provider/renewal-observation.test.mjs native/local-provider/relay.test.mjs native/local-provider/android-preflight.test.mjs native/local-provider/android-session-preflight.test.mjs native/local-provider/check.test.mjs native/local-provider/scripted-android-provider.test.mjs native/local-provider/owner-phone.test.mjs sdk-task-session.test.mjs"
+  },
+  "dependencies": {
+    "@convex-dev/auth": "2.1.0",
+    "convex": "1.51.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright-core": "1.65.1",
+    "svelte": "5.59.1",
+    "typescript": "5.9.3"
+  }
+}

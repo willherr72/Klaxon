@@ -1,0 +1,14 @@
+{
+  "productName": "Klaxon P0 Reminder Fixture",
+  "identifier": "dev.klaxon.p0reminderfixture",
+  "mainBinaryName": "klaxon-p0-reminder-fixture",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false,
+    "windows": {
+      "webviewInstallMode": { "type": "skip" },
+      "nsis": { "installMode": "currentUser" }
+    }
+  }
+}
