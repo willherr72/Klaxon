@@ -1,7 +1,7 @@
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
 import {
-  legacyError, legacyHash, legacyIdentity, legacyKinds, sourceTables, validatedRow,
+  legacyError, legacyHash, legacyKinds, MAX_LEGACY_ENTRIES, projectedRowHash, sourceTables,
   type LegacyArchive, type LegacyKind, type LegacyRow, type SourceCandidate, type SourceHold, type Tombstone,
 } from "./legacyImportFormat";
 
@@ -9,7 +9,7 @@ type Writer = MutationCtx["db"];
 type Count = Doc<"importRuns">["counts"][number];
 type Mapping = Doc<"importMappings">;
 type Destination = NonNullable<Mapping["destination"]>;
-type Candidate = { kind: LegacyKind; raw: unknown; order: number };
+type Candidate = { kind: LegacyKind; row: LegacyRow; order: number };
 type SourceGroup = {
   sourceTable: string;
   legacyId: string;
@@ -49,7 +49,7 @@ function counter(sourceTable: string): Count {
   return { sourceTable, extracted: 0, imported: 0, skipped: 0, rejected: 0, divergent: 0 };
 }
 
-async function planArchive(archive: LegacyArchive, counts: Map<string, Count>, issues: Map<string, number>) {
+function planArchive(archive: LegacyArchive, counts: Map<string, Count>, issues: Map<string, number>) {
   const groups = new Map<string, SourceGroup>();
   function group(sourceTable: string, legacyId: string) {
     const key = JSON.stringify([sourceTable, legacyId]);
@@ -61,26 +61,14 @@ async function planArchive(archive: LegacyArchive, counts: Map<string, Count>, i
     return found;
   }
   for (const kind of legacyKinds) {
-    const sourceTable = sourceTables[kind];
-    const countsForTable = counts.get(sourceTable)!;
-    for (const [order, raw] of archive.records[kind].entries()) {
-      const legacyId = legacyIdentity(raw);
-      if (legacyId === undefined) {
-        countsForTable.extracted++;
-        countsForTable.rejected++;
-        issueCounter(issues, "invalid_projected_identity");
-        continue;
-      }
-      group(sourceTable, legacyId).rows.push({ kind, raw, order });
+    for (const [order, row] of archive.records[kind].entries()) {
+      group(sourceTables[kind], row.legacyId).rows.push({ kind, row, order });
     }
   }
   for (const hold of archive.sourceHolds) group(sourceTables[hold.kind], hold.legacyId).holds.push(hold);
   for (const source of archive.sourceCandidates) group(sourceTables[source.kind], source.legacyId).sourceCandidates.push(source);
   const tombstoneCounts = counts.get("tombstones")!;
-  const tombstoneIds = new Set<string>();
   for (const tombstone of archive.tombstones) {
-    if (tombstoneIds.has(tombstone.legacyId)) legacyError("LEGACY_IMPORT_INVALID");
-    tombstoneIds.add(tombstone.legacyId);
     if (tombstone.observedKinds.length === 0) {
       group("tombstones", tombstone.legacyId).tombstone = tombstone;
       continue;
@@ -97,9 +85,8 @@ async function planArchive(archive: LegacyArchive, counts: Map<string, Count>, i
     for (const kind of tombstone.observedKinds) group(sourceTables[kind], tombstone.legacyId).tombstone = tombstone;
   }
 
-  const plan = await Promise.all(Array.from(groups.values(), async (group): Promise<Planned> => {
+  const plan = Array.from(groups.values(), (group): Planned => {
     const { rows, holds, tombstone } = group;
-    if (rows.length > 1) return { group, state: "divergent", issue: "ambiguous_projected_identity" };
     if (holds.some(hold => hold.state === "divergent")) return { group, state: "divergent" };
     if (tombstone && !["deleted", "surviving_version"].includes(tombstone.outcome)) {
       return { group, state: "divergent", issue: `tombstone_${tombstone.outcome}` };
@@ -108,21 +95,18 @@ async function planArchive(archive: LegacyArchive, counts: Map<string, Count>, i
       if (tombstone?.outcome === "deleted" && tombstone.deletedAt !== null) return { group, state: "deleted" };
       return { group, state: "quarantined", issue: holds.length ? undefined : "missing_projected_tombstone_survivor" };
     }
-    if (holds.length) return { group, state: "quarantined", issue: "source_quarantine" };
-    const [candidate] = rows;
-    const row = await validatedRow(candidate.kind, candidate.raw);
-    if (!row) return { group, state: "quarantined", issue: "invalid_projected_row" };
-    if (tombstone && (tombstone.outcome !== "surviving_version" || tombstone.deletedAt === null ||
-        candidate.kind === "dayNotes" || !tombstone.observedKinds.includes(candidate.kind) ||
-        candidate.kind === "steps" || row.updatedAt <= tombstone.deletedAt)) {
-      return { group, row, state: "divergent", issue: "projected_tombstone_conflict" };
+    const [{ row }] = rows;
+    // A source record can be valid evidence while exceeding the destination's import limits.
+    if (("tags" in row && row.tags.length > MAX_LEGACY_ENTRIES) ||
+        ("recurrence" in row && row.recurrence?.kind === "weekly" && row.recurrence.weekdays.length > MAX_LEGACY_ENTRIES)) {
+      return { group, row, state: "quarantined", issue: "invalid_projected_row" };
     }
     if ("lanePublicId" in row && ((row.state !== "pending" && row.state !== "completed") ||
         row.recurrence !== undefined || row.snoozeUntil !== undefined)) {
       return { group, row, state: "quarantined", issue: "unsupported_task_schedule" };
     }
     return { group, row, state: "pending" };
-  }));
+  });
 
   const defaults = plan.filter(item => item.state === "pending" && item.row && "isDefault" in item.row && item.row.isDefault);
   if (defaults.length === 0) issueCounter(issues, "missing_projected_default_lane");
@@ -146,7 +130,7 @@ export async function writeLegacyArchive(
   const tables = [...new Set(Object.values(sourceTables)), "tombstones"];
   const counts = new Map(tables.map(table => [table, counter(table)]));
   const issues = new Map<string, number>();
-  const plan = await planArchive(archive, counts, issues);
+  const plan = planArchive(archive, counts, issues);
   const maxRank = new Map<string, number>();
   for (const item of plan) {
     const row = item.row;
@@ -239,22 +223,33 @@ export async function writeLegacyArchive(
     }
     if (issue) issueCounter(issues, issue);
     const codes = [...new Set([...holds.map(hold => hold.code), ...(issue ? [issue] : [])])].sort();
-    const evidence: Mapping["candidates"] = await Promise.all(rows.map(async candidate => ({
-      runId, payloadHash: await legacyHash(JSON.stringify(candidate.raw)),
-      sourceUpdatedAt: rows.length === 1 ? row?.updatedAt : undefined, sourceOrder: candidate.order,
-      sourceDeletedAt: tombstone?.deletedAt ?? undefined,
-    })));
+    const evidence: Mapping["candidates"] = [];
+    const projected = rows[0];
+    if (projected) {
+      const selected = sourceCandidates.find(candidate => candidate.selected);
+      evidence.push({
+        runId, payloadHash: selected?.payloadHash ?? await projectedRowHash(projected.kind, projected.row),
+        sourceUpdatedAt: projected.row.updatedAt, sourceOrder: projected.order,
+        sourceDeletedAt: tombstone?.deletedAt ?? undefined,
+      });
+    }
     const retained = new Set(evidence.map(candidate => candidate.payloadHash));
-    for (const { payloadHash, sourceUpdatedAt } of sourceCandidates) {
+    for (const { payloadHash, sourceUpdatedAt, issues } of sourceCandidates) {
       if (retained.has(payloadHash)) continue;
       retained.add(payloadHash);
-      evidence.push({ runId, payloadHash, sourceUpdatedAt, sourceDeletedAt: tombstone?.deletedAt ?? undefined });
+      evidence.push({
+        runId, payloadHash, sourceUpdatedAt, sourceDeletedAt: tombstone?.deletedAt ?? undefined,
+        issues: issues?.length ? issues.map(code => ({ code })) : undefined,
+      });
     }
     if (!evidence.length) evidence.push({
       runId, payloadHash: await legacyHash(JSON.stringify([archive.reportHash, sourceTable, legacyId])),
       sourceDeletedAt: tombstone?.deletedAt ?? undefined,
     });
-    if (codes.length) evidence[0].issues = codes.map(code => ({ code }));
+    if (codes.length) {
+      const candidateCodes = evidence[0].issues?.map(issue => issue.code) ?? [];
+      evidence[0].issues = [...new Set([...candidateCodes, ...codes])].sort().map(code => ({ code }));
+    }
     await db.insert("importMappings", {
       ...ledger, publicId: crypto.randomUUID(), sourceTable, legacyId, state, destination,
       destinationPublicId: destination && row?.publicId, selectedRunId: runId, candidates: evidence,
@@ -269,7 +264,8 @@ export async function writeLegacyArchive(
     counts: resultCounts, errors: [...archive.diagnostics, ...Array.from(issues, ([code, total]) => ({ code, message: String(total) }))],
     verification: {
       verifiedAt: now, verifiedBy: userId, reportHash: archive.reportHash,
-      checks: [{ code: "artifact_checksums", passed: true }, { code: "workspace_reconciliation", passed: !needsReview }],
+      checks: [{ code: "artifact_checksums", passed: true }, { code: "report_consistency", passed: true },
+        { code: "workspace_reconciliation", passed: !needsReview }],
     },
   });
   return { id: runId, publicId: runPublicId, revision: 1 };

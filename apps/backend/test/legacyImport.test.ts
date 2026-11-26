@@ -3,7 +3,7 @@ import { convexTest } from "convex-test";
 import { expect, test, vi } from "vitest";
 import type { Id } from "../convex/_generated/dataModel";
 import schema from "../convex/schema";
-import { legacyImportDivergentFixture, legacyImportFixture } from "./legacyImportFixture";
+import { legacyImportDivergentFixture, legacyImportFixture, legacyImportMalformedCandidateFixture } from "./legacyImportFixture";
 
 vi.mock("@convex-dev/auth/server", () => ({
   getAuthUserId: async (ctx: { auth: { getUserIdentity(): Promise<{ subject: string } | null> } }) =>
@@ -48,13 +48,17 @@ async function checksum(value: string) {
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function withProjection(change: (input: ReturnType<typeof JSON.parse>) => void) {
-  const manifest = JSON.parse(legacyImportFixture.manifest);
-  const input = JSON.parse(legacyImportFixture.projection);
+async function withArtifact(
+  fixture: typeof legacyImportFixture,
+  name: "projection" | "report",
+  change: (input: ReturnType<typeof JSON.parse>) => void,
+) {
+  const manifest = JSON.parse(fixture.manifest);
+  const input = JSON.parse(fixture[name]);
   change(input);
-  const projection = JSON.stringify(input);
-  manifest.artifacts["projection.json"] = await checksum(projection);
-  return { ...legacyImportFixture, manifest: JSON.stringify(manifest), projection };
+  const changed = JSON.stringify(input);
+  manifest.artifacts[`${name}.json`] = await checksum(changed);
+  return { ...fixture, manifest: JSON.stringify(manifest), [name]: changed };
 }
 
 test("imports the CLI's synthetic projection and replays without duplicating destinations or mappings", async () => {
@@ -64,7 +68,13 @@ test("imports the CLI's synthetic projection and replays without duplicating des
     ...createArgs, command: { kind: "task.create", publicId: "same-operation", title: "Conflicting request" },
   })).rejects.toThrow(/OPERATION_ID_CONFLICT/);
   const run = await owner.mutation(anyApi.imports.apply, applyArgs);
-  expect(run).toMatchObject({ archiveHash: await checksum(applyArgs.manifest), checkpoint: { phase: "complete", nextBatch: 1 } });
+  expect(run).toMatchObject({
+    archiveHash: await checksum(applyArgs.manifest), checkpoint: { phase: "complete", nextBatch: 1 }, state: "verified",
+    verification: { checks: [
+      { code: "artifact_checksums", passed: true }, { code: "report_consistency", passed: true },
+      { code: "workspace_reconciliation", passed: true },
+    ] },
+  });
   expect(await owner.mutation(anyApi.imports.apply, applyArgs)).toEqual(run);
   expect(await owner.mutation(anyApi.imports.apply, { ...applyArgs, operationId: crypto.randomUUID() })).toEqual(run);
   expect(await owner.query(anyApi.imports.get, { workspaceId, publicId: run.publicId })).toEqual(run);
@@ -169,22 +179,107 @@ test("retains the source's unresolved variants and deletions alongside the order
   });
 });
 
-test("quarantines a conflicting identity and a missing relationship with persisted counts", async () => {
+const inconsistentArchives = [
+  ["missing state totals", legacyImportFixture, "report", report => delete report.outputStates],
+  ["incorrect state totals", legacyImportFixture, "report", report => { report.outputStates.tasks.pending = 2; }],
+  ["incorrect issue totals", legacyImportFixture, "report", report => { report.issueCounts = {}; }],
+  ["incorrect tombstone totals", legacyImportDivergentFixture, "report", report => { report.tombstoneOutcomes = {}; }],
+  ["stripped decisions", legacyImportDivergentFixture, "report", report => { report.divergences = []; }],
+  ["stripped quarantines and their totals", legacyImportMalformedCandidateFixture, "report", report => {
+    report.issues = report.issues.filter((issue: { code: string }) => issue.code !== "invalid_tags");
+    delete report.issueCounts.invalid_tags;
+  }],
+  ["a stripped decision and its quarantine", legacyImportMalformedCandidateFixture, "report", report => {
+    report.divergences = report.divergences.filter((item: { legacyId: string }) => item.legacyId !== "r");
+    report.issues = report.issues.filter((issue: { code: string }) => issue.code !== "invalid_tags");
+    delete report.issueCounts.invalid_tags;
+  }],
+  ["a losing candidate marked as winner", legacyImportDivergentFixture, "report", report => {
+    const decision = report.divergences.find((item: { legacyId: string }) => item.legacyId === "u");
+    decision.winnerSha256 = decision.candidates.find((item: { record: { updatedAt: number } }) =>
+      item.record.updatedAt === 2).sha256;
+  }],
+  ["a winner hash whose record was modified", legacyImportDivergentFixture, "report", report => {
+    const decision = report.divergences.find((item: { legacyId: string }) => item.legacyId === "u");
+    decision.candidates.find((item: { sha256: string }) => item.sha256 === decision.winnerSha256).record.title = "changed";
+  }],
+  ["a projected survivor that differs from its winner", legacyImportDivergentFixture, "projection", projection => {
+    projection.records.tasks.find((item: { legacyId: string }) => item.legacyId === "u").title = "changed";
+  }],
+  ["a projected identity with contradictory kind and UUID", legacyImportFixture, "projection", projection => {
+    projection.records.reminders[0].legacyId = projection.records.tasks[0].legacyId;
+  }],
+] satisfies [string, typeof legacyImportFixture, "projection" | "report", (input: ReturnType<typeof JSON.parse>) => void][];
+
+test.each(inconsistentArchives)("rejects rechecksummed archives with %s before writing", async (_name, fixture, name, change) => {
   const { t, owner, applyArgs } = await backend();
-  const archive = await withProjection(input => {
-    input.records.reminders[0].legacyId = input.records.tasks[0].legacyId;
+  const archive = await withArtifact(fixture, name, change);
+  await expect(owner.mutation(anyApi.imports.apply, { ...applyArgs, ...archive })).rejects.toThrow(/LEGACY_IMPORT_INVALID/);
+  await t.run(async ({ db }) => {
+    for (const table of ["lanes", "tasks", "taskSteps", "reminders", "captures", "dayNotes", "importMappings", "importRuns"] as const) {
+      expect(await db.query(table).collect()).toEqual([]);
+    }
+    expect(await db.query("operationReceipts").collect()).toHaveLength(1);
+    expect(await db.query("activityEvents").collect()).toHaveLength(1);
+  });
+});
+
+test("imports a newer valid reminder and attaches the malformed older candidate's issue to its own hash", async () => {
+  const { t, owner, applyArgs } = await backend();
+  const fixture = legacyImportMalformedCandidateFixture;
+  const run = await owner.mutation(anyApi.imports.apply, { ...applyArgs, ...fixture });
+  expect(run).toMatchObject({
+    state: "needs_reconciliation",
+    errors: expect.arrayContaining([expect.objectContaining({ code: "invalid_tags" })]),
+  });
+  const decision = JSON.parse(fixture.report).divergences.find((item: { legacyId: string }) => item.legacyId === "r");
+  const malformed = decision.candidates.find((candidate: { rowSha256?: string }) => candidate.rowSha256);
+  await t.run(async ({ db }) => {
+    const reminder = await db.query("reminders").unique();
+    expect(reminder).toMatchObject({ title: "Newer ☃ 🌍", state: "completed", updatedAt: 3, tags: [] });
+    const mappings = await db.query("importMappings").collect();
+    const mapping = mappings.find(item => item.sourceTable === "reminders" && item.legacyId === "r");
+    expect(mapping).toMatchObject({
+      state: "imported",
+      destination: { kind: "reminder", id: reminder?._id },
+      candidates: [
+        { payloadHash: decision.winnerSha256, sourceUpdatedAt: 3, sourceOrder: 0 },
+        { payloadHash: malformed.rowSha256, sourceUpdatedAt: 2, issues: [{ code: "invalid_tags" }] },
+      ],
+    });
+    expect(mapping?.candidates[0].issues).toBeUndefined();
+    expect((await db.query("tasks").collect()).some(task => task.rank === 1e-7)).toBe(true);
+  });
+});
+
+test("accepts the CLI's winners removed from the projection because a parent was deleted", async () => {
+  const { t, owner, applyArgs } = await backend();
+  const fixture = legacyImportMalformedCandidateFixture;
+  const run = await owner.mutation(anyApi.imports.apply, { ...applyArgs, ...fixture });
+  expect(run.errors).toEqual(expect.arrayContaining([{ code: "unresolved_parent", message: "3" }]));
+  const decision = JSON.parse(fixture.report).divergences.find((item: { legacyId: string }) => item.legacyId === "lost");
+  const mappings = await t.run(({ db }) => db.query("importMappings").collect());
+  expect(mappings).toEqual(expect.arrayContaining([
+    expect.objectContaining({ legacyId: "doomed", state: "deleted" }),
+    expect.objectContaining({ legacyId: "lost", state: "quarantined", candidates: expect.arrayContaining([
+      expect.objectContaining({ payloadHash: decision.winnerSha256, sourceUpdatedAt: 3 }),
+    ]) }),
+    expect.objectContaining({ legacyId: "stable", state: "quarantined" }),
+    expect.objectContaining({ legacyId: "lost-step", state: "quarantined" }),
+  ]));
+});
+
+test("keeps a destination size hold for a structurally valid projected row", async () => {
+  const { t, owner, applyArgs } = await backend();
+  const archive = await withArtifact(legacyImportFixture, "projection", projection => {
+    projection.records.captures[0].tags = Array.from({ length: 501 }, (_, index) => `tag-${index}`);
   });
   const run = await owner.mutation(anyApi.imports.apply, { ...applyArgs, ...archive });
-  expect(run.state).toBe("needs_reconciliation");
-  expect(run.counts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ sourceTable: "reminders", divergent: 2 }),
-    expect.objectContaining({ sourceTable: "task_steps", rejected: 2 }),
-  ]));
-  const mappings = await t.run(({ db }) => db.query("importMappings").collect());
-  expect(mappings.filter(mapping => mapping.state === "divergent")).toHaveLength(1);
-  expect(mappings.filter(mapping => mapping.state === "quarantined")).toHaveLength(2);
-  await expect(owner.mutation(anyApi.imports.apply, { ...applyArgs, operationId: crypto.randomUUID() }))
-    .rejects.toThrow(/LEGACY_IMPORT_ARCHIVE_CONFLICT/);
+  expect(run).toMatchObject({
+    state: "needs_reconciliation",
+    errors: expect.arrayContaining([{ code: "invalid_projected_row", message: "1" }]),
+  });
+  expect(await t.run(({ db }) => db.query("captures").collect())).toEqual([]);
 });
 
 test("rolls back domain rows and ledger after a forced failure and can retry the identical operation", async () => {
