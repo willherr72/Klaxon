@@ -1,6 +1,6 @@
 # Phase 0 platform capabilities
 
-Provider interface review is complete for the operations below. Tenant-specific authorization, remote MCP execution with a scoped Dot identity and background or closed-app push remain open. Dot’s scheduled browser fallback passed once with Windows powered off. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import. [Scheduled browser fallback evidence](../dot-playbook.md#scheduled-browser-fallback)
+Provider interface review is complete for the operations below. Tenant-specific authorization, remote MCP execution with a scoped Dot identity and reliable delivery across browser and device states remain open. Dot’s scheduled browser fallback passed once with Windows powered off. The prototype may use synthetic fixtures. Work integrations require employer authorization for the intended destination, fields and retention before consent or import. [Scheduled browser fallback evidence](../dot-playbook.md#scheduled-browser-fallback)
 
 | Provider | Initial interface and boundary | Fallback or unresolved test |
 |---|---|---|
@@ -40,7 +40,7 @@ On a fresh Server 2022 fixture install, WinRT enumerated zero scheduled notifica
 |---|---|---|
 | App focused | Pass, one visible copy (owner report, Edge tab) | Pass, one visible copy (owner report, Chrome tab) |
 | Background, screen locked | Inconclusive for visible delivery. HTTP 201, one matching Edge worker receipt, display request resolved. Owner did not see the notification and reported a gap in observation. | HTTP 201, zero worker receipts at inspection. Owner saw no notification while locked or after unlocking. |
-| [Receiver window closed, browser permitted in background](../p0-reminder-owner-test.md#closed-receiver-window-browser-allowed-in-background) | Pending | Pending |
+| [Receiver window closed, browser permitted in background](../p0-reminder-owner-test.md#closed-receiver-window-browser-allowed-in-background) | Pass, unlocked. Will saw one notification. One matching worker receipt at 01:51:13.909 UTC, display request resolved. | Pass, unlocked. Will saw one notification. One matching worker receipt at 01:51:11.409 UTC, display request resolved. |
 | Browser explicitly quit or force-stopped | Pending | Pending |
 | Permission denied or revoked | Pending | Pending |
 | Offline at due time, then reconnect | Pending | Pending |

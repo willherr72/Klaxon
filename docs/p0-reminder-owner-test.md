@@ -67,12 +67,14 @@ The November 24 Windows-only run recorded one worker receipt and inconclusive lo
 
 ## Closed receiver window, browser allowed in background
 
-Will approved one ordinary Web Push reminder each on Windows Edge and Android Chrome for this closed-window check. The fresh free receiver is ready for enrollment. Both enrollments and an agreed send time are required before the operator uses the two-target sender.
+Will approved one ordinary Web Push reminder each on Windows Edge and Android Chrome for this closed-window check. Will confirmed both receiver pages closed and both devices awake, unlocked and online before the one-time send.
 
 1. **Close the test window.** On Windows, close the dedicated Edge test window. On Android, close the receiver tab in Chrome and return to the home screen. Confirm that no receiver page or installed receiver window remains open. Keep the devices awake, online and unlocked so visibility can be observed. Leave the browser’s background settings as found. Record the actions and any background restriction. Explicit browser exit and Android Settings Force Stop belong to a different matrix row.
 2. **Observe once.** After Will confirms the windows are closed and agrees to the time, the operator sends the new occurrence once. Watch each device for five minutes from its actual sender attempt. Keep the receiver closed and leave the notification untapped. Record the first matching sighting, visible copy count and any observation gap. A first sighting after reopening is a separate result.
 3. **Reopen and read.** Open the same receiver URL in the same regular browser profile. Select **Read worker receipt** before re-enrollment or cleanup. Record the matching rows, their UTC worker times and display-request results. Compare these with provider acceptance and Will’s observation. A late worker receipt does not establish delivery while the window was closed.
 4. **Clean up.** Select **Remove test subscription** on each enrolled device and delete the matching exports. The operator removes the private inputs and retires the receiver. If either device’s evidence is inconclusive, record the limitation. The one-shot attempt is spent.
+
+**November 25 evening Central (November 26 UTC).** Will saw one notification on each device and read exactly one matching receipt on each. Both workers reported a resolved display request. The table below gives worker times. Exact first-seen times remain unrecorded.
 
 ## Operator send, once both devices are ready
 
@@ -84,5 +86,7 @@ At the agreed due time run `node spikes/p0/reminder-push/send-once.mjs <private-
 |---|---|---|---|---|---|
 | Windows Edge, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
 | Android Chrome, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
+| Windows Edge, receiver closed | 01:51:10.872 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:13.909 UTC, display request resolved | Will saw one copy | Awaiting confirmation |
+| Android Chrome, receiver closed | 01:51:11.322 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:11.409 UTC, display request resolved | Will saw one copy | Awaiting confirmation |
 
-The sender recorded both provider responses. Will verified the worker receipts on the test pages and visible delivery on the devices. Worker receipt and first-seen timestamps remain unrecorded for the focused runs. Both focused cells are complete. The Windows locked-screen cell has a worker receipt and inconclusive visibility. The Android locked-screen run had zero worker receipts at inspection and no visible notification reported. The other eight device cells are untested. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
+The sender recorded both provider responses. Will verified the worker receipts on the test pages and visible delivery on the devices. Worker receipt and first-seen timestamps remain unrecorded for the focused runs. Both focused cells are complete. The Windows locked-screen cell has a worker receipt and inconclusive visibility. The Android locked-screen run had zero worker receipts at inspection and no visible notification reported. Both closed-window cells passed once. Explicit browser quit or force-stop, permission denial and offline recovery remain untested on both devices. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
