@@ -1,6 +1,6 @@
 # Klaxon 2.0 progress
 
-Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. Will reports that physical Android synced with Windows powered off. Dot also passed a one-time scheduled browser read/write with Windows off. P1 remains queued while native sessions, physical reminders and the remaining Dot checks are open. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
+Baseline c89b655 (v0.11.1). Development branch `v2`. Opened 2026-11-23. P0 is in progress. Will reports that physical Android synced with Windows powered off. Dot also passed a one-time scheduled browser read/write with Windows off. P1 remains queued pending the physical Android credential-storage review. The [P0 gate decision](adr/p0-architecture.md#p0-gate-decision) records the browser fallback for Dot, the best-effort reminder route and their limits. See the [remaining tests](#remaining-p0-tests). [Draft PR 14](https://github.com/willherr72/Klaxon/pull/14) collects initial discovery and spike evidence.
 
 ## Remaining P0 tests
 
@@ -690,7 +690,7 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P0-04 | Dot spike | Scheduled browser read/write and browser create passed | [Scheduled Windows-off run](dot-playbook.md#scheduled-browser-fallback) · [Browser create evidence and limits](dot-playbook.md#browser-create-acceptance) |
 | P0-05 | Integrations | Interfaces reviewed, desktop and emulator Obsidian note links exercised | [Scopes and unresolved tenant consent](adr/platform-capabilities.md). The [Windows runtime test](#obsidian-desktop-note-links) opened a renamed note. The [Android emulator](#obsidian-android-note-links) selected both mapped vaults and reopened a renamed path. [Desktop Keychain](#obsidian-desktop-keychain) isolated same-name markers and preserved local removal across restart. The [Android Keychain UI](#obsidian-android-keychain) shared the value across vaults on the same emulator. Issuer-side credential revocation remains open. Packaged task-to-note navigation is queued under P5-03. |
 | P0-06 | Reminders | Focused and closed-window delivery passed once per device in each state, owner-reported | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
-| P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
+| P0-07 | ADRs | [P0 decisions consolidated](adr/p0-architecture.md#p0-gate-decision), physical Android storage review open | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
 | P1-02 | Schema | Queued | — |
 | P1-03 | Auth | Queued | — |

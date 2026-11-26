@@ -1,5 +1,17 @@
 # P0 architecture decision record
 
+## P0 gate decision
+
+Keep P1 queued pending the physical Android credential-storage review. The following decisions guide the v2 prototype. V1 remains authoritative until migration and restore are verified.
+
+| Area | Decision and evidence limit |
+|---|---|
+| Shared client and cloud | Keep the static Svelte/Vite frontend, Tauri for native OS access and Convex as the shared backend. Android saved a task with Windows powered off, and Windows read it after restarting. Use authenticated HTTPS for requests and WSS for reactive updates. [Physical sync and hosted sessions](../klaxon-v2-progress.md#remaining-p0-tests) |
+| Auth and security | Use Convex Auth with server-derived ownership, a short-lived access token in WebView memory and refresh credentials protected by current-user DPAPI or Android Keystore. Hosted Windows and emulator tests covered rotation and revocation. The intended physical ARM64 phone still needs cold resume, rotation, revocation and signed-out relaunch before P1 approval. [Security gate](../security.md) · [Hosted phone procedure](../../spikes/p0/native/README.md#hosted-phone-lifecycle) |
+| Dot and integrations | Retain the browser fallback for Dot. The owner's Dot created a synthetic task and separately ran a scheduled read/update with Windows off. Remote MCP and scoped audit attribution remain unverified. Keep tenant consent as a prerequisite for real work data. [Dot playbook](../dot-playbook.md) · [Provider decisions](platform-capabilities.md) |
+| Reminders | Use ordinary Web Push as best effort. Both devices showed one reminder in the focused and unlocked closed-window tests. Android Chrome missed the locked-screen reminder, and Windows locked visibility was inconclusive. Retain thin Android native scheduling for pre-armed occurrences and keep Windows OS scheduling as a candidate. Assign one delivery route per device and occurrence. Native reconciliation and overdue recovery need separate acceptance. [Device matrix](platform-capabilities.md#ordinary-reminder-delivery) |
+| Cost and cutover | Retain a $0 additional operating budget with Free hosting and the Free backend. Published quotas and a bounded task-list estimate support the spike. Verify actual shared-team headroom before load testing and migration before cutover. [Cost evidence](../deployment.md) · [Migration procedure](../migration.md) |
+
 ## P0-03 native session candidate
 
 The [approved P0-03 backlog](../../KLAXON_V2_DESIGN_AND_IMPLEMENTATION_PLAN.md#9-implementation-backlog) calls for login, refresh and logout on both native targets. Before wiring a WebView to Convex, test whether a new native process can recover an owner-bound refresh marker and still require provider confirmation before granting access. The Windows candidate uses current-user DPAPI. The Android candidate uses an app-owned Android Keystore key to protect a record in private storage. Access tokens stay in memory. Both routes use OS facilities within the $0 additional budget. [Microsoft ProtectedData](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata) · [Android Keystore](https://developer.android.com/privacy-and-security/keystore)
@@ -34,7 +46,7 @@ Keep deterministic integration reconciliation and reminder scheduling in the bac
 
 Keep portable account rows and their timestamp visible during reconnect. The browser marks them stale and holds writes until data from the current connection arrives. A pending HTTP read cannot advance freshness after the connection that started it is lost. [Portable browser regression](../klaxon-v2-progress.md#portable-account-task-freshness)
 
-Will's [owner-reported physical smoke](../klaxon-v2-progress.md#remaining-p0-tests) supports keeping Convex for the hosted task spike. Android saved a rename while Windows was powered off, and Windows read it back after restart. Android signed in again after reopening. The native credential-storage decision and the notification delivery decision remain provisional.
+Will's [owner-reported physical smoke](../klaxon-v2-progress.md#remaining-p0-tests) supports keeping Convex for the hosted task spike. Android saved a rename while Windows was powered off, and Windows read it back after restart. Android signed in again after reopening. Physical Android credential storage remains open. The reminder decision and delivery limits are recorded above.
 
 Keep v1 authoritative during rehearsal. Use synthetic archives and a disposable workspace. Cross-device reconciliation, restore and explicit owner acceptance precede a change of authority. Running both schedulers on real data would make delivery results ambiguous.
 
