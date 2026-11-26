@@ -79,6 +79,35 @@ test("two signed-in clients observe one committed write, replay and conflict", {
       assert.deepEqual(promotionReplay, promotion);
       await both(page => page.length === 2 && page.some(task => task.publicId === "quote" && task.source?.kind === "capture"));
       assert.deepEqual((await clients[1].query(ref("captures:list"), captureQuery)).page, []);
+
+      const day = new Date(Date.now() + 7 * 86_400_000);
+      day.setUTCHours(12, 0, 0, 0);
+      const localDate = day.toISOString().slice(0, 10);
+      const estimate = { kind: "task.update", publicId: "quote", expectedRevision: 1,
+        patch: { plannedDate: localDate, estimateMinutes: 30 } };
+      await write(0, { workspaceId, operationId: randomUUID(), command: estimate });
+      const agenda = await clients[1].query(ref("agenda:today"), { workspaceId, timezone: "UTC", localDate, asOf: +day });
+      assert.equal(agenda.planned.items[0].publicId, "quote");
+      const calendar = { workspaceId, localDate, timezone: "UTC", view: "day" };
+      const reserve = { workspaceId, operationId: randomUUID(), command: { kind: "block.create", publicId: "meeting",
+        startAt: +day, endAt: +day + 3_600_000, timezone: "UTC", title: "Reserved hour", locked: true } };
+      await clients[0].mutation(ref("calendar:apply"), reserve);
+      assert.deepEqual((await clients[1].query(ref("calendar:list"), calendar)).blocks.map(b => b.publicId), ["meeting"]);
+      await clients[0].mutation(ref("planning:updatePreferences"), {workspaceId, operationId: randomUUID(), expectedRevision: 0,
+        preferences: { timezone: "UTC", workHours: [{weekday: (day.getUTCDay() + 6) % 7, startMinute: 540, endMinute: 1020}],
+          breaks: [], bufferMinutes: 0, discretionaryMinutes: 0, lockManuallyMovedBlocks: true }});
+      const preview = await clients[1].mutation(ref("planning:preview"), {workspaceId, operationId: randomUUID(), localDate,
+        taskPublicIds: ["quote"], expectedDayPlanRevision: null});
+      assert.equal(preview.placements.length, 1);
+      assert.equal(preview.placements[0].taskPublicId, "quote");
+      assert.equal((await clients[0].query(ref("calendar:list"), calendar)).blocks.length, 1);
+      const apply = {workspaceId, operationId: randomUUID(), publicId: preview.publicId, expectedRevision: preview.revision};
+      const applied = await clients[0].mutation(ref("planning:apply"), apply);
+      assert.deepEqual(await clients[1].mutation(ref("planning:apply"), apply), applied);
+      const reviewed = (await clients[1].query(ref("calendar:list"), calendar)).blocks;
+      assert.equal(reviewed.length, 2);
+      assert.ok(reviewed.some(b => b.publicId === "meeting" && b.locked && b.startAt === +day));
+      assert.ok(reviewed.some(b => b.taskPublicId === "quote" && b.endAt - b.startAt === 1_800_000));
     } finally {
       try {
         await Promise.all(sockets.map(socket => socket.close()));

@@ -194,7 +194,9 @@ export async function writeLegacyArchive(
       const id = await db.insert("dayNotes", { ...rowBase, body: row.body, localDate: row.localDate });
       return { kind: "day_note", id };
     }
-    const id = await db.insert("captures", { ...rowBase, body: row.body, tags: row.tags });
+    const id = await db.insert("captures", {
+      ...rowBase, body: row.body, tags: row.tags, source: { kind: "legacy", source: "thoughts" },
+    });
     return { kind: "capture", id };
   }
 

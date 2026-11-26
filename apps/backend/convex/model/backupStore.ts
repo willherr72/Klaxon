@@ -65,7 +65,8 @@ export async function readBackup(db: DatabaseReader, workspace: Doc<"workspaces"
   const dayNotes = await read(db.query("dayNotes").withIndex("by_workspace_public_id", q => q.eq("workspaceId", workspaceId)));
   const reminders = await read(db.query("reminders").withIndex("by_workspace_public_id", q => q.eq("workspaceId", workspaceId)));
   const timeBlocks = await read(db.query("timeBlocks").withIndex("by_workspace_public_id", q => q.eq("workspaceId", workspaceId)));
-  const externalLinks = await read(db.query("externalLinks").withIndex("by_workspace_public_id", q => q.eq("workspaceId", workspaceId)));
+  const externalLinks = await read(db.query("externalLinks").withIndex("by_workspace_removed_task", q =>
+    q.eq("workspaceId", workspaceId).eq("removedAt", undefined)));
   const preferences = await read(db.query("preferences").withIndex("by_workspace_user", q =>
     q.eq("workspaceId", workspaceId).eq("userId", workspace.ownerId)), 1);
 

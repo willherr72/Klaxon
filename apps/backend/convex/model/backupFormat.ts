@@ -64,6 +64,7 @@ const collections = {
       v.object({ kind: v.literal("interval"), everySeconds: number }),
     )),
     recurrenceBasis: v.optional(v.union(v.literal("local_timezone"), v.literal("legacy_utc"))),
+    recurrenceAnchorAt: optionalNumber,
     snoozeUntil: optionalNumber, nextTriggerAt: optionalNumber, source: optionalSource, tags: optionalTexts,
   })),
   dayPlans: v.array(v.object({

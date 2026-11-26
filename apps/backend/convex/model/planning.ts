@@ -31,7 +31,7 @@ const reminderState = v.union(
   v.literal("completed"),
 );
 
-const recurrenceRule = v.union(
+export const recurrenceRule = v.union(
   v.object({ kind: v.literal("daily") }),
   v.object({ kind: v.literal("weekly"), weekdays: v.array(weekday) }),
   // Retain 29–31 when present in legacy data. Recurrence policy is a domain decision.
@@ -46,6 +46,7 @@ export const planningTables = {
   ))
     .index("by_workspace_local_date", ["workspaceId", "localDate", "startAt"])
     .index("by_workspace_start_at", ["workspaceId", "startAt"])
+    .index("by_workspace_end_at", ["workspaceId", "endAt"])
     .index("by_workspace_task", ["workspaceId", "taskId", "startAt"])
     .index("by_workspace_plan", ["workspaceId", "planId", "startAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
@@ -73,6 +74,7 @@ export const planningTables = {
     timezone,
     state: reminderState,
     recurrence: v.optional(recurrenceRule),
+    recurrenceAnchorAt: v.optional(instant),
     recurrenceBasis: v.optional(v.union(v.literal("local_timezone"), v.literal("legacy_utc"))),
     snoozeUntil: v.optional(instant),
     // Pending and snoozed rows carry snoozeUntil ?? dueAt. Other states omit it.
@@ -88,6 +90,8 @@ export const planningTables = {
   reminderOccurrences: defineTable({
     ...workspaceMutableFields,
     reminderId: v.id("reminders"),
+    reminderPublicId: v.optional(v.string()),
+    reminderTitle: v.optional(v.string()),
     reminderRevision: v.number(),
     occurrenceKey: v.string(),
     dueAt: instant,
@@ -95,6 +99,7 @@ export const planningTables = {
     snoozeUntil: v.optional(instant),
     state: v.union(reminderState, v.literal("cancelled")),
     deliveryState: v.union(
+      v.literal("disabled"),
       v.literal("scheduled"),
       v.literal("attempted"),
       v.literal("accepted_by_provider"),

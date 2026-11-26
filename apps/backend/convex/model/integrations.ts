@@ -20,6 +20,7 @@ export const integrationTables = {
     canonicalUrl: v.optional(v.string()),
     label: v.optional(v.string()),
     relationship: v.union(v.literal("reference"), v.literal("managed_mirror")),
+    removedAt: v.optional(instant),
     cached: v.optional(v.object({
       title: v.optional(v.string()),
       status: v.optional(v.string()),
@@ -29,6 +30,7 @@ export const integrationTables = {
     refreshedAt: v.optional(instant),
   })
     .index("by_workspace_task", ["workspaceId", "taskId"])
+    .index("by_workspace_removed_task", ["workspaceId", "removedAt", "taskId"])
     // A managed mirror is unique within a connection and object. Manual links can share it.
     .index("by_workspace_connection_external_id", [
       "workspaceId", "connectionId", "externalObjectId", "relationship",

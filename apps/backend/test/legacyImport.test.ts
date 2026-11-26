@@ -102,7 +102,9 @@ test("imports the CLI's synthetic projection and replays without duplicating des
     for (const reminder of await db.query("reminders").collect()) expect(reminder.nextTriggerAt).toBeUndefined();
     expect(await db.query("reminderOccurrences").collect()).toEqual([]);
     expect(await db.query("pushSubscriptions").collect()).toEqual([]);
-    expect(await db.query("captures").collect()).toEqual([expect.objectContaining({ body: "capture" })]);
+    expect(await db.query("captures").collect()).toEqual([expect.objectContaining({
+      body: "capture", source: { kind: "legacy", source: "thoughts" },
+    })]);
     expect(await db.query("dayNotes").collect()).toEqual(expect.arrayContaining([
       expect.objectContaining({ localDate: "2024-02-29", body: "" }),
       expect.objectContaining({ localDate: "2026-11-23", body: "mañana 日本語" }),

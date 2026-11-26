@@ -145,6 +145,16 @@ export const ledgerTables = {
     contextFingerprint: v.string(),
     dependencies: v.array(v.object({ target, revision: v.number() })),
     changes: v.array(planChange),
+    previewSummary: v.optional(v.object({
+      placements: v.array(v.object({
+        taskPublicId: v.string(), startAt: instant, endAt: instant,
+        action: v.union(v.literal("add"), v.literal("move")), blockPublicId: v.optional(v.string()),
+      })),
+      unscheduled: v.array(v.object({
+        taskPublicId: v.string(), remainingMinutes: v.optional(v.number()),
+        reason: v.union(v.literal("capacity"), v.literal("deadline"), v.literal("missing_estimate"), v.literal("inactive")),
+      })),
+    })),
     reason: v.optional(v.string()),
     correlationId: v.optional(v.string()),
     undoEligible: v.boolean(),

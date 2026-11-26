@@ -120,6 +120,9 @@ export const workTables = {
     archivedFromStatus: v.optional(unarchivedTaskStatus),
   })
     .index("by_workspace_status", ["workspaceId", "status"])
+    .index("by_workspace_status_planned_rank", ["workspaceId", "status", "plannedDate", "rank", "publicId"])
+    .index("by_workspace_status_deadline_date", ["workspaceId", "status", "deadline.date"])
+    .index("by_workspace_status_deadline_at", ["workspaceId", "status", "deadline.at"])
     .index("by_workspace_planned_date", ["workspaceId", "plannedDate"])
     .index("by_workspace_deadline_date", ["workspaceId", "deadline.date"])
     .index("by_workspace_deadline_at", ["workspaceId", "deadline.at"])
