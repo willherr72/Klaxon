@@ -6,6 +6,8 @@ On November 26, 2026, Will confirmed that his Dot account offers custom HTTPS MC
 
 Will approved one disposable Free Development test. After the operator verifies the hosted endpoint, Dot adds the public MCP URL and selects OAuth. Will signs in privately and approves task read and write access. Dot reads the initially empty workspace, creates one synthetic task, updates its title using the returned revision, then replays the original create with identical arguments and operation ID. A fresh read should show one task under the updated title. The operator checks the two attributed changes and the original receipt, revokes the grant, and asks Dot to repeat the read so the denial is observed from the connector. Record UTC times and outcomes. Keep private authorization links, access tokens and deployment credentials out of the evidence.
 
+The operator verified a separate empty Development deployment and staged [setup-only discovery](../spikes/p3/dot-oauth/README.md). The public MCP challenge and both discovery documents passed the hosted check. The setup page can show Will the actual client-proposed redirect URI as plain text. The operator must pin that exact URI before enabling sign-in. At this checkpoint there were zero tasks and no OAuth grant.
+
 ## Scheduled browser fallback
 
 **Passed on November 24, 2026.** Will confirmed Windows was off before the one-time scheduled run. Dot used its independent cloud browser. The prior tab and managed preview were gone, so Dot restored the same verified portable account client in a new managed preview and signed in to the disposable Development account. The client required no external hosting.
