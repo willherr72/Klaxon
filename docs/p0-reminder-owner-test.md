@@ -86,7 +86,7 @@ At the agreed due time run `node spikes/p0/reminder-push/send-once.mjs <private-
 |---|---|---|---|---|---|
 | Windows Edge, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
 | Android Chrome, focused | 20:19:05 UTC, Nov 24 | HTTP 201 | Will saw the matching receipt | Will saw one copy | Will confirmed removal |
-| Windows Edge, receiver closed | 01:51:10.872 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:13.909 UTC, display request resolved | Will saw one copy | Awaiting confirmation |
-| Android Chrome, receiver closed | 01:51:11.322 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:11.409 UTC, display request resolved | Will saw one copy | Awaiting confirmation |
+| Windows Edge, receiver closed | 01:51:10.872 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:13.909 UTC, display request resolved | Will saw one copy | Will confirmed removal |
+| Android Chrome, receiver closed | 01:51:11.322 UTC, Nov 26 | HTTP 201 | One matching row, 01:51:11.409 UTC, display request resolved | Will saw one copy | Will confirmed removal |
 
 The sender recorded both provider responses. Will verified the worker receipts on the test pages and visible delivery on the devices. Worker receipt and first-seen timestamps remain unrecorded for the focused runs. Both focused cells are complete. The Windows locked-screen cell has a worker receipt and inconclusive visibility. The Android locked-screen run had zero worker receipts at inspection and no visible notification reported. Both closed-window cells passed once. Explicit browser quit or force-stop, permission denial and offline recovery remain untested on both devices. [Web Push delivery semantics](https://www.rfc-editor.org/rfc/rfc8030.html#section-5) · [Full device matrix](adr/platform-capabilities.md#ordinary-reminder-delivery)
