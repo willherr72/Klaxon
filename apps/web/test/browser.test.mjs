@@ -205,9 +205,11 @@ test('Settings issues only a bearer hash, retries the same issuance and clears o
   assert.equal(await page.getByText('OAuth enabled', { exact: true }).count(), 0);
   await page.getByLabel('Credential label').fill('Pending credential');
   await page.getByRole('checkbox', { name: 'Read planning' }).check();
+  await page.getByLabel('Preview plans', { exact: true }).check();
+  await page.getByLabel('Apply plans', { exact: true }).check();
   await page.getByRole('button', { name: 'Issue credential' }).click();
   const late = await transport.agentWrites.next();
-  assert.deepEqual(late.args.scopes, ['tasks:read', 'planning:read']);
+  assert.deepEqual(late.args.scopes, ['tasks:read', 'planning:read', 'planning:preview', 'planning:apply']);
   transport.expire();
   await page.getByRole('button', { name: 'Sign in', exact: true }).waitFor();
   await signIn(page, 'inert-password', 'test-other');

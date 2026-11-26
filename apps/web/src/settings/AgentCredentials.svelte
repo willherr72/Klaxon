@@ -8,6 +8,13 @@
     'tasks:read': 'Read tasks',
     'tasks:write': 'Write tasks',
     'planning:read': 'Read planning',
+    'planning:preview': 'Preview plans',
+    'planning:apply': 'Apply plans',
+    'reminders:write': 'Write reminders',
+    'captures:read': 'Read captures',
+    'captures:write': 'Create captures',
+    'activity:read': 'Read activity',
+    'activity:undo': 'Undo agent task changes',
   } as const;
   type Scope = keyof typeof scopeLabels;
   type OAuthPrincipal = { issuer: string; subject: string; clientId: string };
@@ -48,10 +55,9 @@
   const format = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
   let label = $state('');
   let lifespan = $state(168);
-  let canRead = $state(true);
-  let canWrite = $state(false);
-  let canReadPlanning = $state(false);
-  const hasScope = $derived(canRead || canWrite || canReadPlanning);
+  const availableScopes = Object.keys(scopeLabels) as Scope[];
+  let selectedScopes = $state<Scope[]>(['tasks:read']);
+  const hasScope = $derived(selectedScopes.length > 0);
   let page = $state.raw<CredentialPage>();
   let cursors = $state<(string | null)[]>([null]);
   let pending = $state(false);
@@ -105,10 +111,7 @@
     notice = error = '';
     try {
       if (!attempt) {
-        const scopes: Scope[] = [];
-        if (canRead) scopes.push('tasks:read');
-        if (canWrite) scopes.push('tasks:write');
-        if (canReadPlanning) scopes.push('planning:read');
+        const scopes = availableScopes.filter(scope => selectedScopes.includes(scope));
         const bearer = 'klx_' + hex(crypto.getRandomValues(new Uint8Array(32)));
         const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(bearer));
         if (!alive) return;
@@ -207,9 +210,10 @@
           </select>
         </label>
         <div class="scopes">
-          <label><input type="checkbox" bind:checked={canRead} /> Read tasks</label>
-          <label><input type="checkbox" bind:checked={canWrite} /> Write tasks</label>
-          <label><input type="checkbox" bind:checked={canReadPlanning} aria-describedby="planning-access" /> Read planning</label>
+          {#each availableScopes as scope (scope)}
+            <label><input type="checkbox" bind:group={selectedScopes} value={scope}
+              aria-describedby={scope === 'planning:read' ? 'planning-access' : undefined} /> {scopeLabels[scope]}</label>
+          {/each}
         </div>
         <small id="planning-access">Read planning includes calendar events, time blocks, reminders, and planning preferences.</small>
       </fieldset>

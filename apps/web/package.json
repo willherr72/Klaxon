@@ -13,7 +13,7 @@
     "lint": "eslint . --max-warnings 0",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "node --test test/config.test.mjs test/build.test.mjs",
-    "test:browser": "node --test --test-concurrency=1 test/browser.test.mjs test/planner-shell.test.mjs test/task-detail.test.mjs test/projects-ui.test.mjs test/calendar-ui.test.mjs test/reminders-ui.test.mjs test/pwa.test.mjs",
+    "test:browser": "node --test --test-concurrency=1 test/browser.test.mjs test/planner-shell.test.mjs test/task-detail.test.mjs test/projects-ui.test.mjs test/calendar-ui.test.mjs test/reminders-ui.test.mjs test/pwa.test.mjs test/agent-plan-review.test.mjs test/autonomy-policy.test.mjs",
     "test:planner:local": "node --test test/planner.loopback.mjs",
     "verify": "npm run lint && npm run check && npm test && npm run build"
   },

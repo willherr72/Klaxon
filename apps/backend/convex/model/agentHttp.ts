@@ -1,10 +1,10 @@
 import { makeFunctionReference } from "convex/server";
 import { ConvexError, v, type GenericValidator, type Value } from "convex/values";
 import type { ActionCtx } from "../_generated/server";
-import { createAgentTaskArgs, getAgentTaskArgs, listAgentTaskArgs, updateAgentTaskArgs } from "./agentTasks";
+import type { AgentEndpoint } from "./agentEndpoints";
+import type { AgentScope } from "./agentScopes";
 import type { VerifiedOAuth } from "./agentOAuth";
 
-export type TaskRoute = "list" | "get" | "create" | "update";
 export type AgentAuthProof = { tokenHash: string } | { verifiedOAuth: VerifiedOAuth };
 export type RequestFields = Record<string, Value> & { workspacePublicId?: string };
 
@@ -24,6 +24,26 @@ const errorStatuses = {
   INVALID_STATE: 409,
   OPERATION_ID_CONFLICT: 409,
   REVISION_CONFLICT: 409,
+  PLAN_CONTEXT_CHANGED: 409,
+  PLAN_NOT_PENDING: 409,
+  PLAN_EXPIRED: 409,
+  PLAN_UNAVAILABLE: 404,
+  TASK_UNAVAILABLE: 404,
+  AUTONOMY_APPROVAL_REQUIRED: 403,
+  AUTONOMY_REVIEW_DISABLED: 403,
+  AUTONOMY_OUTSIDE_SCHEDULE: 403,
+  AUTONOMY_OUT_OF_SCOPE: 403,
+  CALENDAR_RANGE_LIMIT: 409,
+  ORDER_RANGE_LIMIT: 409,
+  UNDO_UNAVAILABLE: 409,
+  REMINDER_UNAVAILABLE: 404,
+  OCCURRENCE_UNAVAILABLE: 404,
+  BRIEFING_PROTECTED: 403,
+  TASK_DEADLINE_PROTECTED: 409,
+  TASK_PLAN_REQUIRED: 409,
+  CARRY_FORWARD_STALE: 409,
+  CARRY_FORWARD_DEADLINE: 409,
+  BLOCK_LOCKED: 409,
   INTERNAL_ERROR: 500,
 } as const;
 type ErrorCode = keyof typeof errorStatuses;
@@ -51,7 +71,8 @@ export function errorDetail(error: unknown) {
     : "INTERNAL_ERROR";
 
   const revision = fields?.currentRevision;
-  return code === "REVISION_CONFLICT" && typeof revision === "number"
+  if ((code === "REVISION_CONFLICT" || code === "PLAN_CONTEXT_CHANGED") && revision === null) return { code, currentRevision: null };
+  return (code === "REVISION_CONFLICT" || code === "PLAN_CONTEXT_CHANGED") && typeof revision === "number"
     && Number.isSafeInteger(revision) && revision > 0
     ? { code, currentRevision: revision }
     : { code };
@@ -103,18 +124,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-const workspace = { workspacePublicId: v.string() };
-const routeSchemas = {
-  list: v.object({ ...workspace, ...listAgentTaskArgs.fields }),
-  get: v.object({ ...workspace, ...getAgentTaskArgs.fields }),
-  create: v.object({ ...workspace, ...createAgentTaskArgs.fields }),
-  update: v.object({ ...workspace, ...updateAgentTaskArgs.fields }),
-};
-
 // Validate only the plain JSON types used by the task operations. This also
 // rejects Convex-specific encodings and input keys outside the route schema.
 export function matches(value: unknown, schema: GenericValidator): boolean {
   switch (schema.kind) {
+    case "boolean": return typeof value === "boolean";
     case "null": return value === null;
     case "literal": return value === schema.value;
     case "string": return typeof value === "string";
@@ -130,35 +144,27 @@ export function matches(value: unknown, schema: GenericValidator): boolean {
   }
 }
 
-export async function readTaskRequest(request: Request, route: TaskRoute): Promise<RequestFields> {
+export async function readAgentRequest(request: Request, schema: GenericValidator): Promise<RequestFields> {
   if (new URL(request.url).search) fail("INVALID_ARGUMENT");
   const body = await readJson(request);
-  if (!matches(body, routeSchemas[route])) fail("INVALID_ARGUMENT");
+  if (schema.kind !== "object" || !matches(body, v.object({ ...schema.fields, workspacePublicId: v.string() }))) {
+    fail("INVALID_ARGUMENT");
+  }
   return body as RequestFields;
 }
 
 const charge = makeFunctionReference<"mutation", AgentAuthProof & {
-  workspacePublicId?: string;
-  scope: "tasks:read" | "tasks:write";
+  workspacePublicId?: string; scope: AgentScope;
 }, { workspacePublicId: string }>("agentCredentials:chargeAgentRequest");
 
-export async function dispatchAgentTask(
-  ctx: ActionCtx,
-  route: TaskRoute,
-  body: RequestFields,
-  proof: AgentAuthProof,
-  mcpGrant?: { workspacePublicId: string },
-) {
-  const read = route === "list" || route === "get";
-  // Charge in a separate transaction so conflicts and replays still use quota.
+export async function dispatchAgentRequest(ctx: ActionCtx, endpoint: AgentEndpoint,
+  body: RequestFields, proof: AgentAuthProof, mcpGrant?: { workspacePublicId: string }) {
   const grant = mcpGrant ?? await ctx.runMutation(charge, {
-    ...proof,
-    ...(body.workspacePublicId === undefined ? {} : { workspacePublicId: body.workspacePublicId }),
-    scope: read ? "tasks:read" : "tasks:write",
+    ...proof, workspacePublicId: body.workspacePublicId, scope: endpoint.scope,
   });
-  const args = { ...body, ...proof, workspacePublicId: grant.workspacePublicId };
-  const name = "agentTasks:" + route;
-  return read
-    ? ctx.runQuery(makeFunctionReference<"query">(name), args)
-    : ctx.runMutation(makeFunctionReference<"mutation">(name), mcpGrant ? { ...args, origin: "mcp" } : args);
+  const { workspacePublicId: _scope, ...input } = body;
+  const args = { ...(endpoint.command ? { command: { ...input, kind: endpoint.command } } : input),
+    ...proof, workspacePublicId: grant.workspacePublicId };
+  if (endpoint.kind === "query") return ctx.runQuery(makeFunctionReference<"query">(endpoint.handler), args);
+  return ctx.runMutation(makeFunctionReference<"mutation">(endpoint.handler), mcpGrant ? { ...args, origin: "mcp" } : args);
 }

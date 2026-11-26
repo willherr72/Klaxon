@@ -1,4 +1,6 @@
 import { ConvexError, v, type Infer, type Validator } from "convex/values";
+import { storedAutonomyPolicy } from "./autonomyValues";
+import { normalizedWindows } from "./calendarStore";
 import { deadline, mutableFields, priority, provider, taskStatus, unarchivedTaskStatus, weekday } from "./values";
 
 export const MAX_BACKUP_BYTES = 512 * 1024;
@@ -69,7 +71,9 @@ const collections = {
   })),
   dayPlans: v.array(v.object({
     ...mutableFields, localDate: text, timezone: text, briefing: optionalText,
+    briefingUpdatedAt: optionalNumber,
     source: planSource, focusTaskIds: texts, publishedAt: optionalNumber, needsReplan: v.optional(flag),
+    staleTaskPublicIds: optionalTexts,
   })),
   timeBlocks: v.array(v.union(
     v.object({ ...timeBlockFields, taskId: text, title: optionalText }),
@@ -83,10 +87,7 @@ const collections = {
   preferences: v.array(v.object({
     ...mutableFields, timezone: text, workHours: v.array(workWindow), breaks: v.optional(v.array(workWindow)),
     bufferMinutes: optionalNumber,
-    autonomyPolicy: v.object({
-      planApplication: v.union(v.literal("review"), v.literal("automatic")),
-      lockManuallyMovedBlocks: flag, discretionaryMinutes: optionalNumber,
-    }),
+    autonomyPolicy: storedAutonomyPolicy,
     notificationSettings: v.object({ enabled: flag, webPush: flag, native: flag }),
     importFilters: v.array(v.object({
       provider, assignedOnly: v.optional(flag), scopeIds: optionalTexts, excludedObjectIds: optionalTexts,
@@ -285,6 +286,17 @@ function validateRecords(payload: BackupPayload) {
     for (const { startMinute, endMinute } of [...preferences.workHours, ...preferences.breaks ?? []]) {
       if (!Number.isInteger(startMinute) || !Number.isInteger(endMinute) || startMinute < 0 ||
         endMinute > 1440 || startMinute >= endMinute) backupError("BACKUP_INVALID");
+    }
+    const { schedule, scope, excludedTaskPublicIds, excludedProjectPublicIds } = preferences.autonomyPolicy;
+    if (schedule) {
+      try { normalizedWindows(schedule); } catch { backupError("BACKUP_INVALID"); }
+    }
+    if (scope?.kind === "projects" && !scope.projectPublicIds.length) backupError("BACKUP_INVALID");
+    for (const ids of [excludedTaskPublicIds, excludedProjectPublicIds,
+      scope?.kind === "projects" ? scope.projectPublicIds : undefined]) {
+      if (ids && (ids.length > 100 || new Set(ids).size !== ids.length || ids.some(id => !id.trim() || id.length > 200))) {
+        backupError("BACKUP_INVALID");
+      }
     }
   }
 }

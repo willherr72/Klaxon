@@ -102,7 +102,7 @@ export const preferenceValues = v.object({
 export type PreferenceValues = Infer<typeof preferenceValues>;
 type WorkWindow = PreferenceValues["workHours"][number];
 
-function normalizedWindows(windows: WorkWindow[]) {
+export function normalizedWindows(windows: WorkWindow[]) {
   if (windows.length > 56) calendarError("INVALID_ARGUMENT", "At most 56 weekly windows are supported per list");
   const ordered = [...windows].sort((a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute);
   for (const [index, window] of ordered.entries()) {

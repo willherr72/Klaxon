@@ -3,6 +3,7 @@ import { paginationOptsValidator } from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
+import { addCapture, captureByPublicId, searchCaptures } from "./model/captureStore";
 import { runOperation } from "./model/operations";
 import { boundedPage } from "./model/pagination";
 import { applyTaskDomainCommand, checkedTags, checkPublicId, checkRevision, requiredText } from "./model/taskDomain";
@@ -26,9 +27,7 @@ export const search = query({
   args: { ...pageArgs, text: v.string() },
   handler: async (ctx, { workspaceId, text, paginationOpts }) => {
     await authorize(ctx.db, workspaceId, requireSessionUser(await getAuthUserId(ctx)), "read");
-    const term = requiredText(text, "text", 256);
-    return ctx.db.query("captures").withSearchIndex("search_body", q =>
-      q.search("body", term).eq("workspaceId", workspaceId)).paginate(boundedPage(paginationOpts));
+    return searchCaptures(ctx.db, workspaceId, text).paginate(boundedPage(paginationOpts));
   },
 });
 
@@ -52,16 +51,10 @@ export const apply = mutation({
       workspace, actor: { kind: "user", userId }, origin: "app", action: command.kind,
       operationId, expectedRevision, targetPublicId: publicId, input: command,
     }, async ({ db, now }) => {
-      const capture = await db.query("captures").withIndex("by_workspace_public_id", q =>
-        q.eq("workspaceId", workspaceId).eq("publicId", publicId)).unique();
       if (command.kind === "capture.create") {
-        if (capture) throw new ConvexError({ code: "ALREADY_EXISTS" });
-        const id = await db.insert("captures", {
-          workspaceId, publicId, body: requiredText(command.body, "body", 32_768), tags: checkedTags(command.tags ?? []),
-          source: { kind: "manual" }, revision: 1, createdAt: now, updatedAt: now,
-        });
-        return { target: { kind: "capture", id }, targetPublicId: publicId, revision: 1 };
+        return addCapture(db, workspaceId, command, { kind: "manual" }, now);
       }
+      const capture = await captureByPublicId(db, workspaceId, publicId);
       if (!capture) throw new ConvexError({ code: "NOT_FOUND" });
       checkRevision(capture.revision, command.expectedRevision);
       if (capture.archivedAt !== undefined || capture.promotedTaskId) throw new ConvexError({ code: "INVALID_STATE" });

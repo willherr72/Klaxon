@@ -4,8 +4,9 @@ import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { authorize } from "./access";
 import { oauthBindings, principalFields, samePrincipal } from "./agentBindings";
 
-export const agentScope = v.union(v.literal("tasks:read"), v.literal("tasks:write"), v.literal("planning:read"));
-export type AgentScope = Infer<typeof agentScope>;
+import { agentScopeNames, isWriteScope, type AgentScope } from "./agentScopes";
+export { agentScope, type AgentScope } from "./agentScopes";
+
 const oauthClaims = v.object({ ...principalFields, expiresAt: v.number(), scopes: v.array(v.string()) });
 export const agentAuthArgs = { tokenHash: v.optional(v.string()), verifiedOAuth: v.optional(oauthClaims) };
 export type AgentAuth = { tokenHash?: string; verifiedOAuth?: Infer<typeof oauthClaims> };
@@ -68,8 +69,8 @@ export async function authorizeAgent(db: QueryCtx["db"],
   if ((auth.workspacePublicId !== undefined && workspace.publicId !== auth.workspacePublicId) || !await db.get("users", userId)) {
     throw new ConvexError("AGENT_UNAUTHORIZED");
   }
-  const scopes = (["tasks:read", "tasks:write", "planning:read"] as const)
-    .filter(value => credential.scopes.includes(value) && (value !== "tasks:write" || role !== "reader") &&
+  const scopes = agentScopeNames
+    .filter(value => credential.scopes.includes(value) && (!isWriteScope(value) || role !== "reader") &&
       (!auth.verifiedOAuth || auth.verifiedOAuth.scopes.includes(value)));
   if (scope !== undefined && !scopes.includes(scope)) throw new ConvexError("FORBIDDEN");
 

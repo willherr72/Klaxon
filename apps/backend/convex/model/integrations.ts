@@ -31,6 +31,7 @@ export const integrationTables = {
   })
     .index("by_workspace_task", ["workspaceId", "taskId"])
     .index("by_workspace_removed_task", ["workspaceId", "removedAt", "taskId"])
+    .index("by_workspace_task_reference", ["workspaceId", "taskId", "provider", "relationship", "connectionId", "removedAt"])
     .index("by_workspace_external_id_removed", ["workspaceId", "externalObjectId", "removedAt"])
     // A managed mirror is unique within a connection and object. Manual links can share it.
     .index("by_workspace_connection_external_id", [

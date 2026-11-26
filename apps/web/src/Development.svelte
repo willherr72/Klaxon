@@ -20,7 +20,7 @@
   import { destinations, readRoute, routeHref, taskHref, type Route } from './planner-route';
   import PlannerShell from './planner-shell/PlannerShell.svelte';
   import { signIn, SignInError, type Session } from './session';
-  import AgentCredentials from './settings/AgentCredentials.svelte';
+  import WorkspaceSettings from './settings/WorkspaceSettings.svelte';
   import TaskDetail from './task-detail/TaskDetail.svelte';
   import { createDraftRecovery } from './draft-recovery';
   import './development.css';
@@ -880,7 +880,7 @@
 {#snippet settingsPage(active: Session, personal: Workspace)}
   {#key active}
     {#key personal._id}
-      <AgentCredentials client={active.client} workspaceId={personal._id} workspacePublicId={personal.publicId}
+      <WorkspaceSettings client={active.client} workspaceId={personal._id} workspacePublicId={personal.publicId}
         disabled={!connected || accountBusy || Boolean(detailId)}
         onDirtyChange={dirty => pageDirty = dirty} onUnauthenticated={active.expire} />
     {/key}

@@ -1,3 +1,4 @@
+import { agentScopeNames as scopes } from "./agentScopes";
 import { ConvexError } from "convex/values";
 import { createRemoteJWKSet, customFetch, decodeProtectedHeader, jwtVerify } from "jose";
 import { env } from "../_generated/server";
@@ -5,7 +6,6 @@ import { json, readBoundedJson } from "./agentHttp";
 
 export const oauthMetadataPath = "/.well-known/oauth-protected-resource/mcp";
 export const maxOAuthTokenLength = 8192;
-const scopes = ["tasks:read", "tasks:write", "planning:read"] as const;
 
 type Environment = Readonly<Record<string, string | undefined>>;
 export type OAuthConfig = { issuer: string; jwksUrl: string; resource: string };

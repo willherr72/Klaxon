@@ -2,6 +2,7 @@ import type { DataModelFromSchemaDefinition, GenericDatabaseWriter } from "conve
 import { ConvexError, type GenericId } from "convex/values";
 import type schema from "../schema";
 import { taskByPublicId } from "./reads";
+import { markTaskPlansStale } from "./scheduling";
 import type { TaskDomainCommand } from "./taskDomainCommands";
 
 export { taskDomainCommand, type TaskDomainCommand } from "./taskDomainCommands";
@@ -232,6 +233,9 @@ export async function applyTaskDomainCommand(
         priority: fields.priority ?? "none", rank: fields.rank ?? 0,
         completedAt: status === "done" ? now : undefined,
       });
+      if (status !== "done" && (fields.plannedDate !== undefined || fields.deadline !== undefined)) {
+        await markTaskPlansStale(db, { _id: id, publicId, workspaceId }, fields, now);
+      }
       return { target: { kind: "task", id }, targetPublicId: publicId, revision: core.revision };
     }
     case "task.update":
@@ -268,6 +272,7 @@ export async function applyTaskDomainCommand(
       }
       const revision = task.revision + 1;
       await db.patch("tasks", task._id, { ...patch, updatedAt: now, revision });
+      await markTaskPlansStale(db, task, patch, now);
       return { target: { kind: "task", id: task._id }, targetPublicId: publicId, revision };
     }
     case "project.create": {

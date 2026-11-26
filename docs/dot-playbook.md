@@ -1,5 +1,11 @@
 # Dot planning playbook
 
+## Connector availability
+
+On November 26, 2026, Will confirmed that his Dot account offers custom HTTPS MCP servers with OAuth sign-in. The first hosted sign-in, refresh, scoped write, and desktop-off mobile witness remain pending.
+
+Will approved one disposable Free Development test. After the operator verifies the hosted endpoint, Dot adds the public MCP URL and selects OAuth. Will signs in privately and approves task read and write access. Dot reads the initially empty workspace, creates one synthetic task, updates its title using the returned revision, then replays the original create with identical arguments and operation ID. A fresh read should show one task under the updated title. The operator checks the two attributed changes and the original receipt, revokes the grant, and asks Dot to repeat the read so the denial is observed from the connector. Record UTC times and outcomes. Keep private authorization links, access tokens and deployment credentials out of the evidence.
+
 ## Scheduled browser fallback
 
 **Passed on November 24, 2026.** Will confirmed Windows was off before the one-time scheduled run. Dot used its independent cloud browser. The prior tab and managed preview were gone, so Dot restored the same verified portable account client in a new managed preview and signed in to the disposable Development account. The client required no external hosting.
@@ -18,7 +24,7 @@ Dot checked that the unique synthetic title was absent, clicked **Create** once,
 
 ## MCP client rehearsal
 
-The official SDK exercised tool discovery, task reads and write replay with a workspace-scoped bearer against the disposable local service. Hosted connector availability, issuer sign-in and refresh still require a run from Will’s Dot. The operator can use Settings and the API guide to prepare a short-lived grant when that run is authorized. [API and OAuth setup](api/README.md#mcp-and-optional-oauth) · [Local client test](../apps/backend/test/agent.session.mjs)
+The official SDK exercised tool discovery, task reads and write replay with a workspace-scoped bearer against the disposable local service. Will confirmed that the connector is available. Hosted issuer sign-in and refresh still require a run from his Dot. The operator can use Settings and the API guide to prepare a short-lived grant when that run is authorized. [API and OAuth setup](api/README.md#mcp-and-optional-oauth) · [Local client test](../apps/backend/test/agent.session.mjs)
 
 ## Acceptance run
 
@@ -35,7 +41,7 @@ Use a disposable workspace and one synthetic task named Dot fixture. Record UTC 
 | Scheduled browser fallback with Windows off | Restore the client if needed, sign in, update the pre-staged task and read it back from the server. | Passed once. See the [recorded run](#scheduled-browser-fallback). |
 | Scoped identity and audit | Verify a scoped agent identity and an audit event attributing the scheduled mutation to that identity. | Pending |
 
-The browser create check covers hosted task creation by Dot. Revision-aware replay and scoped audit remain open and depend on the planned P1 contract. To assess the remote MCP route in P0, Will can check whether his Dot can select a custom HTTPS MCP connection under his existing plan and workspace controls. The hosted endpoint and scoped credential implementation belong to P3. Record an unavailable connector and retain the browser or manual path when the account or endpoint cannot support the test.
+The browser create check covers hosted task creation by Dot. The P1 receipt and revision contract and the P3 scoped MCP handler have passed local tests. Hosted replay and audit attribution still need the remote connector run.
 
 ## Planning instructions
 

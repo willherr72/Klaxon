@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { storedAutonomyPolicy } from "./autonomyValues";
 import {
   deadline,
   instant,
@@ -50,11 +51,7 @@ export const workTables = {
     workHours: v.array(workWindow),
     breaks: v.optional(v.array(workWindow)),
     bufferMinutes: v.optional(v.number()),
-    autonomyPolicy: v.object({
-      planApplication: v.union(v.literal("review"), v.literal("automatic")),
-      lockManuallyMovedBlocks: v.boolean(),
-      discretionaryMinutes: v.optional(v.number()),
-    }),
+    autonomyPolicy: storedAutonomyPolicy,
     notificationSettings: v.object({
       enabled: v.boolean(),
       webPush: v.boolean(),
@@ -128,6 +125,7 @@ export const workTables = {
     .index("by_workspace_deadline_date", ["workspaceId", "deadline.date"])
     .index("by_workspace_deadline_at", ["workspaceId", "deadline.at"])
     .index("by_workspace_project_rank", ["workspaceId", "projectId", "rank"])
+    .index("by_workspace_project_lane_rank", ["workspaceId", "projectId", "laneId", "rank", "rankTieBreak", "publicId"])
     .index("by_workspace_lane_rank", ["workspaceId", "laneId", "rank", "rankTieBreak", "publicId"])
     .index("by_workspace_status_follow_up_date", ["workspaceId", "status", "followUpDate"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"])

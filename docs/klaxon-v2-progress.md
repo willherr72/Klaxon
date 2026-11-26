@@ -10,6 +10,8 @@ The official MCP client exercised handshake-era and July 2026 protocols against 
 
 ## P2 manual planner
 
+Published plans now retain task-specific review flags when a task's planned date, deadline, estimate, priority, or status changes. Today and agent planning context show the same saved task flags. A later preview clears a task flag only when it places or moves that task. Updates check the old and new planned and due dates and the first 128 active or future blocks for the task. Existing published days acquire flags on subsequent qualifying writes. Historical edits and focus-only relationships without a planned date, due date, or linked block are outside this lookup. Older generic review flags and flags created after the per-day tracking limit remain visible for manual review. [Backend regression tests](../apps/backend/test/publishedPlanStaleness.test.ts)
+
 The signed-in Development app opens on Today. A task can be captured, promoted, edited and scheduled from the same workspace. Browser checks exercise task permalinks, keyboard navigation, the mobile Tasks and Schedule switch, project lanes, and conflicts during task and calendar edits. Search covers task titles, descriptions, linked external IDs and day notes. The task history supports undo for revision-checked edits and lifecycle changes. [Browser entry tests](../apps/web/test/browser.test.mjs) · [Calendar interactions](../apps/web/test/calendar-ui.test.mjs)
 
 On November 26, two authenticated sessions on the official disposable Convex runtime observed a locked meeting, reviewed a proposed task block and replayed plan approval. The resulting calendar had one generated half-hour block and the original meeting. A second session also found the task by title and undid a rename. Unit coverage includes stale undo, imported meeting privacy, DST, plan expiry and conflict detection. Planning uses contiguous estimates for up to 40 selected tasks on one day. [Live two-client test](../apps/backend/test/domain.session.mjs) · [Planning tests](../apps/backend/test/calendar.test.ts)
@@ -781,15 +783,15 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P2-09 | Delivery | One scheduled notification displayed and acknowledged on physical Android Chrome | [Integrated planner observation](#physical-android-planner-reminder) |
 | P2-10 | Activity/undo | Registered and browser checks passed for task edits | [Revision and replay](../apps/backend/test/activity.test.ts) |
 | P2-11 | PWA | Manifest, offline shell, update and push receipt checks passed in Edge | [PWA tests](../apps/web/test/pwa.test.mjs) |
-| P3-01 | Public API | Task and context endpoints verified locally. Further operation families remain. | [P3 agent access](#p3-agent-access) |
+| P3-01 | Public API | Versioned task, step, reference, capture, calendar, reminder, planning and Activity operations implemented. Local SDK and registered endpoint tests cover the shared API and MCP handlers. | [Operation catalog](api/README.md) |
 | P3-02 | Credentials | Local owner issuance, membership, scopes, expiry, quota and revocation verified. | [P3 agent access](#p3-agent-access) |
 | P3-03 | Remote MCP | Two SDK protocol modes verified on loopback. Hosted connector and issuer acceptance remain open. | [P3 agent access](#p3-agent-access) |
 | P3-04 | Context | Bounded snapshot verified with separate planning permission, privacy and local-day checks. | [P3 agent access](#p3-agent-access) |
-| P3-05 | Bulk plans | Queued | — |
-| P3-06 | Autonomy | Queued | — |
-| P3-07 | Dot playbook | Queued | — |
-| P3-08 | Lifecycle | Queued | — |
-| P3-09 | Agent safety | Queued | — |
+| P3-05 | Bulk plans | Atomic preview, approval, replay and stale-context rejection verified locally. The owner review displays moves, briefing changes and carry-forwards. | [Planning tests](../apps/backend/test/agentPlanLifecycle.test.ts) |
+| P3-06 | Autonomy | Owner policy, time windows, project scope and exclusions enforced on local fixtures. | [Policy tests](../apps/backend/test/agentTaskPolicy.test.ts) |
+| P3-07 | Dot playbook | Will confirmed support for a custom HTTPS MCP connector with OAuth. One disposable test approved. Hosted sign-in and audit witness pending. | [Dot playbook](dot-playbook.md) |
+| P3-08 | Lifecycle | Briefing, carry-forward, and task-specific plan review flags verified locally. Owner schedule and desktop-off execution remain unverified for MCP. | [Lifecycle tests](../apps/backend/test/agentLifecycle.test.ts) |
+| P3-09 | Agent safety | Local coverage checks scoped replay, revision conflicts, rollback, protected deadlines, exclusions and undo. Dot's behavior with actual hosted access remains unverified. | [Task policy](../apps/backend/test/agentTaskPolicy.test.ts) · [MCP tests](../apps/backend/test/agentMcp.test.ts) |
 | P4-01 | Connection framework | Queued | — |
 | P4-02 | Linear import | Queued | — |
 | P4-03 | Linear reconcile | Queued | — |

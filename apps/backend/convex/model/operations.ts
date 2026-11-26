@@ -6,6 +6,7 @@ type Model = DataModelFromSchemaDefinition<typeof schema>;
 type Writer = GenericDatabaseWriter<Model>;
 type Workspace = Model["workspaces"]["document"];
 type ActivityEvent = Model["activityEvents"]["document"];
+type ReminderSnapshot = Model["operationReceipts"]["document"]["result"]["reminderSnapshot"];
 
 export type OperationInput = null | boolean | number | string | readonly OperationInput[]
   | { readonly [key: string]: OperationInput | undefined };
@@ -29,6 +30,8 @@ export type OperationChange = {
   inverse?: Omit<Model["taskUndoChanges"]["document"], "_id" | "_creationTime" | "workspaceId" | "eventId">;
   reason?: "Reversed a reviewed task change";
   agentReason?: string;
+  orderChanges?: ActivityEvent["orderChanges"];
+  reminderSnapshot?: ReminderSnapshot;
 };
 
 export type OperationResult = {
@@ -36,6 +39,7 @@ export type OperationResult = {
   targetPublicId: string;
   revision: number;
   activityEventId: ActivityEvent["_id"];
+  reminderSnapshot?: ReminderSnapshot;
 };
 
 const fingerprintVersion = 1;
@@ -149,11 +153,12 @@ export async function runOperation(
     if (receipt.fingerprintVersion !== fingerprintVersion || receipt.inputFingerprint !== inputFingerprint) {
       throw new ConvexError({ code: "OPERATION_ID_CONFLICT" });
     }
-    const { targetPublicId, revision, activityEventId } = receipt.result;
+    const { targetPublicId, revision, activityEventId, reminderSnapshot } = receipt.result;
     if (targetPublicId === undefined || revision === undefined || activityEventId === undefined) {
       throw new Error("Operation receipt is missing its result");
     }
-    return { workspacePublicId: workspace.publicId, targetPublicId, revision, activityEventId };
+    return { workspacePublicId: workspace.publicId, targetPublicId, revision, activityEventId,
+      ...(reminderSnapshot ? { reminderSnapshot } : {}) };
   }
 
   const now = Date.now();
@@ -176,6 +181,7 @@ export async function runOperation(
     beforeRevision: change.beforeRevision,
     afterRevision: change.revision,
     undoEligible: Boolean(change.inverse),
+    orderChanges: change.orderChanges,
     reason: actor.kind === "agent" ? change.agentReason : change.reason,
   });
   if (change.inverse) {
@@ -186,7 +192,9 @@ export async function runOperation(
     actorKey: principal,
     fingerprintVersion,
     inputFingerprint,
-    result: { target: change.target, targetPublicId: change.targetPublicId, revision: change.revision, activityEventId },
+    result: { target: change.target, targetPublicId: change.targetPublicId, revision: change.revision, activityEventId,
+      reminderSnapshot: change.reminderSnapshot },
   });
-  return { workspacePublicId: workspace.publicId, targetPublicId: change.targetPublicId, revision: change.revision, activityEventId };
+  return { workspacePublicId: workspace.publicId, targetPublicId: change.targetPublicId, revision: change.revision, activityEventId,
+    ...(change.reminderSnapshot ? { reminderSnapshot: change.reminderSnapshot } : {}) };
 }

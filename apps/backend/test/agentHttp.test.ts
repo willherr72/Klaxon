@@ -131,7 +131,7 @@ it("advertises configured OAuth resource metadata on the MCP unauthorized challe
     expect(await metadata.json()).toEqual({
       resource: "https://klaxon.example/mcp",
       authorization_servers: ["https://issuer.example"],
-      scopes_supported: ["tasks:read", "tasks:write", "planning:read"],
+      scopes_supported: ["tasks:read", "tasks:write", "planning:read", "planning:preview", "planning:apply", "reminders:write", "captures:read", "captures:write", "activity:read", "activity:undo"],
       bearer_methods_supported: ["header"],
     });
   } finally {

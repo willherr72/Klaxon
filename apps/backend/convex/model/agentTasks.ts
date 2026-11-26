@@ -1,6 +1,8 @@
 import { ConvexError, v, type GenericValidator, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { pageArgs, readAgentPage } from "./agentPagination";
+import { checkAgentTaskChange } from "./agentTaskPolicy";
 import { runOperation, type OperationResult } from "./operations";
 import { listTasks, taskByPublicId } from "./reads";
 import { applyTaskDomainCommand, checkPublicId, requiredText, type TaskDomainCommand } from "./taskDomain";
@@ -25,7 +27,7 @@ export const listAgentTaskArgs = v.object({
     v.object({ kind: v.literal("deadlineInstant"), from: v.number(), until: v.number() }),
     v.object({ kind: v.literal("project"), projectPublicId: v.string() }),
   ),
-  cursor: v.optional(v.string()), limit: v.optional(v.number()),
+  ...pageArgs,
 });
 export const getAgentTaskArgs = v.object({ publicId: v.string() });
 const mutationFields = { ...getAgentTaskArgs.fields, operationId: v.string(), reason: v.string() };
@@ -82,7 +84,7 @@ async function laneId(db: Reader, workspaceId: WorkspaceId, publicId: string) {
   return row?._id ?? notFound();
 }
 
-async function portableTask(db: Reader, task: Doc<"tasks">) {
+export async function portableTask(db: Reader, task: Doc<"tasks">) {
   const [project, lane] = await Promise.all([
     task.projectId ? db.get("projects", task.projectId) : null,
     task.laneId ? db.get("lanes", task.laneId) : null,
@@ -103,34 +105,26 @@ export async function getAgentTask(db: Reader, workspaceId: WorkspaceId, { publi
 }
 
 export async function listAgentTasks(db: Reader, workspaceId: WorkspaceId,
-  { filter, limit = 25, cursor }: Infer<typeof listAgentTaskArgs>) {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 50) invalid("limit");
-  if (cursor !== undefined && (!cursor || cursor.length > 4096)) invalid("cursor");
+  { filter, limit, cursor }: Infer<typeof listAgentTaskArgs>) {
   const resolved = filter.kind === "project"
     ? { kind: "project" as const, projectId: await projectId(db, workspaceId, filter.projectPublicId) }
     : filter;
   try {
-    const result = await listTasks(db, workspaceId, resolved, { numItems: limit, cursor: cursor ?? null });
+    const result = await readAgentPage(options => listTasks(db, workspaceId, resolved, options), { limit, cursor });
     return { items: await Promise.all(result.page.map(task => portableTask(db, task))),
       nextCursor: result.isDone ? null : result.continueCursor };
   } catch (error) {
     if (error instanceof RangeError) invalid("filter");
-    const details = error as { name?: string; message?: string } | null;
-    if (cursor !== undefined && (details?.name === "SyntaxError" ||
-        details?.message?.includes("InvalidCursor") || details?.message?.includes("is not valid JSON") ||
-        (error instanceof ConvexError && (error.data as { paginationError?: string } | null)?.paginationError === "InvalidCursor"))) {
-      invalid("cursor");
-    }
     throw error;
   }
 }
 
-function checkedReason(reason: string) {
+export function checkedReason(reason: string) {
   if (/[\x00-\x1f\x7f]/u.test(reason)) invalid("reason");
   return requiredText(reason, "reason", 512);
 }
 
-async function portableReceipt(db: Reader, result: OperationResult) {
+export async function portableReceipt(db: Reader, result: OperationResult) {
   const event = await db.get("activityEvents", result.activityEventId);
   if (!event) throw new Error("Operation activity is missing");
   return { workspacePublicId: result.workspacePublicId, publicId: result.targetPublicId,
@@ -143,13 +137,17 @@ export async function createAgentTask(db: Writer, { workspace, actor }: Grant,
   const result = await runOperation(db, {
     workspace, actor, origin, action: "task.create", operationId, targetPublicId: publicId,
     input: { reason: agentReason, task },
-  }, async ({ db }) => {
+  }, async ({ db, now }) => {
     checkPublicId(publicId);
     const { projectPublicId, lanePublicId, ...fields } = task;
     const command: TaskDomainCommand = { kind: "task.create", publicId, ...fields,
       projectId: projectPublicId === undefined ? undefined : await projectId(db, workspace._id, projectPublicId),
       laneId: lanePublicId === undefined ? undefined : await laneId(db, workspace._id, lanePublicId) };
     const change = await applyTaskDomainCommand(db, workspace._id, command);
+    if (change.target.kind !== "task") throw new Error("Task creation did not return a task");
+    const after = await db.get("tasks", change.target.id);
+    if (!after) throw new Error("Created task is unavailable");
+    await checkAgentTaskChange(db, null, after, now);
     return { ...change, agentReason };
   });
   return portableReceipt(db, result);
@@ -162,7 +160,7 @@ export async function updateAgentTask(db: Writer, { workspace, actor }: Grant,
   const result = await runOperation(db, {
     workspace, actor, origin, action: "task.update", operationId, targetPublicId: publicId, expectedRevision,
     input: { reason: agentReason, patch },
-  }, async ({ db }) => {
+  }, async ({ db, now }) => {
     checkPublicId(publicId);
     const before = await taskByPublicId(db, workspace._id, publicId);
     if (!before) notFound();
@@ -175,6 +173,9 @@ export async function updateAgentTask(db: Writer, { workspace, actor }: Grant,
       command.patch.laneId = lanePublicId === null ? null : await laneId(db, workspace._id, lanePublicId);
     }
     const change = await applyTaskDomainCommand(db, workspace._id, command);
+    const after = await db.get("tasks", before._id);
+    if (!after) throw new Error("Updated task is unavailable");
+    await checkAgentTaskChange(db, before, after, now);
     return { ...change, beforeRevision: expectedRevision, inverse: taskInverse(before, command, change.revision), agentReason };
   });
   return portableReceipt(db, result);

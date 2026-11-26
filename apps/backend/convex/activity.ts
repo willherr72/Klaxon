@@ -4,8 +4,8 @@ import { ConvexError, v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
 import { boundedPage } from "./model/pagination";
-import { runOperation, requireExpectedRevision } from "./model/operations";
-import { applyTaskDomainCommand } from "./model/taskDomain";
+import { runOperation } from "./model/operations";
+import { undoTaskEvent } from "./model/taskUndo";
 
 export const list = query({
   args:{workspaceId:v.id("workspaces"),paginationOpts:paginationOptsValidator},
@@ -23,7 +23,7 @@ export const list = query({
       const inverse = event.undoEligible && role !== "reader" ? await ctx.db.query("taskUndoChanges")
         .withIndex("by_workspace_event",q => q.eq("workspaceId",workspaceId).eq("eventId",event._id)).unique() : null;
       return {eventId:event._id,actor,origin:event.origin,action:event.action,createdAt:event.createdAt,reason:event.reason,
-        targetKind:event.target.kind,targetPublicId:event.targetPublicId,revision:event.afterRevision,undoEligible:!!inverse};
+        reorderedNeighbors:event.orderChanges?.length,targetKind:event.target.kind,targetPublicId:event.targetPublicId,revision:event.afterRevision,undoEligible:!!inverse};
     }));
     return {...result,page};
   },
@@ -38,18 +38,7 @@ export const undo = mutation({
     if (!event || event.workspaceId !== workspaceId) throw new ConvexError({code:"NOT_FOUND"});
     return runOperation(ctx.db,{workspace,actor:{kind:"user",userId},origin:"app",action:"activity.undo",
       operationId,targetPublicId:event.targetPublicId,expectedRevision,input:{eventId}},async ({db}) => {
-      if (event.target.kind !== "task" || !event.undoEligible || event.afterRevision === undefined) throw new ConvexError({code:"UNDO_UNAVAILABLE"});
-      requireExpectedRevision(expectedRevision,event.afterRevision);
-      const inverse = await db.query("taskUndoChanges").withIndex("by_workspace_event",q =>
-        q.eq("workspaceId",workspaceId).eq("eventId",eventId)).unique();
-      if (!inverse) throw new ConvexError({code:"UNDO_UNAVAILABLE"});
-      const task = await db.get("tasks",event.target.id);
-      if (!task || task.workspaceId !== workspaceId || task.publicId !== event.targetPublicId) throw new ConvexError({code:"NOT_FOUND"});
-      requireExpectedRevision(expectedRevision,task.revision);
-      const change = await applyTaskDomainCommand(db,workspaceId,inverse.command);
-      const {completedAt,archivedAt,archivedFromStatus,rankTieBreak} = inverse;
-      await db.patch("tasks",task._id,{completedAt,archivedAt,archivedFromStatus,rankTieBreak});
-      await db.delete("taskUndoChanges",inverse._id);
+      const change = await undoTaskEvent(db,event,expectedRevision);
       return {...change,beforeRevision:expectedRevision,reason:"Reversed a reviewed task change"};
     });
   },

@@ -127,9 +127,9 @@ test("write credentials honor a membership downgrade after workspace ownership c
   const open = makeFunctionReference<"mutation", { tokenHash: string }, {
     workspacePublicId: string; scopes: string[];
   }>("agentCredentials:openMcpRequest");
-  await owner.mutation(anyApi.agentCredentials.issue, { ...args, scopes: ["tasks:read", "tasks:write"] });
+  await owner.mutation(anyApi.agentCredentials.issue, { ...args, scopes: ["tasks:read", "tasks:write", "planning:preview", "planning:apply"] });
   expect(await t.mutation(open, { tokenHash: authArgs.tokenHash })).toEqual({
-    workspacePublicId: workspace.publicId, scopes: ["tasks:read", "tasks:write"],
+    workspacePublicId: workspace.publicId, scopes: ["tasks:read", "tasks:write", "planning:preview", "planning:apply"],
   });
   await t.run(async ({ db }) => {
     const nextOwnerId = await db.insert("users", {});
@@ -138,6 +138,9 @@ test("write credentials honor a membership downgrade after workspace ownership c
     await db.patch(workspace._id, { ownerId: nextOwnerId });
     await db.patch(membership!._id, { role: "reader" });
   });
+  for (const scope of ["planning:preview", "planning:apply"] as const) {
+    await expect(t.run(({ db }) => authorizeAgent(db, authArgs, scope))).rejects.toThrow(/FORBIDDEN/);
+  }
   await expect(t.run(({ db }) => authorizeAgent(db, authArgs, "tasks:write"))).rejects.toThrow(/FORBIDDEN/);
   await expect(t.run(({ db }) => authorizeAgent(db, { ...authArgs, workspacePublicId: "foreign" }, "tasks:write")))
     .rejects.toThrow(/AGENT_UNAUTHORIZED/);

@@ -1,5 +1,7 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { reviewedCarryForward } from "./planIntentValues";
+import { recurrenceRule, reminderState } from "./planning";
 import { taskDomainCommand } from "./taskDomainCommands";
 import {
   actor,
@@ -7,6 +9,7 @@ import {
   diagnostic,
   instant,
   localDate,
+  priority,
   timezone,
   unarchivedTaskStatus,
   workspaceMutableFields,
@@ -92,6 +95,22 @@ export const ledgerTables = {
       targetPublicId: v.optional(v.string()),
       revision: v.optional(v.number()),
       activityEventId: v.optional(v.id("activityEvents")),
+      reminderSnapshot: v.optional(v.object({
+        publicId: v.string(),
+        revision: v.number(),
+        title: v.string(),
+        description: v.optional(v.string()),
+        priority,
+        dueAt: instant,
+        timezone,
+        recurrence: v.optional(recurrenceRule),
+        state: reminderState,
+        tags: v.optional(v.array(v.string())),
+        nextTriggerAt: v.optional(instant),
+        snoozeUntil: v.optional(instant),
+        occurrencePublicId: v.optional(v.string()),
+        taskPublicId: v.optional(v.string()),
+      })),
     }),
     expiresAt: v.optional(instant),
   })
@@ -133,6 +152,10 @@ export const ledgerTables = {
       after: v.optional(patchValue),
     }))),
     reason: v.optional(v.string()),
+    orderChanges: v.optional(v.array(v.object({
+      publicId: v.string(), beforeRank: v.number(), afterRank: v.number(), afterRevision: v.number(),
+      beforeTieBreak: v.optional(v.number()), afterTieBreak: v.optional(v.number()),
+    }))),
     undoEligible: v.boolean(),
   })
     .index("by_workspace_created_at", ["workspaceId", "createdAt"])
@@ -170,6 +193,15 @@ export const ledgerTables = {
         reason: v.union(v.literal("capacity"), v.literal("deadline"), v.literal("missing_estimate"), v.literal("inactive")),
       })),
     })),
+    agentSummary: v.optional(v.object({
+      agentLabel: v.string(),
+      tasks: v.array(v.object({ taskPublicId: v.string(), taskTitle: v.string() })),
+      focusTaskPublicIds: v.array(v.string()),
+      moves: v.array(v.object({ blockPublicId: v.string(), previousStartAt: instant, previousEndAt: instant })),
+      briefing: v.optional(v.string()),
+      previousBriefing: v.optional(v.string()),
+      carryForwards: v.optional(v.array(reviewedCarryForward)),
+    })),
     reason: v.optional(v.string()),
     correlationId: v.optional(v.string()),
     undoEligible: v.boolean(),
@@ -177,6 +209,7 @@ export const ledgerTables = {
     .index("by_workspace_plan", ["workspaceId", "planId", "createdAt"])
     .index("by_workspace_local_date", ["workspaceId", "localDate", "createdAt"])
     .index("by_workspace_state_expiry", ["workspaceId", "state", "expiresAt"])
+    .index("by_workspace_actor_state_expiry", ["workspaceId", "actor.kind", "state", "expiresAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
   importRuns: defineTable({

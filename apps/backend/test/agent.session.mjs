@@ -32,11 +32,11 @@ test("a scoped agent uses the versioned task API on the official local backend",
       };
       assert.equal((await post("list", list, false)).status, 401);
       const issued = await owner.mutation(ref("agentCredentials:issue"), {
-        workspaceId: workspace._id, label: "Disposable planner", scopes: ["tasks:read", "tasks:write", "planning:read"],
+        workspaceId: workspace._id, label: "Disposable planner", scopes: ["tasks:read", "tasks:write", "planning:read", "planning:preview", "planning:apply", "reminders:write", "captures:write", "captures:read", "activity:read"],
         expiresAt: Date.now() + 3_600_000, tokenHash,
       });
       const command = { ...scope, publicId: randomUUID(), operationId: randomUUID(), reason: "Plan tomorrow",
-        task: { title: "Synthetic planner item", status: "ready" } };
+        task: { title: "Synthetic planner item", status: "ready", estimateMinutes: 25 } };
       const [first, retry] = await Promise.all([post("create", command), post("create", command)]);
       assert.ok(first.ok && retry.ok, "concurrent creates acknowledge");
       const receipt = await first.json();
@@ -56,6 +56,12 @@ test("a scoped agent uses the versioned task API on the official local backend",
       assert.ok(updated.ok);
       assert.equal((await updated.json()).revision, 2);
       assert.equal((await post("update", { ...patch, operationId: randomUUID() })).status, 409);
+      const policy = { planApplication: "review", schedule: [], scope: { kind: "all" }, excludedTaskPublicIds: [], excludedProjectPublicIds: [] };
+      await owner.mutation(ref("autonomy:update"), { workspaceId: workspace._id, operationId: randomUUID(), expectedRevision: 0, policy });
+      // Select a future Monday across all runner time zones.
+      const target = new Date(Date.now() + 7 * 86_400_000);
+      target.setUTCDate(target.getUTCDate() + (8 - target.getUTCDay()) % 7);
+      const localDate = target.toISOString().slice(0,10);
       for (const mode of ["legacy", { pin: "2026-07-28" }]) {
         const agent = new Client({ name: "klaxon-local-check", version: "1.0.0" }, {
           versionNegotiation: { mode },
@@ -76,6 +82,47 @@ test("a scoped agent uses the versioned task API on the official local backend",
           assert.ok(!context.isError);
           assert.equal(context.structuredContent.workspacePublicId, workspace.publicId);
           assert.ok(context.structuredContent.tasks.items.some(item => item.publicId === command.publicId));
+          if (mode !== "legacy") {
+            const runTool = async (name, args) => {
+              const result = await agent.callTool({name,arguments:args});
+              assert.ok(!result.isError, name + " " + JSON.stringify(result.structuredContent?.error));
+              return result.structuredContent;
+            };
+            const create = {publicId:randomUUID(),reason:"Record synthetic reminder",operationId:randomUUID(),
+              reminder:{title:"Review later",timezone:"UTC",dueAt:Date.now()+86_400_000}};
+            const firstReminder = await runTool("create_reminder",create);
+            await runTool("update_reminder",{publicId:create.publicId,reason:"Rename the fixture",operationId:randomUUID(),
+              expectedRevision:firstReminder.revision,patch:{title:"Plan verified"}});
+            assert.deepEqual(await runTool("create_reminder",create),firstReminder);
+            const captureId = randomUUID();
+            await runTool("create_capture",{publicId:captureId,body:"Maintenance fixture",reason:"Log the observation",operationId:randomUUID()});
+            assert.ok((await runTool("search_captures",{text:"Maintenance"})).items.some(item=>item.publicId===captureId));
+            const fields = { briefing:"Review the verified maintenance task.", localDate, taskPublicIds: [command.publicId], expectedDayPlanRevision: null,
+              operationId: randomUUID(), reason: "Review upcoming tasks" };
+            const preview = await agent.callTool({ name: "preview_plan", arguments: fields });
+            assert.ok(!preview.isError, JSON.stringify(preview.structuredContent?.error));
+            const proposal = preview.structuredContent;
+            assert.equal(proposal.placements[0].taskTitle, patch.patch.title);
+            assert.equal(proposal.briefing,fields.briefing);
+            const approval = { publicId: proposal.publicId, expectedRevision: proposal.revision, operationId: randomUUID() };
+            const request = await fetch(new URL("/api/v1/planning/apply", siteUrl), {
+              method: "POST", headers: { Authorization: "Bearer " + bearer, "Content-Type":"application/json" },
+              body: JSON.stringify({ ...scope, ...approval, reason: "Apply the reviewed schedule" }),
+            });
+            assert.equal(request.status, 403);
+            assert.deepEqual(await request.json(), {error:{code:"AUTONOMY_APPROVAL_REQUIRED"}});
+            const pending = await owner.query(ref("agentPlans:pending"), { workspaceId: workspace._id });
+            assert.deepEqual(pending.map(row => row.publicId), [proposal.publicId]);
+            const approve = () => owner.mutation(ref("agentPlans:approve"), { workspaceId: workspace._id, ...approval });
+            const a = await approve();
+            assert.deepEqual(await approve(), a);
+            const stored = await owner.query(ref("calendar:list"), { workspaceId: workspace._id, localDate, view: "day" });
+            assert.equal(stored.blocks.filter(block => block.taskPublicId === command.publicId).length, 1);
+            const plan = await runTool("get_day_plan",{date:localDate,timezone:"UTC"});
+            assert.equal(plan.dayPlan.briefing,fields.briefing);
+            const week = await runTool("list_calendar",{date:localDate,timezone:proposal.timezone,view:"week"});
+            assert.equal(week.blocks.items.filter(block=>block.taskPublicId===command.publicId).length,1);
+          }
           const { workspacePublicId: _workspace, ...replay } = command;
           const retried = await agent.callTool({ name: "create_task", arguments: replay });
           assert.ok(!retried.isError);

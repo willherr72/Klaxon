@@ -6,7 +6,8 @@ import { mutation, query, type DatabaseReader } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
 import { runOperation } from "./model/operations";
 import { boundedPage } from "./model/pagination";
-import { checkPublicId, checkRevision, requiredText } from "./model/taskDomain";
+import { addReference, linkByPublicId, referenceFields } from "./model/referenceStore";
+import { checkPublicId, checkRevision } from "./model/taskDomain";
 
 const scope = { workspaceId: v.id("workspaces"), taskId: v.id("tasks") };
 const reference = { url: v.string(), label: v.optional(v.string()) };
@@ -19,21 +20,6 @@ async function requireTask(db: DatabaseReader, workspaceId: Id<"workspaces">, ta
   const task = await db.get("tasks", taskId);
   if (!task || task.workspaceId !== workspaceId) throw new ConvexError({ code: "NOT_FOUND" });
   return task;
-}
-
-function referenceFields(input: { url: string; label?: string }) {
-  const raw = requiredText(input.url, "url", 4096);
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new ConvexError({ code: "INVALID_ARGUMENT", field: "url" });
-  }
-  if (url.protocol !== "https:" || url.username || url.password || /[\x00-\x20\x7f]/u.test(raw)) {
-    throw new ConvexError({ code: "INVALID_ARGUMENT", field: "url" });
-  }
-  const label = input.label?.trim() ? requiredText(input.label, "label", 512) : undefined;
-  return { canonicalUrl: url.href, label };
 }
 
 export const list = query({
@@ -66,18 +52,10 @@ export const apply = mutation({
       workspace, actor: { kind: "user", userId }, origin: "app", action: command.kind,
       targetPublicId: command.publicId, operationId, expectedRevision, input: { taskId, command },
     }, async ({ db, now }) => {
-      if (task.status === "archived") throw new ConvexError({ code: "INVALID_STATE" });
       const targetPublicId = command.publicId;
-      const link = await db.query("externalLinks").withIndex("by_workspace_public_id", q =>
-        q.eq("workspaceId", workspaceId).eq("publicId", targetPublicId)).unique();
-      if (command.kind === "link.add") {
-        if (link) throw new ConvexError({ code: "ALREADY_EXISTS" });
-        const id = await db.insert("externalLinks", {
-          workspaceId, taskId, publicId: targetPublicId, provider: "url", relationship: "reference",
-          ...referenceFields(command), createdAt: now, updatedAt: now, revision: 1,
-        });
-        return { target: { kind: "external_link", id }, targetPublicId, revision: 1 };
-      }
+      if (command.kind === "link.add") return addReference(db, task, command, now);
+      if (task.status === "archived") throw new ConvexError({ code: "INVALID_STATE" });
+      const link = await linkByPublicId(db, workspaceId, targetPublicId);
       if (!link || link.taskId !== taskId || link.removedAt !== undefined) throw new ConvexError({ code: "NOT_FOUND" });
       if (!editable(link)) throw new ConvexError({ code: "MANAGED_LINK" });
       checkRevision(link.revision, command.expectedRevision);

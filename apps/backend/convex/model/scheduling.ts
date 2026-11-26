@@ -1,5 +1,5 @@
 import type { Doc, Id } from "../_generated/dataModel";
-import type { DatabaseReader } from "../_generated/server";
+import type { DatabaseReader, DatabaseWriter } from "../_generated/server";
 import { blocksInRange, blockTask, compareIds, eventsInRange, isBusy, preferenceRow, visiblePreferences } from "./calendarStore";
 import { addLocalDays, calendarRange, localWeekday, minuteMs, overlaps, zonedClock, type Interval } from "./calendarTime";
 
@@ -8,10 +8,75 @@ type PlanRevision = Doc<"planRevisions">;
 type Summary = NonNullable<PlanRevision["previewSummary"]>;
 type Task = Doc<"tasks">;
 type Block = Doc<"timeBlocks">;
+type TaskPlanFields = Pick<Task, "plannedDate" | "deadline" | "estimateMinutes" | "status" | "priority">;
+const maxTrackedStaleTasks = 128;
+const maxTaskBlocksForInvalidation = 128;
 
 export function dayPlanRow(db: DatabaseReader, workspaceId: Id<"workspaces">, localDate: string) {
   return db.query("dayPlans").withIndex("by_workspace_local_date", q =>
     q.eq("workspaceId", workspaceId).eq("localDate", localDate)).unique();
+}
+
+export function hasStoredReplan(plan: DayPlan) {
+  return Boolean(plan.needsReplan || plan.staleTaskPublicIds?.length);
+}
+
+export function staleTaskFields(plan: DayPlan, publicId: string | undefined) {
+  if (!publicId) return { needsReplan: true };
+  const stale = plan.staleTaskPublicIds ?? [];
+  if (stale.includes(publicId)) return {};
+  if (stale.length >= maxTrackedStaleTasks) return plan.needsReplan ? {} : { needsReplan: true };
+  return { staleTaskPublicIds: [...stale, publicId] };
+}
+
+export async function markTaskPlansStale(db: DatabaseWriter,
+  task: Pick<Task, "_id" | "publicId" | "workspaceId"> & Partial<TaskPlanFields>,
+  changes: Partial<TaskPlanFields>, now: number) {
+  const after = { ...task, ...changes };
+  const beforeDeadline = task.deadline;
+  const afterDeadline = after.deadline;
+  const changedDeadline = beforeDeadline?.kind === "date" && afterDeadline?.kind === "date"
+    ? beforeDeadline.date !== afterDeadline.date
+    : beforeDeadline?.kind === "instant" && afterDeadline?.kind === "instant"
+      ? beforeDeadline.at !== afterDeadline.at : beforeDeadline?.kind !== afterDeadline?.kind;
+  if (!changedDeadline && after.plannedDate === task.plannedDate && after.estimateMinutes === task.estimateMinutes &&
+      after.status === task.status && after.priority === task.priority) return;
+
+  const { workspaceId } = task;
+  const dates = new Set([task.plannedDate, after.plannedDate].filter(date => date !== undefined));
+  const deadlines = [beforeDeadline, afterDeadline];
+  const workspace = deadlines.some(deadline => deadline?.kind === "instant")
+    ? await db.get("workspaces", workspaceId) : null;
+  const settings = workspace ? await preferenceRow(db, workspaceId, workspace.ownerId) : null;
+  for (const deadline of deadlines) {
+    if (deadline?.kind === "date") dates.add(deadline.date);
+    if (deadline?.kind === "instant") dates.add(zonedClock(visiblePreferences(settings).timezone).date(deadline.at));
+  }
+
+  const blocks = await db.query("timeBlocks").withIndex("by_workspace_task_end", q =>
+    q.eq("workspaceId", workspaceId).eq("taskId", task._id).gt("endAt", now),
+  ).take(maxTaskBlocksForInvalidation);
+  const ids = new Set<Id<"dayPlans">>();
+  for (const block of blocks) {
+    dates.add(block.localDate);
+    if (block.planId) ids.add(block.planId);
+    const endDate = zonedClock(block.timezone).date(block.endAt - 1);
+    for (let date = block.localDate, i = 0; i < 9 && date <= endDate; date = addLocalDays(date, 1), i++) {
+      dates.add(date);
+    }
+  }
+  const plans = await Promise.all([
+    ...[...dates].map(date => dayPlanRow(db, workspaceId, date)),
+    ...[...ids].map(id => db.get("dayPlans", id)),
+  ]);
+  for (const plan of new Map(plans.flatMap(plan => plan ? [[plan._id, plan] as const] : [])).values()) {
+    if (plan.workspaceId !== workspaceId || plan.publishedAt === undefined) continue;
+    const fields = staleTaskFields(plan, task.publicId);
+    if (!Object.keys(fields).length) continue;
+    await db.patch("dayPlans", plan._id, {
+      ...fields, updatedAt: now, revision: plan.revision + 1,
+    });
+  }
 }
 
 export function hasMeetingConflict(blocks: Block[], events: Awaited<ReturnType<typeof eventsInRange>>, day: Interval) {
@@ -22,7 +87,8 @@ export function hasMeetingConflict(blocks: Block[], events: Awaited<ReturnType<t
 
 export async function visibleDayPlan(db: DatabaseReader, workspaceId: Id<"workspaces">, userId: Id<"users">, localDate: string) {
   const plan = await dayPlanRow(db, workspaceId, localDate);
-  if (!plan || plan.needsReplan) return plan;
+  if (!plan) return null;
+  if (hasStoredReplan(plan)) return { ...plan, needsReplan: true };
   const range = calendarRange(localDate, 1, zonedClock(plan.timezone));
   const [blocks, events] = await Promise.all([
     blocksInRange(db, workspaceId, range), eventsInRange(db, workspaceId, userId, range),
@@ -31,16 +97,16 @@ export async function visibleDayPlan(db: DatabaseReader, workspaceId: Id<"worksp
 }
 
 export async function planningContext(db: DatabaseReader, workspaceId: Id<"workspaces">,
-  userId: Id<"users">, localDate: string, tasks: Task[], plan: DayPlan | null) {
+  userId: Id<"users">, localDate: string, tasks: Task[], plan: DayPlan | null, includeCalendar = true) {
   const row = await preferenceRow(db, workspaceId, userId);
   const settings = visiblePreferences(row);
   const clock = zonedClock(settings.timezone);
   const day = calendarRange(localDate, 1, clock);
   const buffer = settings.bufferMinutes * minuteMs;
   const search = { startAt: day.startAt - buffer, endAt: day.endAt + buffer };
-  const [blocks, events] = await Promise.all([
+  const [blocks, events] = includeCalendar ? await Promise.all([
     blocksInRange(db, workspaceId, search), eventsInRange(db, workspaceId, userId, search),
-  ]);
+  ]) : [[], []];
   const dependencies: PlanRevision["dependencies"] = [];
   if (row) dependencies.push({ target: { kind: "preferences", id: row._id }, revision: row.revision });
   if (plan) dependencies.push({ target: { kind: "day_plan", id: plan._id }, revision: plan.revision });

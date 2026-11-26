@@ -8,6 +8,7 @@ import { overlapFields } from "./model/calendarOverlap";
 import { calendarError, calendarRange, validateInterval, zonedClock, type Interval } from "./model/calendarTime";
 import { requireExpectedRevision, runOperation } from "./model/operations";
 import { taskByPublicId } from "./model/reads";
+import { staleTaskFields } from "./model/scheduling";
 
 const workspace = { workspaceId: v.id("workspaces") };
 const timestamps = { startAt: v.number(), endAt: v.number() };
@@ -126,7 +127,8 @@ export const apply = mutation({
       requireExpectedRevision(command.expectedRevision, block.revision);
       if (block.locked && command.kind !== "block.unlock" && command.kind !== "block.lock") calendarError("BLOCK_LOCKED");
       const taskId = blockTask(block);
-      if (taskId && isHistorical(await db.get("tasks", taskId))) calendarError("TASK_CLOSED");
+      const task = taskId ? await db.get("tasks", taskId) : null;
+      if (taskId && isHistorical(task)) calendarError("TASK_CLOSED");
       const revision = block.revision + 1;
       const changes = { revision, updatedAt: now };
       switch (command.kind) {
@@ -160,7 +162,8 @@ export const apply = mutation({
       if (block.planId) {
         const plan = await db.get("dayPlans", block.planId);
         if (plan?.workspaceId === workspaceId) {
-          await db.patch("dayPlans", plan._id, { revision: plan.revision + 1, updatedAt: now, needsReplan: true });
+          await db.patch("dayPlans", plan._id, { revision: plan.revision + 1, updatedAt: now,
+            ...staleTaskFields(plan, task?.workspaceId === workspaceId ? task.publicId : undefined) });
         }
       }
       return { target: { kind: "time_block", id: block._id }, targetPublicId: publicId, revision, beforeRevision: block.revision };

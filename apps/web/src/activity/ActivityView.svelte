@@ -5,7 +5,7 @@
   import { onDestroy } from 'svelte';
   import { errorCode } from '../contracts';
   type Entry = {eventId:string;actor:string;origin:string;action:string;createdAt:number;reason?:string;
-    targetKind:string;targetPublicId:string;revision?:number;undoEligible:boolean};
+    reorderedNeighbors?:number;targetKind:string;targetPublicId:string;revision?:number;undoEligible:boolean};
   type HistoryPage = {page:Entry[];isDone:boolean;continueCursor:string};
   type Undo = {workspaceId:string;eventId:string;expectedRevision:number;operationId:string};
   const list = makeFunctionReference<'query',{workspaceId:string;paginationOpts:{cursor:string|null;numItems:number}},HistoryPage>('activity:list');
@@ -71,7 +71,8 @@
   {#if selected}
     <section class="review" aria-label="Undo review"><h2>Review change</h2>
       <p>{selected.action} · {selected.targetPublicId} · Revision {selected.revision}</p>
-      <p>Restore the task fields changed by this operation?</p>
+      <p>Restore the changes from this operation?</p>
+      {#if selected.reorderedNeighbors}<p>This also restores the order of {selected.reorderedNeighbors} neighboring items.</p>{/if}
       <button disabled={disabled || pending} onclick={confirm}>{attempt ? 'Retry undo' : 'Confirm undo'}</button>
       {#if !attempt}<button onclick={() => selected = undefined}>Cancel</button>{/if}
     </section>

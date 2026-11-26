@@ -24,7 +24,7 @@ const blockFields = {
   planId: v.optional(v.id("dayPlans")),
 };
 
-const reminderState = v.union(
+export const reminderState = v.union(
   v.literal("pending"),
   v.literal("fired"),
   v.literal("snoozed"),
@@ -50,6 +50,8 @@ export const planningTables = {
     .index("by_workspace_pivot_start", ["workspaceId", "overlapPivot", "startAt"])
     .index("by_workspace_pivot_end", ["workspaceId", "overlapPivot", "endAt"])
     .index("by_workspace_task", ["workspaceId", "taskId", "startAt"])
+    .index("by_workspace_task_end", ["workspaceId", "taskId", "endAt"])
+    .index("by_workspace_task_lock_end", ["workspaceId", "taskId", "locked", "endAt"])
     .index("by_workspace_plan", ["workspaceId", "planId", "startAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
@@ -58,10 +60,12 @@ export const planningTables = {
     localDate,
     timezone,
     briefing: v.optional(v.string()),
+    briefingUpdatedAt: v.optional(instant),
     source: planSource,
     focusTaskIds: v.array(v.id("tasks")),
     publishedAt: v.optional(instant),
     needsReplan: v.optional(v.boolean()),
+    staleTaskPublicIds: v.optional(v.array(v.string())),
   })
     .index("by_workspace_local_date", ["workspaceId", "localDate"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),

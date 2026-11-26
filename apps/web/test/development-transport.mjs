@@ -229,6 +229,13 @@ export async function interceptDevelopment(context, t, entry) {
                   eventId:'event-local',actor:'You',origin:'app',action:'task.update',createdAt:1700000000000,
                   targetKind:'task',targetPublicId:'primer-id',revision:2,undoEligible:true,
                 }],isDone:true,continueCursor:'end'}});
+              } else if (modification.udfPath === 'agentPlans:pending' || modification.udfPath === 'autonomy:get') {
+                assert.equal(modification.args[0].workspaceId, personal._id);
+                const value = modification.udfPath === 'agentPlans:pending' ? [] : {
+                  revision: 0, timezone: 'UTC', taskNames: [], projectNames: [],
+                  policy: { planApplication:'automatic', scope:{kind:'all'}, excludedTaskPublicIds:[], excludedProjectPublicIds:[], schedule:[] },
+                };
+                updates.push({ type:'QueryUpdated', queryId, journal:null, logLines:[], value });
               } else if (modification.udfPath === 'agentCredentials:list') {
                 assert.equal(modification.args[0].workspaceId, personal._id);
                 agentQueries.add(queryId);

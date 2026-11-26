@@ -7,7 +7,7 @@ and use the JSON body for parameters. Task routes reject query parameters. The
 request body limit is 32 KiB, including JSON encoding and field names.
 
 Every body includes `workspacePublicId`. The credential binds the caller to one
-workspace and its current membership. Reads require `tasks:read` and writes require
+workspace and its current membership. Task reads require `tasks:read` and task writes require
 `tasks:write`. Authorized credentials have 60 requests per minute. A request
 accepted for an operation counts toward its quota even if the operation returns a
 conflict.
@@ -106,6 +106,31 @@ and `connectionState` to help callers assess freshness.
 
 MCP exposes the same snapshot as `get_planning_context` with `date` and
 `timezone`. The service resolves the workspace from the bearer.
+
+## Agent operations
+
+These HTTPS paths are relative to `/api/v1/`. The MCP catalog publishes the typed arguments for every tool the current credential can use. For MCP the service derives the workspace from the credential. HTTPS requests include the workspace public ID. Every mutation takes a UUID operation ID and a reason. Reads of notes, titles, briefs and provider metadata return untrusted workspace content. The client must rely on user authorization when deciding to call another tool.
+
+| Tools | HTTPS paths | Permission and contract |
+|---|---|---|
+| `search_tasks`, `list_waiting` | `tasks/search`, `tasks/waiting` | Task read. Search accepts text and an optional title or description field. Waiting lists tasks with follow-up information. Both accept a cursor and limit. |
+| `complete_task`, `reopen_task`, `move_task` | `tasks/complete`, `tasks/reopen`, `tasks/move` | Task write, task public ID and expected revision. Move takes the destination lane public ID or null. An optional beforePublicId identifies a neighbor in that project and lane. Omit it to append. |
+| `list_steps`, `add_step`, `update_step`, `move_step`, `complete_step` | `steps/list`, `steps/create`, `steps/update`, `steps/move`, `steps/complete` | Task read for list and task write for edits. Supply the parent task public ID. Existing steps require their public ID and expected revision. Move names an optional neighbor in the same task. |
+| `create_reminder`, `update_reminder`, `snooze_reminder` | `reminders/create`, `reminders/update`, `reminders/snooze` | Reminder write. Supply the reminder public ID. Edits require its expected revision. Snooze takes a future UTC timestamp and optionally the current occurrence public ID. The receipt preserves the normalized reminder as originally written. Device enrollment and delivery remain independently opt-in. |
+| `list_calendar`, `get_day_plan` | `calendar/list`, `planning/day` | Planning read. Supply local date and IANA timezone. Calendar also takes day or week and returns at most 100 blocks and 100 visible meetings with partial indicators. |
+| `preview_plan`, `apply_plan` | `planning/preview`, `planning/apply` | Separate planning preview and apply scopes, each requiring write membership. The owner can review in Settings. See below. |
+| `publish_briefing`, `carry_forward_task` | `planning/briefing`, `planning/carry-forward` | Planning apply. Direct writes require automatic mode. Briefing targets one local date and expected day-plan revision. Carry-forward names the task, its revision and the source and destination dates. |
+| `list_task_links`, `link_external` | `links/list`, `links/create` | Task read for list and task write for a manual HTTPS reference. Link creation also checks the parent task revision. Managed integration metadata stays private. |
+| `search_captures`, `create_capture` | `captures/search`, `captures/create` | Separate capture read and write scopes. Search returns bounded excerpts with a truncation indicator. Create takes a public ID, body and optional tags. |
+| `list_activity`, `undo_change` | `activity/list`, `activity/undo` | Activity read for paged history. Undo requires both activity undo and task write. It accepts the originating event public ID and expected revision. Agents may reverse only their own eligible changes. Intervening edits cause a revision conflict. |
+
+Most moves change a single rank. Where imported siblings have equal ranks, the server may renumber neighboring items in the same transaction. Each affected sibling gets a new revision. A densely tied group that would require renumbering more than 256 neighbors returns `ORDER_RANGE_LIMIT`.
+
+## Planning and approval
+
+A preview takes a local date, up to 40 task public IDs, and the expected day-plan revision (null for a new plan). It can also include a briefing and up to 20 carry-forwards with source dates and expected task revisions. A briefing or carry-forward can be proposed with an empty scheduling selection. The short-lived proposal identifies time changes, unscheduled work, focus tasks, the previous and proposed briefing, and each carry-forward. The agent can apply only its own unexpired preview. The write transaction rechecks the grant, membership, policy, scheduling constraints, affected revisions and locks before committing all reviewed changes together.
+
+Settings lets the owner require review, restrict run hours, choose work, personal or specific projects, and exclude named tasks and projects. A newly authorized workspace defaults to automatic planning within scope. Existing review settings persist. Under review, only an owner decision on the exact displayed proposal revision commits the changes. Retrying the same accepted operation returns its original acknowledgment.
 
 ## MCP and optional OAuth
 

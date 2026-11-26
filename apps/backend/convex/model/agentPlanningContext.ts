@@ -3,7 +3,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { DatabaseReader } from "../_generated/server";
 import { blocksInRange, blockTask, compareIds, eventsInRange, preferenceRow, visibleEvent, visiblePreferences } from "./calendarStore";
 import { addLocalDays, calendarError, calendarRange, zonedClock } from "./calendarTime";
-import { dayPlanRow, hasMeetingConflict } from "./scheduling";
+import { dayPlanRow, hasMeetingConflict, hasStoredReplan } from "./scheduling";
 
 export const planningContextArgs = v.object({ date: v.string(), timezone: v.string() });
 const active = ["inbox", "ready", "in_progress", "waiting"] as const;
@@ -12,6 +12,7 @@ const taskLimit = 20;
 const taskSliceLimit = 4;
 const stepLimit = 8;
 const scheduleLimit = 40;
+const followUpLimit = 20;
 
 type Grant = { workspaceId: Id<"workspaces">; userId: Id<"users">; workspace: Pick<Doc<"workspaces">, "publicId"> };
 
@@ -30,7 +31,8 @@ async function calendarRows<T>(read: Promise<T[]>) {
   }
 }
 
-async function taskCandidates(db: DatabaseReader, workspaceId: Id<"workspaces">, date: string, until: string, endAt: number) {
+async function taskCandidates(db: DatabaseReader, workspaceId: Id<"workspaces">, date: string, until: string,
+  endAt: number, dueFollowUps: Promise<Doc<"tasks">[]>) {
   const size = taskSliceLimit + 1;
   const byStatus = await Promise.all(active.map(async status => {
     const [dates, instants, planned, unplanned] = await Promise.all([
@@ -45,11 +47,8 @@ async function taskCandidates(db: DatabaseReader, workspaceId: Id<"workspaces">,
     ]);
     return { deadlines: [dates, instants], planned, unplanned };
   }));
-  const followUps = await db.query("tasks").withIndex("by_workspace_status_follow_up_date", q => q.eq("workspaceId", workspaceId)
-    .eq("status", "waiting").gte("followUpDate", "").lte("followUpDate", date)).take(size);
-
   const groups = [byStatus.flatMap(result => result.deadlines), byStatus.map(result => result.planned),
-    [followUps], byStatus.map(result => result.unplanned)];
+    [await dueFollowUps], byStatus.map(result => result.unplanned)];
   const seen = new Set<string>();
   const items = [];
   for (const group of groups) {
@@ -84,20 +83,23 @@ export async function getAgentPlanningContext(db: DatabaseReader, { workspace, w
   const day = calendarRange(date, 1, clock);
   if (day.startAt >= day.endAt) calendarError("INVALID_ARGUMENT", "This local date has no elapsed time");
   const asOf = Date.now();
-  const [preferences, plan, candidates, blocks, events, reminders] = await Promise.all([
+  const dueFollowUps = db.query("tasks").withIndex("by_workspace_status_follow_up_date", q => q.eq("workspaceId", workspaceId)
+    .eq("status", "waiting").gte("followUpDate", "").lte("followUpDate", date)).take(followUpLimit + 1);
+  const [preferences, plan, candidates, blocks, events, reminders, followUps] = await Promise.all([
     preferenceRow(db, workspaceId, userId), dayPlanRow(db, workspaceId, date),
-    taskCandidates(db, workspaceId, date, addLocalDays(date, 1), day.endAt),
+    taskCandidates(db, workspaceId, date, addLocalDays(date, 1), day.endAt, dueFollowUps),
     calendarRows(blocksInRange(db, workspaceId, day)), calendarRows(eventsInRange(db, workspaceId, userId, day)),
     Promise.all((["pending", "snoozed"] as const).map(state => db.query("reminders")
       .withIndex("by_workspace_state_trigger", q => q.eq("workspaceId", workspaceId).eq("state", state)
         .gte("nextTriggerAt", day.startAt).lt("nextTriggerAt", day.endAt)).take(scheduleLimit + 1))),
+    dueFollowUps,
   ]);
   const blockSection = section(blocks.rows, scheduleLimit, blocks.incomplete);
   const meetingSection = section(events.rows, scheduleLimit, events.incomplete);
   const reminderSection = section(reminders.flat().sort((a, b) => (a.nextTriggerAt! - b.nextTriggerAt!) ||
     compareIds(a.publicId, b.publicId)), scheduleLimit);
   const focus = section(plan?.focusTaskIds ?? [], taskLimit);
-  let needsReplan: boolean | null = plan?.needsReplan ?? false;
+  let needsReplan: boolean | null = plan ? hasStoredReplan(plan) : false;
   if (plan && !needsReplan) {
     const planDay = calendarRange(date, 1, zonedClock(plan.timezone));
     const [planBlocks, planEvents] = planDay.startAt === day.startAt && planDay.endAt === day.endAt
@@ -129,8 +131,11 @@ export async function getAgentPlanningContext(db: DatabaseReader, { workspace, w
     tasks: { ...candidates, items: tasks }, blocks: { ...blockSection, items: portableBlocks },
     meetings: { ...meetingSection, items: meetingSection.items.map(visibleEvent) },
     reminders: { ...reminderSection, items: portableReminders }, preferences: visiblePreferences(preferences),
+    followUps: section(followUps.map(({ publicId, title, followUpDate, revision }) =>
+      ({ publicId, title, followUpDate, revision })), followUpLimit),
     dayPlan: plan ? { publicId: plan.publicId, revision: plan.revision, timezone: plan.timezone,
       publishedAt: plan.publishedAt, focusTaskPublicIds: focusTasks.filter(id => id !== undefined), focusPartial: focus.partial,
-      needsReplan } : null,
+      briefing: plan.briefingUpdatedAt === undefined ? undefined : plan.briefing,
+      briefingUpdatedAt: plan.briefingUpdatedAt, needsReplan } : null,
   };
 }
