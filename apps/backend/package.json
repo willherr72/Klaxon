@@ -1,0 +1,22 @@
+{
+  "name": "klaxon-backend",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "^24.12.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run --config test/vitest.config.ts",
+    "verify": "npm run check && npm test"
+  },
+  "dependencies": {
+    "convex": "1.51.0"
+  },
+  "devDependencies": {
+    "@edge-runtime/vm": "5.0.0",
+    "convex-test": "0.0.75",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  }
+}
