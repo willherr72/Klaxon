@@ -1,5 +1,23 @@
 #requires -Version 7.2
 
+function Confirm-ReminderChildExit($Child) {
+    try {
+        if ($Child.HasExited) { return }
+        try { $Child.Kill($true) }
+        catch { Write-Host "Could not terminate reminder child $($Child.Id): $($_.Exception.Message)" }
+        if (-not $Child.WaitForExit(5000)) {
+            [Console]::Error.WriteLine("Child $($Child.Id) is still alive. Queue cleanup is unverified. Waiting for exit before continuing.")
+            # The disposable job's hard deadline bounds this last resort. A live
+            # writer can publish after a cleanup read, even if that read returns zero.
+            $Child.WaitForExit()
+        }
+    } catch {
+        $failure = [InvalidOperationException]::new('Child exit and queue cleanup are unverified.', $_.Exception)
+        $failure.Data['UnconfirmedReminderChild'] = $Child
+        throw $failure
+    }
+}
+
 function Invoke-ReminderChild([string] $ScriptName, [string[]] $Parameters) {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
@@ -16,8 +34,6 @@ function Invoke-ReminderChild([string] $ScriptName, [string[]] $Parameters) {
         $stdout = $child.StandardOutput.ReadToEndAsync()
         $stderr = $child.StandardError.ReadToEndAsync()
         if (-not $child.WaitForExit(30000)) {
-            $child.Kill($true)
-            if (-not $child.WaitForExit(5000)) { throw "$ScriptName did not exit after termination." }
             throw "$ScriptName exceeded 30 seconds."
         }
         $output = $stdout.GetAwaiter().GetResult()
@@ -26,6 +42,7 @@ function Invoke-ReminderChild([string] $ScriptName, [string[]] $Parameters) {
         if ($errors) { Write-Host $errors }
         return [pscustomobject]@{ ExitCode = $child.ExitCode; Output = $output }
     } finally {
+        Confirm-ReminderChildExit $child
         $child.Dispose()
     }
 }
@@ -56,10 +73,16 @@ function Test-ReminderQueue([scriptblock] $RunStage) {
         Invoke-Stage VerifyEmpty empty 0 0
         return
     } catch {
+        if ($_.Exception.Data.Contains('UnconfirmedReminderChild')) { throw }
         $failures.Add($_.Exception.Message)
     }
     try { Invoke-Stage Cleanup @('removed','absent') 0 0 }
-    catch { $failures.Add($_.Exception.Message) }
+    catch {
+        $failures.Add($_.Exception.Message)
+        if ($_.Exception.Data.Contains('UnconfirmedReminderChild')) {
+            throw ($failures -join [Environment]::NewLine)
+        }
+    }
     try { Invoke-Stage VerifyEmpty empty 0 0 }
     catch { $failures.Add($_.Exception.Message) }
     throw ($failures -join [Environment]::NewLine)

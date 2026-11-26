@@ -3,6 +3,23 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'windows-reminder-process.ps1')
 
+class SlowReminderChild {
+    [int] $Id = 123
+    [bool] $HasExited
+    [bool] $CannotObserveExit
+    [int] $FinalWaits
+    [void] Kill([bool] $tree) { throw 'Synthetic access failure.' }
+    [bool] WaitForExit([int] $milliseconds) { return $false }
+    [void] WaitForExit() {
+        $this.FinalWaits++
+        if ($this.CannotObserveExit) { throw 'Synthetic observation failure.' }
+        $this.HasExited = $true
+    }
+}
+$delayed = [SlowReminderChild]::new()
+Confirm-ReminderChildExit $delayed
+if (-not $delayed.HasExited -or $delayed.FinalWaits -ne 1) { throw 'Child handle released before exit.' }
+
 function Test-Scenario($Fault, $ExpectedStages) {
     $stages = [Collections.Generic.List[string]]::new()
     $fixture = @{ Occupied = $false; Id = $null; Due = $null }
@@ -28,6 +45,11 @@ function Test-Scenario($Fault, $ExpectedStages) {
                 }
                 Arm {
                     $fixture.Occupied = $true
+                    if ($Fault -eq 'unconfirmed-writer') {
+                        $writer = [SlowReminderChild]::new()
+                        $writer.CannotObserveExit = $true
+                        Confirm-ReminderChildExit $writer
+                    }
                     if ($Fault -in 'lost-add-reply','failed-cleanup') { throw 'Lost acknowledgment.' }
                     'armed'
                 }
@@ -52,7 +74,7 @@ function Test-Scenario($Fault, $ExpectedStages) {
         }
     } catch { $failed = $true }
     if ($failed -ne ($Fault -ne 'none') -or ($stages -join ',') -cne $ExpectedStages -or
-        $fixture.Occupied -ne ($Fault -eq 'failed-cleanup')) {
+        $fixture.Occupied -ne ($Fault -in 'failed-cleanup','unconfirmed-writer')) {
         throw "Unexpected outcome for ${Fault}: failed=$failed stages=$stages occupied=$($fixture.Occupied)"
     }
 }
@@ -63,4 +85,5 @@ Test-Scenario lost-add-reply 'VerifyEmpty,Arm,Cleanup,VerifyEmpty'
 Test-Scenario malformed-inventory 'VerifyEmpty,Arm,Inspect,Cleanup,VerifyEmpty'
 Test-Scenario lost-removal 'VerifyEmpty,Arm,Inspect,Cancel,VerifyEmpty,Cleanup,VerifyEmpty'
 Test-Scenario failed-cleanup 'VerifyEmpty,Arm,Cleanup,VerifyEmpty'
-Write-Output 'Passed six synthetic Windows queue process scenarios.'
+Test-Scenario unconfirmed-writer 'VerifyEmpty,Arm'
+Write-Output 'Passed seven synthetic Windows queue process scenarios and delayed child exit.'
