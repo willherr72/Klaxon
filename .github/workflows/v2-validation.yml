@@ -111,6 +111,9 @@ jobs:
           }
           powershell.exe -NoProfile -NonInteractive -File ../ci/windows-reminder-notifier.test.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -NonInteractive -File ../ci/windows-reminder-queue.test.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ../ci/windows-reminder-process.test.ps1
           ../ci/windows-reminder-install.ps1
       - name: Build the offline Windows session fixture
         working-directory: spikes/p0
@@ -154,4 +157,12 @@ jobs:
             Write-Output '::warning::Empty fixture schedule verified. Windows Server build 20348 returned 0x80070490 for the notification setting. Delivery remains unverified.'
           } elseif ($env:PROBE_EXIT -cne '0') {
             throw 'Notifier read failed. See the installer step for the API stage and error.'
+          }
+      - name: Check that a fresh Windows process can find and cancel the scheduled fixture reminder
+        if: "!cancelled() && steps.reminder_install.outcome == 'success' && (steps.reminder_install.outputs.notifier_exit == '0' || steps.reminder_install.outputs.notifier_exit == '42')"
+        env:
+          QUEUE_RESULT: ${{ steps.reminder_install.outputs.queue_result }}
+        run: |
+          if ($env:QUEUE_RESULT -cne 'passed') {
+            throw 'Scheduled reminder persistence or cancellation was not verified. See the installer step for individual process results and cleanup.'
           }

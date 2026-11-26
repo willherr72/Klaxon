@@ -205,38 +205,28 @@ try {
     Write-Host "Verified HKCU uninstall identity for $product and installed executable SHA-256 $installedHash"
     Write-Host "Installer SHA-256 $installerHash"
 
-    # Query WinRT while the verified shortcut exists. Score the child independently after teardown.
+    # Keep the verified shortcut installed through all WinRT reads and exact cancellation.
+    . (Join-Path $PSScriptRoot 'windows-reminder-process.ps1')
     $probeExit = 1
-    $child = $null
+    $queueResult = 'not-run'
     try {
-        $start = [Diagnostics.ProcessStartInfo]::new()
-        $start.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell/v1.0/powershell.exe'
-        $start.UseShellExecute = $false
-        $start.CreateNoWindow = $true
-        $start.RedirectStandardOutput = $true
-        $start.RedirectStandardError = $true
-        foreach ($argument in '-Mta','-NoLogo','-NoProfile','-NonInteractive','-File',(Join-Path $PSScriptRoot 'windows-reminder-notifier.ps1')) {
-            $start.ArgumentList.Add($argument)
-        }
-        $child = [Diagnostics.Process]::Start($start)
-        $stdout = $child.StandardOutput.ReadToEndAsync()
-        $stderr = $child.StandardError.ReadToEndAsync()
-        $exited = $child.WaitForExit(30000)
-        if (-not $exited) {
-            $child.Kill($true)
-            if (-not $child.WaitForExit(5000)) { throw 'Notifier probe did not exit after termination.' }
-            Write-Host 'The read-only notifier probe exceeded 30 seconds.'
-        }
-        Write-Host ($stdout.GetAwaiter().GetResult())
-        Write-Host ($stderr.GetAwaiter().GetResult())
-        if ($exited) { $probeExit = $child.ExitCode }
+        $probeExit = (Invoke-ReminderChild 'windows-reminder-notifier.ps1' @()).ExitCode
     } catch {
         Write-Host "Notifier probe process failed: $($_.Exception.Message)"
-    } finally {
-        if ($child) { $child.Dispose() }
     }
-    try { "notifier_exit=$probeExit" >> $env:GITHUB_OUTPUT }
-    catch { Write-Host "Could not publish notifier result: $($_.Exception.Message)" }
+    if ($probeExit -in 0,42) {
+        try {
+            Test-ReminderQueue {
+                param($mode, $id, $due)
+                Invoke-ReminderChild 'windows-reminder-queue.ps1' @('-Mode', $mode, '-OccurrenceId', $id, '-DueUtc', $due)
+            }
+            $queueResult = 'passed'
+        } catch {
+            $queueResult = 'failed'
+            Write-Host "Schedule persistence or cancellation failed: $($_.Exception.Message)"
+        }
+    }
+    @("notifier_exit=$probeExit", "queue_result=$queueResult") >> $env:GITHUB_OUTPUT
 } catch {
     Write-Host "Installation verification failed. $($_.Exception.Message)"
     throw
