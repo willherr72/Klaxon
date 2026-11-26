@@ -13,10 +13,12 @@
   },
   "dependencies": {
     "@convex-dev/auth": "2.1.0",
-    "convex": "1.51.0"
+    "convex": "1.51.0",
+    "web-push": "4.0.0"
   },
   "devDependencies": {
     "@edge-runtime/vm": "5.0.0",
+    "@types/web-push": "3.6.4",
     "convex-test": "0.0.75",
     "typescript": "5.9.3",
     "vitest": "4.1.12"

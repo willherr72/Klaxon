@@ -84,18 +84,24 @@ export async function occurrenceSnapshot(reminder: CurrentReminder): Promise<Vir
 }
 
 export async function materializeOccurrence(db: DatabaseWriter, reminder: Reminder, firedAt?: number) {
-  if (hasCurrentOccurrence(reminder) && !await storedOccurrence(db, reminder)) {
-    await db.insert("reminderOccurrences", { ...await occurrenceSnapshot(reminder), firedAt });
-  }
+  if (!hasCurrentOccurrence(reminder)) return null;
+  const existing = await storedOccurrence(db, reminder);
+  return existing?._id ?? await db.insert("reminderOccurrences", { ...await occurrenceSnapshot(reminder), firedAt });
+}
+
+export async function markOccurrenceFired(db: DatabaseWriter, reminder: Reminder, occurrence: Occurrence, now: number) {
+  await db.patch("reminderOccurrences", occurrence._id, { state: "fired", firedAt: now, jobId: undefined,
+    revision: occurrence.revision + 1, updatedAt: now });
+  await db.patch("reminders", reminder._id, { state: "fired", updatedAt: now, nextTriggerAt: undefined });
 }
 
 export async function closeOccurrence(db: DatabaseWriter, occurrence: Occurrence | VirtualOccurrence,
   state: "cancelled" | "dismissed" | "completed", now: number) {
   const changes = {
-    state, updatedAt: now,
+    state, updatedAt: now, jobId: undefined,
     // Preserve provider history after acknowledgment. Invalidation is visible
     // on the occurrence and supersedes any delivery that could still be queued.
-    deliveryState: state === "cancelled" && occurrence.deliveryState === "scheduled"
+    deliveryState: occurrence.deliveryState === "scheduled"
       ? "cancelled" as const : occurrence.deliveryState,
     acknowledgedAt: state === "cancelled" ? occurrence.acknowledgedAt : now,
   };
@@ -171,7 +177,7 @@ export async function dueReminders(db: DatabaseReader, workspaceId: WorkspaceId,
   const items = await Promise.all(due.slice(0, limit).map(async row => ({
     ...await visibleReminder(db, row), overdue: triggerAt(row) < asOf,
   })));
-  return { asOf, items, partial: due.length > limit || buckets.some(bucket => bucket.partial), deliveryEnabled: false };
+  return { asOf, items, partial: due.length > limit || buckets.some(bucket => bucket.partial) };
 }
 
 export async function reminderHistory(db: DatabaseReader, workspaceId: WorkspaceId, page: Page) {

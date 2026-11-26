@@ -2,45 +2,68 @@ import { v, type Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { DatabaseReader } from "../_generated/server";
 import { calendarError, overlaps, zonedClock, type Interval } from "./calendarTime";
+import { exteriorPivots, pivotKey } from "./calendarOverlap";
 import { weekday } from "./values";
 
 const scanLimit = 1024;
-
-// An overlap can begin arbitrarily far in the past. Either indexed scan is
-// sufficient if it completes. Bound both scans before filtering and fail closed
-// if neither proves the complete result.
-async function overlapRows<Row extends Interval & { publicId: string }>(range: Interval,
-  byEnd: (limit: number) => Promise<Row[]>, byStart: (limit: number) => Promise<Row[]>) {
-  if (range.startAt >= range.endAt) return [];
-  let candidates = await byEnd(scanLimit + 1);
-  if (candidates.length > scanLimit) candidates = await byStart(scanLimit + 1);
-  if (candidates.length > scanLimit) {
-    calendarError("CALENDAR_RANGE_LIMIT", "Too many records to confirm availability for this window");
-  }
-  return candidates.filter(row => row.startAt < row.endAt && overlaps(row, range))
-    .sort((a, b) => a.startAt - b.startAt || compareIds(a.publicId, b.publicId));
-}
 
 export function compareIds(a: string, b: string) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+async function overlapRows<Row extends Interval & { publicId: string }>(range: Interval,
+  interior: (left: string, right: string, limit: number) => Promise<Row[]>,
+  byEnd: (pivot: string | undefined, limit: number) => Promise<Row[]>,
+  byStart: (pivot: string | undefined, limit: number) => Promise<Row[]>) {
+  if (!(range.startAt < range.endAt)) return [];
+
+  // Interior pivots guarantee overlap. An interval whose pivot is outside the
+  // window can only cross its nearest boundary at an ancestor split of that
+  // boundary. The endpoint index at each such split yields only overlaps.
+  const rows = await interior(pivotKey(range.startAt), pivotKey(range.endAt), scanLimit + 1);
+  const limit = () => {
+    if (rows.length > scanLimit) calendarError("CALENDAR_RANGE_LIMIT", "Too many records to confirm availability for this window");
+    return scanLimit + 1 - rows.length;
+  };
+  for (const pivot of exteriorPivots(range.startAt, "left")) {
+    rows.push(...await byEnd(pivot, limit()));
+  }
+  for (const pivot of exteriorPivots(range.endAt, "right")) {
+    rows.push(...await byStart(pivot, limit()));
+  }
+
+  // Retain correct reads during the backfill. These scans only see unmigrated
+  // rows and disappear once the backfill has drained them.
+  let legacy = await byEnd(undefined, scanLimit + 1);
+  if (legacy.length > scanLimit) legacy = await byStart(undefined, scanLimit + 1);
+  if (legacy.length > scanLimit) {
+    calendarError("CALENDAR_RANGE_LIMIT", "Calendar overlap index backfill is required for this window");
+  }
+  rows.push(...legacy.filter(row => row.startAt < row.endAt && overlaps(row, range)));
+  limit();
+  return rows.sort((a, b) => a.startAt - b.startAt || compareIds(a.publicId, b.publicId));
+}
+
 export function blocksInRange(db: DatabaseReader, workspaceId: Id<"workspaces">, range: Interval) {
   return overlapRows(range,
-    limit => db.query("timeBlocks").withIndex("by_workspace_end_at", q =>
-      q.eq("workspaceId", workspaceId).gt("endAt", range.startAt)).take(limit),
-    limit => db.query("timeBlocks").withIndex("by_workspace_start_at", q =>
-      q.eq("workspaceId", workspaceId).lt("startAt", range.endAt)).order("desc").take(limit),
+    (left, right, limit) => db.query("timeBlocks").withIndex("by_workspace_pivot_start", q =>
+      q.eq("workspaceId", workspaceId).gt("overlapPivot", left).lte("overlapPivot", right)).take(limit),
+    (pivot, limit) => db.query("timeBlocks").withIndex("by_workspace_pivot_end", q =>
+      q.eq("workspaceId", workspaceId).eq("overlapPivot", pivot).gt("endAt", range.startAt)).take(limit),
+    (pivot, limit) => db.query("timeBlocks").withIndex("by_workspace_pivot_start", q =>
+      q.eq("workspaceId", workspaceId).eq("overlapPivot", pivot).lt("startAt", range.endAt)).take(limit),
   );
 }
 
 export async function eventsInRange(db: DatabaseReader, workspaceId: Id<"workspaces">,
   userId: Id<"users">, range: Interval) {
   const events = await overlapRows(range,
-    limit => db.query("calendarEvents").withIndex("by_workspace_end_at", q =>
-      q.eq("workspaceId", workspaceId).gt("endAt", range.startAt)).take(limit),
-    limit => db.query("calendarEvents").withIndex("by_workspace_start_at", q =>
-      q.eq("workspaceId", workspaceId).lt("startAt", range.endAt)).order("desc").take(limit),
+    (left, right, limit) => db.query("calendarEvents").withIndex("by_workspace_pivot_start", q =>
+      q.eq("workspaceId", workspaceId).gt("overlapPivot", left).lte("overlapPivot", right)).take(limit),
+    (pivot, limit) => db.query("calendarEvents").withIndex("by_workspace_pivot_end", q =>
+      q.eq("workspaceId", workspaceId).eq("overlapPivot", pivot).gt("endAt", range.startAt)).take(limit),
+    (pivot, limit) => db.query("calendarEvents").withIndex("by_workspace_pivot_start", q =>
+      q.eq("workspaceId", workspaceId).eq("overlapPivot", pivot).lt("startAt", range.endAt)).take(limit),
   );
   const connectionIds = [...new Set(events.filter(event => event.deletedAt === undefined).map(event => event.connectionId))];
   const connections = new Map((await Promise.all(connectionIds.map(id => db.get("integrationConnections", id))))

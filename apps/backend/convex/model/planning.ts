@@ -16,6 +16,7 @@ const blockFields = {
   ...workspaceMutableFields,
   startAt: instant,
   endAt: instant,
+  overlapPivot: v.optional(v.string()),
   localDate,
   timezone,
   locked: v.boolean(),
@@ -45,8 +46,9 @@ export const planningTables = {
     v.object({ ...blockFields, title: v.string() }),
   ))
     .index("by_workspace_local_date", ["workspaceId", "localDate", "startAt"])
-    .index("by_workspace_start_at", ["workspaceId", "startAt"])
-    .index("by_workspace_end_at", ["workspaceId", "endAt"])
+    .index("by_overlap_pivot", ["overlapPivot"])
+    .index("by_workspace_pivot_start", ["workspaceId", "overlapPivot", "startAt"])
+    .index("by_workspace_pivot_end", ["workspaceId", "overlapPivot", "endAt"])
     .index("by_workspace_task", ["workspaceId", "taskId", "startAt"])
     .index("by_workspace_plan", ["workspaceId", "planId", "startAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),

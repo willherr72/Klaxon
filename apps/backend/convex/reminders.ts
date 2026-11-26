@@ -5,10 +5,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internalMutation, mutation, query, type MutationCtx } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
 import { calendarError, validateInstant, zonedClock } from "./model/calendarTime";
+import { deliveryConfiguration } from "./model/deliverySecrets";
+import { armDelivery, armRollover, grantRow } from "./model/deliveryStore";
 import { requireExpectedRevision, runOperation, type OperationInput } from "./model/operations";
 import { recurrenceRule } from "./model/planning";
 import { nextReminderDue, normalizeRecurrence } from "./model/reminderRecurrence";
-import { claimTarget, closeOccurrence, dueReminders, hasCurrentOccurrence, listReminders, materializeOccurrence,
+import { claimTarget, closeOccurrence, dueReminders, hasCurrentOccurrence, listReminders, markOccurrenceFired, materializeOccurrence,
   occurrenceSnapshot, reminderByPublicId, reminderHistory, reminderTimezone, resolveReminderTask,
   storedOccurrence, triggerAt, visibleReminder } from "./model/reminderStore";
 import { checkedTags, checkPublicId, requiredText } from "./model/taskDomain";
@@ -40,6 +42,21 @@ type OccurrenceArgs = ChangeArgs & { occurrencePublicId: string };
 function description(value?: string) {
   if (value !== undefined && value.length > 8_000) calendarError("INVALID_ARGUMENT", "Reminder description is too long");
   return value;
+}
+
+async function materializeReminder(ctx: MutationCtx, reminder: Reminder, now: number, firedAt?: number) {
+  const id = await materializeOccurrence(ctx.db, reminder, firedAt);
+  if (!id || !deliveryConfiguration()) return;
+  const occurrence = await ctx.db.get("reminderOccurrences", id);
+  if (!occurrence || occurrence.jobId) return;
+  if (reminder.state === "fired") await armRollover(ctx, reminder, occurrence, now);
+  else await armDelivery(ctx, occurrence, now);
+}
+
+async function closeReminderOccurrence(ctx: MutationCtx, occurrence: Parameters<typeof closeOccurrence>[1],
+  state: Parameters<typeof closeOccurrence>[2], now: number) {
+  if (occurrence.jobId) await ctx.scheduler.cancel(occurrence.jobId);
+  await closeOccurrence(ctx.db, occurrence, state, now);
 }
 
 async function changeReminder(ctx: MutationCtx, args: ChangeArgs, action: string, input: OperationInput,
@@ -80,10 +97,12 @@ export const list = query({
 export const due = query({
   args: { ...scope, asOf: v.optional(v.number()), limit: v.optional(v.number()) },
   handler: async (ctx, { workspaceId, asOf = Date.now(), limit = 50 }) => {
-    await authorize(ctx.db, workspaceId, requireSessionUser(await getAuthUserId(ctx)), "read");
+    const userId = requireSessionUser(await getAuthUserId(ctx));
+    await authorize(ctx.db, workspaceId, userId, "read");
     validateInstant(asOf);
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) calendarError("INVALID_ARGUMENT", "Request 1–100 due reminders");
-    return dueReminders(ctx.db, workspaceId, asOf, limit);
+    const deliveryEnabled = !!deliveryConfiguration() && (await grantRow(ctx.db, workspaceId, userId))?.enabled === true;
+    return { ...await dueReminders(ctx.db, workspaceId, asOf, limit), deliveryEnabled };
   },
 });
 
@@ -122,7 +141,7 @@ export const create = mutation({
       const id = await db.insert("reminders", fields);
       const row = await db.get("reminders", id);
       if (!row) throw new Error("Created reminder missing");
-      await materializeOccurrence(db, row);
+      await materializeReminder(ctx, row, now);
       return { target: { kind: "reminder", id }, targetPublicId: publicId, revision };
     });
   },
@@ -165,9 +184,9 @@ export const update = mutation({
       taskId: patch.taskPublicId === undefined ? row.taskId : await resolveReminderTask(ctx.db, row.workspaceId, patch.taskPublicId),
     };
     const { _id, _creationTime, ...fields } = edited;
-    if (current) await closeOccurrence(ctx.db, current, "cancelled", now);
+    if (current) await closeReminderOccurrence(ctx, current, "cancelled", now);
     await ctx.db.patch("reminders", _id, fields);
-    if (current) await materializeOccurrence(ctx.db, edited, state === "fired" ? current.firedAt : undefined);
+    if (current) await materializeReminder(ctx, edited, now, state === "fired" ? current.firedAt : undefined);
   }),
 });
 
@@ -175,7 +194,7 @@ export const remove = mutation({
   args: change,
   handler: (ctx, args) => changeReminder(ctx, args, "reminder.remove", null, async (row, now) => {
     const current = hasCurrentOccurrence(row) ? await storedOccurrence(ctx.db, row) : null;
-    if (current) await closeOccurrence(ctx.db, current, "cancelled", now);
+    if (current) await closeReminderOccurrence(ctx, current, "cancelled", now);
     await ctx.db.delete("reminders", row._id);
   }),
 });
@@ -188,7 +207,7 @@ export const activate = mutation({
     }
     const fields = { revision, updatedAt: now, nextTriggerAt: row.snoozeUntil ?? row.dueAt };
     await ctx.db.patch("reminders", row._id, fields);
-    await materializeOccurrence(ctx.db, { ...row, ...fields });
+    await materializeReminder(ctx, { ...row, ...fields }, now);
   }),
 });
 
@@ -211,9 +230,9 @@ function acknowledge(ctx: MutationCtx, args: OccurrenceArgs, action: Acknowledgm
       }
       const fields = { revision, updatedAt: now, state: "snoozed" as const, snoozeUntil,
         nextTriggerAt: stored ? snoozeUntil : undefined };
-      await closeOccurrence(ctx.db, occurrence, "cancelled", now);
+      await closeReminderOccurrence(ctx, occurrence, "cancelled", now);
       await ctx.db.patch("reminders", row._id, fields);
-      if (stored) await materializeOccurrence(ctx.db, { ...row, ...fields });
+      if (stored) await materializeReminder(ctx, { ...row, ...fields }, now);
       return;
     }
 
@@ -222,9 +241,9 @@ function acknowledge(ctx: MutationCtx, args: OccurrenceArgs, action: Acknowledgm
     const fields = { revision, updatedAt: now, state, snoozeUntil: undefined,
       dueAt: nextDueAt ?? row.dueAt, nextTriggerAt: stored ? nextDueAt : undefined,
       recurrenceAnchorAt: row.recurrence ? row.recurrenceAnchorAt ?? row.dueAt : undefined } as const;
-    await closeOccurrence(ctx.db, occurrence, action.kind === "dismiss" ? "dismissed" : "completed", now);
+    await closeReminderOccurrence(ctx, occurrence, action.kind === "dismiss" ? "dismissed" : "completed", now);
     await ctx.db.patch("reminders", row._id, fields);
-    if (stored && nextDueAt !== undefined) await materializeOccurrence(ctx.db, { ...row, ...fields });
+    if (stored && nextDueAt !== undefined) await materializeReminder(ctx, { ...row, ...fields }, now);
   });
 }
 
@@ -260,9 +279,7 @@ export const fireDue = internalMutation({
     const trigger = triggerAt(occurrence);
     if (trigger > now) return { status: "not_due", triggerAt: trigger } as const;
 
-    await db.patch("reminderOccurrences", occurrence._id, { state: "fired", firedAt: now,
-      revision: occurrence.revision + 1, updatedAt: now });
-    await db.patch("reminders", reminder._id, { state: "fired", updatedAt: now, nextTriggerAt: undefined });
+    await markOccurrenceFired(db, reminder, occurrence, now);
     return { status: "fired", firedAt: now } as const;
   },
 });
@@ -271,7 +288,8 @@ export const fireDue = internalMutation({
 // A repeat invocation recognizes the old occurrence's persisted rollover.
 export const rollover = internalMutation({
   args: firingTarget,
-  handler: async ({ db }, { workspaceId, publicId, expectedRevision, occurrencePublicId }) => {
+  handler: async (ctx, { workspaceId, publicId, expectedRevision, occurrencePublicId }) => {
+    const { db } = ctx;
     const target = await claimTarget(db, workspaceId, publicId, expectedRevision, occurrencePublicId);
     if (target.status === "rolled_over") {
       return { status: "already_advanced", rolledOverAt: target.rolledOverAt } as const;
@@ -286,10 +304,10 @@ export const rollover = internalMutation({
     const fields = { revision: reminder.revision + 1, updatedAt: now, state: "pending" as const, dueAt,
       snoozeUntil: undefined, nextTriggerAt: dueAt, recurrenceAnchorAt: reminder.recurrenceAnchorAt ?? reminder.dueAt };
 
-    await db.patch("reminderOccurrences", occurrence._id, { rolledOverAt: now,
+    await db.patch("reminderOccurrences", occurrence._id, { rolledOverAt: now, jobId: undefined,
       revision: occurrence.revision + 1, updatedAt: now });
     await db.patch("reminders", reminder._id, fields);
-    await materializeOccurrence(db, { ...reminder, ...fields });
+    await materializeReminder(ctx, { ...reminder, ...fields }, now);
     return { status: "advanced", revision: fields.revision, dueAt } as const;
   },
 });

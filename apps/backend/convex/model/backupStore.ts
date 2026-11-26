@@ -1,5 +1,6 @@
 import type { DatabaseReader, DatabaseWriter } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
+import { overlapFields } from "./calendarOverlap";
 import { backupError, byteLength, MAX_BACKUP_BYTES, MAX_BACKUP_RECORDS, type BackupPayload } from "./backupFormat";
 
 type Table = Exclude<keyof BackupPayload, "workspaceName">;
@@ -111,7 +112,7 @@ export async function readBackup(db: DatabaseReader, workspace: Doc<"workspaces"
       const { focusTaskIds, ...fields } = portableFields(row);
       return { ...fields, focusTaskIds: focusTaskIds.map(id => resolve(taskIds, id)) };
     }),
-    timeBlocks: timeBlocks.map(row => {
+    timeBlocks: timeBlocks.map(({ overlapPivot, ...row }) => {
       const { planId, title, ...fields } = portableFields(row);
       if ("taskId" in row) return { ...fields, taskId: resolve(taskIds, row.taskId), title,
         planId: optional(planIds, planId) };
@@ -180,7 +181,7 @@ export async function writeBackup(db: DatabaseWriter, userId: Id<"users">, paylo
       focusTaskIds: focusTaskIds.map(id => resolve(tasks, id)) }));
   }
   for (const { planId, ...fields } of payload.timeBlocks) {
-    const block = { ...fields, workspaceId, planId: optional(plans, planId) };
+    const block = { ...fields, ...overlapFields(fields), workspaceId, planId: optional(plans, planId) };
     if ("taskId" in fields) await db.insert("timeBlocks", { ...block, taskId: resolve(tasks, fields.taskId) });
     else await db.insert("timeBlocks", { ...block, title: fields.title });
   }

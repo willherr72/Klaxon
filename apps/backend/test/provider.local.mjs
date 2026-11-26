@@ -141,7 +141,15 @@ export async function withLocalProvider(action) {
     failures.push(error);
   } finally {
     if (backend) {
-      if (backend.exitCode === null && backend.signalCode === null) backend.kill();
+      if (backend.pid && backend.exitCode === null && backend.signalCode === null) {
+        // The local backend launches a Node action executor that inherits its fixture directory.
+        const stopped = spawnSync(join(systemEnv.SystemRoot, "System32", "taskkill.exe"),
+          ["/PID", String(backend.pid), "/T", "/F"], { env: systemEnv, windowsHide: true, timeout: 10_000, stdio: "ignore" });
+        if (stopped.status !== 0) {
+          failures.push(new Error("Could not confirm shutdown of the Convex fixture process tree"));
+          backend.kill();
+        }
+      }
       try {
         if (!await Promise.race([closed, delay(10_000, false, { ref: false })])) {
           throw new Error("Convex fixture process did not stop");

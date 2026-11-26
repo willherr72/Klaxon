@@ -16,6 +16,7 @@ async function setup() {
   const t = convexTest({ schema, modules: {
     "../convex/_generated/server.ts": () => import("../convex/_generated/server"),
     "../convex/calendar.ts": () => import("../convex/calendar"),
+    "../convex/agenda.ts": () => import("../convex/agenda"),
     "../convex/planning.ts": () => import("../convex/planning"),
   } });
   const { ownerId, outsiderId, workspaceId } = await t.run(async ({ db }) => {
@@ -208,6 +209,9 @@ test("apply rejects a preview when a meeting, block, or task changes and flags m
   await insertMeeting();
   const dayPlan = await user.query(anyApi.planning.getDayPlan, { workspaceId, localDate });
   expect(dayPlan.needsReplan).toBe(true);
+  const today = await user.query(anyApi.agenda.today, { workspaceId, localDate, timezone: "America/New_York",
+    asOf: ms("2028-03-12T06:10:00Z") });
+  expect(today.needsReplan).toBe(true);
   expect((await list(localDate)).events).toHaveLength(1);
 });
 
@@ -307,25 +311,50 @@ test("live placement checks reject overlaps, and stale or expired plans cannot a
   expect((await list(localDate)).blocks.map((value: { publicId: string }) => value.publicId)).toEqual(["reservation"]);
 });
 
-test("unsafe imported-event overlap scans fail closed even with an empty target day", async () => {
-  const { t, ownerId, workspaceId, prefs, preview, list, block } = await setup();
+test("migrated calendar intervals support empty day and week queries between crowded dates", async () => {
+  const { t, ownerId, workspaceId, prefs, preview, list } = await setup();
   await prefs(east);
-  await t.run(async ({ db }) => {
+  const connectionId = await t.run(async ({ db }) => {
     await db.insert("tasks", taskRecord(workspaceId, "work", { estimateMinutes: 30 }));
     const connectionId = await db.insert("integrationConnections", { workspaceId, userId: ownerId, publicId: "account",
       accountId: "account", provider: "outlook", scopeIds: [], state: "active", ...recordVersion });
-    for (const localDate of ["2028-03-11", "2028-03-13"]) {
+    for (const localDate of ["2028-03-11", "2028-03-20"]) {
       const startAt = ms(`${localDate}T12:00:00Z`);
       for (let index = 0; index < 1025; index++) {
         const publicId = `${localDate}-${index}`;
+        await db.insert("timeBlocks", { workspaceId, publicId, title: publicId, startAt, endAt: startAt + 3_600_000,
+          timezone: "UTC", localDate, locked: true, origin: "manual", ...recordVersion });
         await db.insert("calendarEvents", { workspaceId, connectionId, provider: "outlook", publicId,
           externalEventId: publicId, startAt, endAt: startAt + 3_600_000, timezone: "UTC", localDate,
           allDay: false, availability: "busy", lastSeenAt: 1, ...recordVersion });
       }
     }
+    return connectionId;
   });
-  await expect(list("2028-03-12")).rejects.toThrow(/CALENDAR_RANGE_LIMIT/);
-  await expect(preview("2028-03-12", ["work"])).rejects.toThrow(/CALENDAR_RANGE_LIMIT/);
-  await expect(block({ kind: "block.create", publicId: "work", title: "Work", startAt: ms("2028-03-12T12:00:00Z"),
-    endAt: ms("2028-03-12T13:00:00Z") })).rejects.toThrow(/CALENDAR_RANGE_LIMIT/);
-});
+  while ((await t.mutation(anyApi.calendar.backfillOverlapIndex, {})).updated > 0) {
+    // Each mutation commits one bounded batch.
+  }
+  expect(await list("2028-03-12")).toMatchObject({ events: [], blocks: [] });
+  expect(await list("2028-03-12", "week")).toMatchObject({ events: [], blocks: [] });
+  expect((await preview("2028-03-12", ["work"])).placements).toHaveLength(1);
+
+  const start = ms("2028-03-12T00:00:00Z");
+  const end = ms("2028-03-13T00:00:00Z");
+  await t.run(async ({ db }) => {
+    for (const [publicId, startAt, endAt] of [
+      ["long", ms("2000-01-01T00:00:00Z"), ms("2120-01-01T00:00:00Z")],
+      ["ends at start", start - 1, start],
+      ["starts at end", end, end + 1],
+      ["crosses start", start - 0.5, start + 0.5],
+      ["crosses end", end - 0.5, end + 0.5],
+    ] as const) {
+      await db.insert("calendarEvents", { workspaceId, connectionId, provider: "outlook", publicId,
+        externalEventId: publicId, startAt, endAt, timezone: "UTC", localDate: "2028-03-12",
+        allDay: false, availability: "busy", lastSeenAt: 1, ...recordVersion });
+    }
+  });
+  const expected = [{ publicId: "long" }, { publicId: "crosses start" }, { publicId: "crosses end" }];
+  expect((await list("2028-03-12")).events).toMatchObject(expected);
+  expect(await t.mutation(anyApi.calendar.backfillOverlapIndex, {})).toEqual({ updated: 5 });
+  expect((await list("2028-03-12")).events).toMatchObject(expected);
+}, 30_000);

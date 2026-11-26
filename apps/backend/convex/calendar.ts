@@ -1,9 +1,10 @@
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type DatabaseReader } from "./_generated/server";
+import { internalMutation, mutation, query, type DatabaseReader } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
 import { blocksInRange, blockTask, compareIds, eventsInRange, isBusy, preferenceRow, visibleEvent, visiblePreferences } from "./model/calendarStore";
+import { overlapFields } from "./model/calendarOverlap";
 import { calendarError, calendarRange, validateInterval, zonedClock, type Interval } from "./model/calendarTime";
 import { requireExpectedRevision, runOperation } from "./model/operations";
 import { taskByPublicId } from "./model/reads";
@@ -115,7 +116,7 @@ export const apply = mutation({
         const range = validateInterval(command.startAt, command.endAt);
         const clock = zonedClock(command.timezone ?? visiblePreferences(await preferenceRow(db, workspaceId, userId)).timezone);
         await requireFree(range);
-        const fields = { workspaceId, publicId, revision: 1, createdAt: now, updatedAt: now, ...range,
+        const fields = { workspaceId, publicId, revision: 1, createdAt: now, updatedAt: now, ...range, ...overlapFields(range),
           localDate: clock.date(range.startAt), timezone: clock.timezone, locked: command.locked ?? false, origin: "manual" as const };
         const id = await db.insert("timeBlocks", task ? { ...fields, taskId: task._id, title } : { ...fields, title: title! });
         return { target: { kind: "time_block", id }, targetPublicId: publicId, revision: 1 };
@@ -143,7 +144,7 @@ export const apply = mutation({
           const settings = visiblePreferences(await preferenceRow(db, workspaceId, userId));
           const localDate = clock.date(range.startAt);
           await requireFree(range, publicId);
-          await db.patch("timeBlocks", block._id, { ...changes, ...range, localDate, timezone: clock.timezone,
+          await db.patch("timeBlocks", block._id, { ...changes, ...range, ...overlapFields(range), localDate, timezone: clock.timezone,
             planId: localDate === block.localDate && clock.timezone === block.timezone ? block.planId : undefined,
             locked: command.lock ?? settings.lockManuallyMovedBlocks });
           break;
@@ -164,5 +165,21 @@ export const apply = mutation({
       }
       return { target: { kind: "time_block", id: block._id }, targetPublicId: publicId, revision, beforeRevision: block.revision };
     });
+  },
+});
+
+// Run repeatedly after adding the indexes until updated is zero. Each batch
+// only reads rows still missing the pivot, and patches the current endpoints
+// in the same transaction so it can run alongside normal writes.
+export const backfillOverlapIndex = internalMutation({
+  args: {},
+  handler: async ({ db }) => {
+    let updated = 0;
+    for (const table of ["timeBlocks", "calendarEvents"] as const) {
+      const rows = await db.query(table).withIndex("by_overlap_pivot", q => q.eq("overlapPivot", undefined)).take(128);
+      for (const row of rows) await db.patch(table, row._id, overlapFields(row));
+      updated += rows.length;
+    }
+    return { updated };
   },
 });

@@ -3,11 +3,12 @@ import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { mutation, query, type DatabaseReader } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
-import { blocksInRange, eventsInRange, normalizePreferences, preferenceRow, preferenceValues, visiblePreferences } from "./model/calendarStore";
-import { calendarError, calendarRange, minuteMs, zonedClock } from "./model/calendarTime";
+import { normalizePreferences, preferenceRow, preferenceValues, visiblePreferences } from "./model/calendarStore";
+import { overlapFields } from "./model/calendarOverlap";
+import { calendarError, minuteMs } from "./model/calendarTime";
 import { requireExpectedRevision, runOperation } from "./model/operations";
 import { taskByPublicId } from "./model/reads";
-import { buildSchedule, dayPlanRow, hasMeetingConflict, planningContext } from "./model/scheduling";
+import { buildSchedule, dayPlanRow, planningContext, visibleDayPlan } from "./model/scheduling";
 
 const scope = { workspaceId: v.id("workspaces") };
 const date = { localDate: v.string() };
@@ -63,13 +64,7 @@ export const getDayPlan = query({
   handler: async (ctx, { workspaceId, localDate }) => {
     const userId = requireSessionUser(await getAuthUserId(ctx));
     await authorize(ctx.db, workspaceId, userId, "read");
-    const plan = await dayPlanRow(ctx.db, workspaceId, localDate);
-    if (!plan) return null;
-    const range = calendarRange(localDate, 1, zonedClock(plan.timezone));
-    const [blocks, events] = await Promise.all([
-      blocksInRange(ctx.db, workspaceId, range), eventsInRange(ctx.db, workspaceId, userId, range),
-    ]);
-    return { ...plan, needsReplan: plan.needsReplan === true || hasMeetingConflict(blocks, events, range) };
+    return visibleDayPlan(ctx.db, workspaceId, userId, localDate);
   },
 });
 
@@ -192,7 +187,7 @@ export const apply = mutation({
         switch (step.kind) {
           case "add_block": {
             const { startAt, endAt, localDate, taskId } = step;
-            await db.insert("timeBlocks", { workspaceId, taskId, startAt, endAt, localDate, planId, timezone: saved.timezone,
+            await db.insert("timeBlocks", { workspaceId, taskId, startAt, endAt, ...overlapFields(step), localDate, planId, timezone: saved.timezone,
               publicId: crypto.randomUUID(), createdAt: now, updatedAt: now, revision: 1, locked: false, origin: "automation" });
             break;
           }
@@ -200,7 +195,7 @@ export const apply = mutation({
             const { startAt, endAt, localDate, blockId } = step;
             const block = blockMap.get(blockId);
             if (!block) changed();
-            await db.patch("timeBlocks", blockId, { startAt, endAt, localDate, timezone: saved.timezone,
+            await db.patch("timeBlocks", blockId, { startAt, endAt, ...overlapFields(step), localDate, timezone: saved.timezone,
               revision: block.revision + 1, updatedAt: now });
             break;
           }

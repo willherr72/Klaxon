@@ -46,6 +46,7 @@ export const integrationTables = {
     seriesId: v.optional(v.string()),
     startAt: instant,
     endAt: instant,
+    overlapPivot: v.optional(v.string()),
     timezone,
     localDate,
     endLocalDate: v.optional(localDate), // Exclusive for all-day events.
@@ -64,8 +65,9 @@ export const integrationTables = {
   })
     .index("by_workspace_connection_external_id", ["workspaceId", "connectionId", "externalEventId"])
     .index("by_workspace_local_date", ["workspaceId", "localDate", "startAt"])
-    .index("by_workspace_start_at", ["workspaceId", "startAt"])
-    .index("by_workspace_end_at", ["workspaceId", "endAt"])
+    .index("by_overlap_pivot", ["overlapPivot"])
+    .index("by_workspace_pivot_start", ["workspaceId", "overlapPivot", "startAt"])
+    .index("by_workspace_pivot_end", ["workspaceId", "overlapPivot", "endAt"])
     .index("by_workspace_public_id", ["workspaceId", "publicId"]),
 
   integrationConnections: defineTable({

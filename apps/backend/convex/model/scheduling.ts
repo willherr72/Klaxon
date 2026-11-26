@@ -20,6 +20,16 @@ export function hasMeetingConflict(blocks: Block[], events: Awaited<ReturnType<t
     Math.max(block.startAt, event.startAt) < day.endAt && Math.min(block.endAt, event.endAt) > day.startAt));
 }
 
+export async function visibleDayPlan(db: DatabaseReader, workspaceId: Id<"workspaces">, userId: Id<"users">, localDate: string) {
+  const plan = await dayPlanRow(db, workspaceId, localDate);
+  if (!plan || plan.needsReplan) return plan;
+  const range = calendarRange(localDate, 1, zonedClock(plan.timezone));
+  const [blocks, events] = await Promise.all([
+    blocksInRange(db, workspaceId, range), eventsInRange(db, workspaceId, userId, range),
+  ]);
+  return { ...plan, needsReplan: hasMeetingConflict(blocks, events, range) };
+}
+
 export async function planningContext(db: DatabaseReader, workspaceId: Id<"workspaces">,
   userId: Id<"users">, localDate: string, tasks: Task[], plan: DayPlan | null) {
   const row = await preferenceRow(db, workspaceId, userId);

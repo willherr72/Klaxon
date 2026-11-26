@@ -29,6 +29,16 @@ For an authorized deployment, use a disposable Free project with synthetic works
 
 After deploying to the disposable target, confirm sign-in, an owner health read, a denied non-owner read, and client connectivity against the intended deployment. Record the commit, deployment environment and UTC time. Take a backup before a production schema change. For a code rollback, redeploy a known-good revision after confirming its schema can read the current data. See the existing hosting and cutover gate. [Klaxon deployment gate](deployment.md)
 
+For deployments upgraded from the first calendar schema, invoke the internal `calendar:backfillOverlapIndex` mutation until it reports `updated: 0`. Each transaction indexes up to 128 blocks and 128 imported events. New block writes and restores populate the index immediately. Until backfill finishes, a window with extensive history can return `CALENDAR_RANGE_LIMIT`.
+
+## Web Push delivery
+
+Serve the Development web build over HTTPS. The Convex deployment reads `KLAXON_WEB_PUSH_ENABLED=true`, a matching VAPID key pair in `KLAXON_WEB_PUSH_VAPID_PUBLIC_KEY` and `KLAXON_WEB_PUSH_VAPID_PRIVATE_KEY`, a `mailto:` contact in `KLAXON_WEB_PUSH_VAPID_SUBJECT`, and an independent 32-byte base64url `KLAXON_WEB_PUSH_STORAGE_KEY`. Keep both private keys in the deployment's secret configuration. Replacing the storage key requires re-enrolling devices whose subscription data used the previous key.
+
+In **Reminders → Delivery settings**, enable workspace delivery, then enroll each browser that should receive reminders. Create one future occurrence for a delivery check after enrollment. An accepted provider request, a worker receipt, and a visible notification are separate observations. Record the occurrence time, device and browser, delivery outcome and visible copy count. Delivery history and overdue reminders remain available in the planner.
+
+Explicit rate limits can trigger a bounded retry. A missing response after dispatch leaves the outcome uncertain. The delivery window is five minutes. To retire the route, revoke the browser enrollment in delivery settings and turn off workspace delivery. Removing a grant cannot recall a request already sent to a provider. [Delivery worker](../apps/backend/convex/deliveryWorker.ts)
+
 ## Backup and recovery
 
 - For a deployment recovery point, use Convex **Backup & Restore**. Include file storage when the application depends on it. Free offers on-demand backups, with up to two per deployment held for seven days. Budget for the database reads and file bandwidth and storage. Download a copy when a longer retention period is needed and keep it in encrypted, access-restricted storage. Record its source revision, UTC snapshot time and checksum. [Convex backup and restore](https://docs.convex.dev/database/backup-restore)

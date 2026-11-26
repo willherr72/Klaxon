@@ -4,6 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import { query } from "./_generated/server";
 import { authorize, requireSessionUser } from "./model/access";
 import { addLocalDays, calendarRange, validateInstant, zonedClock } from "./model/calendarTime";
+import { visibleDayPlan } from "./model/scheduling";
 
 const active = ["inbox", "ready", "in_progress", "waiting"] as const;
 const groupLimit = 8;
@@ -72,7 +73,8 @@ export const upcoming = query({
 export const today = query({
   args: { workspaceId: v.id("workspaces"), localDate: v.string(), timezone: v.string(), asOf: v.number() },
   handler: async (ctx, { workspaceId, localDate, timezone, asOf }) => {
-    await authorize(ctx.db, workspaceId, requireSessionUser(await getAuthUserId(ctx)), "read");
+    const userId = requireSessionUser(await getAuthUserId(ctx));
+    await authorize(ctx.db, workspaceId, userId, "read");
     const clock = zonedClock(timezone);
     const { startAt, endAt } = calendarRange(localDate, 1, clock);
     validateInstant(asOf);
@@ -99,8 +101,7 @@ export const today = query({
       })),
       ctx.db.query("tasks").withIndex("by_workspace_status_follow_up_date", q =>
         q.eq("workspaceId", workspaceId).eq("status", "waiting").gte("followUpDate", "").lte("followUpDate", localDate)).take(size),
-      ctx.db.query("dayPlans").withIndex("by_workspace_local_date", q =>
-        q.eq("workspaceId", workspaceId).eq("localDate", localDate)).unique(),
+      visibleDayPlan(ctx.db, workspaceId, userId, localDate),
     ]);
     const focus = await Promise.all((dayPlan?.focusTaskIds ?? []).slice(0, groupLimit).map(id => ctx.db.get("tasks", id)));
     return {
