@@ -686,7 +686,7 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P0-02 | Isolation | Complete | v2 branch and disposable hosted Development deployment in owner-confirmed Free team. Preflight returned zero tables and zero functions. Only synthetic fixtures enrolled. [PR 14](https://github.com/willherr72/Klaxon/pull/14) |
 | P0-03 | Auth/realtime spike | Owner-reported desktop-off smoke passed | [Owner report and remaining tests](#remaining-p0-tests). The [Windows](#packaged-windows-dpapi-session-evidence) and [Android](#packaged-android-session-evidence) packaged synthetic resume/sign-out tests passed. Windows and Android both restored and revoked a hosted packaged session. [Platform evidence and remaining gates](#hosted-packaged-native-acceptance). |
 | P0-04 | Dot spike | Scheduled browser read/write and browser create passed | [Scheduled Windows-off run](dot-playbook.md#scheduled-browser-fallback) · [Browser create evidence and limits](dot-playbook.md#browser-create-acceptance) |
-| P0-05 | Integrations | Interfaces reviewed, desktop and emulator Obsidian note links exercised | [Scopes and unresolved tenant consent](adr/platform-capabilities.md). The [Windows runtime test](#obsidian-desktop-note-links) opened a renamed note. The [Android emulator](#obsidian-android-note-links) selected both mapped vaults and reopened a renamed path. [Desktop Keychain](#obsidian-desktop-keychain) isolated same-name markers and preserved local removal across restart. The [Android Keychain UI](#obsidian-android-keychain) shared the value across vaults on the same emulator. Issuer-side credential revocation and Klaxon's launch path remain open. |
+| P0-05 | Integrations | Interfaces reviewed, desktop and emulator Obsidian note links exercised | [Scopes and unresolved tenant consent](adr/platform-capabilities.md). The [Windows runtime test](#obsidian-desktop-note-links) opened a renamed note. The [Android emulator](#obsidian-android-note-links) selected both mapped vaults and reopened a renamed path. [Desktop Keychain](#obsidian-desktop-keychain) isolated same-name markers and preserved local removal across restart. The [Android Keychain UI](#obsidian-android-keychain) shared the value across vaults on the same emulator. Issuer-side credential revocation remains open. Packaged task-to-note navigation is queued under P5-03. |
 | P0-06 | Reminders | Focused delivery passed on both devices, owner-reported | [Sender and receiver evidence](#one-time-reminder-sender-and-receiver-rehearsal) · [Owner runbook](p0-reminder-owner-test.md) · [Push matrix](adr/platform-capabilities.md#ordinary-reminder-delivery) |
 | P0-07 | ADRs | Provisional | [Architecture](adr/p0-architecture.md), [cost](deployment.md) and [security](security.md). Revisit on account/device evidence. |
 | P1-01 | Repository foundation | Queued | — |
@@ -728,7 +728,7 @@ Two temporary Windows Rust integration probes at the same revision exercised rec
 | P4-08 | Failure testing | Queued | — |
 | P5-01 | Plugin scaffold | Queued | — |
 | P5-02 | Live task blocks | Queued | — |
-| P5-03 | Capture/links | Queued | — |
+| P5-03 | Capture/links | Queued | From a linked synthetic task in packaged Klaxon, open the mapped vault and verify the note body. Exercise renamed and missing notes and verify the task survives a missing target. P0 already exercised [Android OS dispatch](#obsidian-android-note-links). |
 | P5-04 | Plugin tests | Queued | — |
 | P5-05 | T3 access | Queued | — |
 | P5-06 | Optional T3 adapter | Queued | — |
