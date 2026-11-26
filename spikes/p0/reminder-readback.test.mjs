@@ -5,12 +5,26 @@ import test from "node:test";
 import { chromium } from "playwright-core";
 import { receiptCache } from "./reminder-push/receiver/fixture.mjs";
 
-test("the reopened receiver reads pre-staged duplicate receipts and clears only its own cache", async t => {
-  const assets = new Map([["/seed.html", ["text/html", "<!doctype html><title>Receipt seed</title>"]]]);
+async function receiverAssets() {
+  const assets = new Map();
   for (const name of ["index.html", "page.mjs", "fixture.mjs", "public-key.mjs"]) {
     const source = await readFile(new URL(`./reminder-push/receiver/${name}`, import.meta.url));
     assets.set(`/receiver/${name}`, [name.endsWith(".html") ? "text/html" : "text/javascript", source]);
   }
+  return assets;
+}
+
+async function launchBrowser(t) {
+  const executablePath = process.env.P0_CHROMIUM_EXECUTABLE;
+  const browser = await chromium.launch(executablePath ? { executablePath } :
+    process.platform === "win32" ? { channel: "msedge" } : {});
+  t.after(() => browser.close());
+  return browser;
+}
+
+test("the reopened receiver reads pre-staged duplicate receipts and clears only its own cache", async t => {
+  const assets = await receiverAssets();
+  assets.set("/seed.html", ["text/html", "<!doctype html><title>Receipt seed</title>"]);
   const server = createServer((request, response) => {
     const asset = assets.get(request.url);
     if (!asset) {
@@ -30,10 +44,7 @@ test("the reopened receiver reads pre-staged duplicate receipts and clears only 
   const otherCache = receiptCache(siblingScope.href);
   const sentinelURL = new URL("sentinel", siblingScope).href;
 
-  const executablePath = process.env.P0_CHROMIUM_EXECUTABLE;
-  const browser = await chromium.launch(executablePath ? { executablePath } :
-    process.platform === "win32" ? { channel: "msedge" } : {});
-  t.after(() => browser.close());
+  const browser = await launchBrowser(t);
   const context = await browser.newContext({ serviceWorkers: "block" });
   context.setDefaultTimeout(10_000);
 
@@ -87,4 +98,54 @@ test("the reopened receiver reads pre-staged duplicate receipts and clears only 
     return { ownCacheExists: await caches.has(ownCache), sentinel: await sentinel?.text() };
   }, { ownCache, otherCache, sentinelURL });
   assert.deepEqual(remaining, { ownCacheExists: false, sentinel: "keep this entry" });
+});
+
+test("the receiver refuses enrollment and export when browser notification permission is denied", async t => {
+  const assets = await receiverAssets();
+  // This passes the fixture's shape check without providing a usable VAPID key.
+  const inertKey = Buffer.from([4, ...Array(64).fill(0)]).toString("base64url");
+  assets.set("/receiver/public-key.mjs", ["text/javascript",
+    `export const applicationServerKey = ${JSON.stringify(inertKey)};`]);
+
+  const entry = new URL("https://klaxon-reminder.invalid/receiver/index.html");
+  const browser = await launchBrowser(t);
+  const context = await browser.newContext({ offline: true });
+  context.setDefaultTimeout(10_000);
+  await context.route("**/*", async route => {
+    const url = new URL(route.request().url());
+    const asset = url.origin === entry.origin && assets.get(url.pathname);
+    if (!asset) return route.abort();
+    const [contentType, body] = asset;
+    return route.fulfill({ contentType, body });
+  });
+
+  const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  const { targetInfo: { browserContextId } } = await cdp.send("Target.getTargetInfo");
+  assert.ok(browserContextId);
+  await cdp.send("Browser.setPermission", {
+    browserContextId,
+    origin: entry.origin,
+    permission: { name: "notifications" },
+    setting: "denied",
+  });
+  const downloads = [];
+  page.on("download", download => downloads.push(download.suggestedFilename()));
+
+  await page.goto(entry.href);
+  await page.getByText("No worker receipts recorded.", { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(async () => ({
+    secure: isSecureContext,
+    notification: Notification.permission,
+    permission: (await navigator.permissions.query({ name: "notifications" })).state,
+  })), { secure: true, notification: "denied", permission: "denied" });
+
+  await page.getByRole("combobox").selectOption("windows-edge");
+  await page.getByRole("button", { name: "Enable test reminders", exact: true }).click();
+  await page.getByText("Permission was not granted. Stop this test.", { exact: true }).waitFor();
+  assert.equal(await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length), 0);
+
+  await page.getByRole("button", { name: "Save private subscription", exact: true }).click();
+  await page.getByText("Enable test reminders for this device first.", { exact: true }).waitFor();
+  assert.deepEqual(downloads, []);
 });
