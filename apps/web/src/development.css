@@ -1,0 +1,248 @@
+html {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  --background: #f8f8f7;
+  --surface: #fff;
+  --text: #242320;
+  --muted: #5d5a54;
+  --line: #d6d3cc;
+  --accent: #a65100;
+  --action: #8e4400;
+  --action-text: #fff;
+  --warning: #794500;
+  --error: #a1222a;
+  background: var(--background);
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  html {
+    --background: #141413;
+    --surface: #1b1a18;
+    --text: #f4f0e9;
+    --muted: #b5afa6;
+    --line: #3c3934;
+    --accent: #ffae49;
+    --action: #ffae49;
+    --action-text: #241500;
+    --warning: #ffbf70;
+    --error: #ff9da3;
+  }
+}
+
+.development {
+  box-sizing: border-box;
+  min-height: 100svh;
+}
+
+.development.account {
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.development .sign-in {
+  width: min(100%, 23rem);
+}
+
+.development h1,
+.development h2 {
+  margin: 0;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+}
+
+.development h1 {
+  border-inline-start: 0.2rem solid var(--accent);
+  padding-inline-start: 0.55rem;
+  font-size: 1.35rem;
+}
+
+.development .sign-in h1 {
+  margin-bottom: 2.5rem;
+  font-size: 2rem;
+}
+
+.development h2 {
+  font-size: clamp(1.55rem, 5vw, 2rem);
+}
+
+.development .sign-in form,
+.development .edit {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 1.25rem;
+}
+
+.development label {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.development input,
+.development select,
+.development button {
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  padding: 0.55rem 0.75rem;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.development input {
+  min-width: 0;
+}
+
+.development button {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.development button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.development button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.development :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.development .primary {
+  border-color: var(--action);
+  background: var(--action);
+  color: var(--action-text);
+}
+
+.development .sign-in button {
+  margin-top: 0.45rem;
+}
+
+.development .sign-in label:last-of-type {
+  margin-top: 0.35rem;
+}
+
+.development .app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  padding: 0.65rem clamp(1rem, 4vw, 3rem);
+  background: var(--surface);
+}
+
+.development .workspace {
+  max-width: 51rem;
+  margin-inline: auto;
+  padding: clamp(1rem, 4vw, 2.5rem);
+}
+
+.development .workspace-name {
+  margin: 0 0 0.45rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.development .task-header,
+.development .capture,
+.development .actions,
+.development .pager {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.development .task-header,
+.development .pager {
+  justify-content: space-between;
+}
+
+.development .task-form,
+.development .notice,
+.development .pager {
+  margin-block: 1rem;
+}
+
+.development .capture input {
+  flex: 1;
+}
+
+.development .notice {
+  border-inline-start: 0.2rem solid currentColor;
+  padding: 0.55rem 0.85rem;
+  background: var(--surface);
+  color: var(--warning);
+}
+
+.development .notice.error {
+  color: var(--error);
+}
+
+.development .notice p {
+  margin: 0;
+}
+
+.development .notice .actions,
+.development .notice p + button {
+  margin-top: 0.5rem;
+}
+
+.development .change-review {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  color: var(--text);
+}
+
+.development .change-review dt {
+  font-weight: 600;
+}
+
+.development .change-review dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.development .confirmation,
+.development .list-message {
+  color: var(--muted);
+}
+
+.development ul {
+  list-style: none;
+  padding: 0;
+}
+
+.development li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  border-top: 1px solid var(--line);
+  padding-block: 0.35rem;
+}
+
+.development li:last-child {
+  border-bottom: 1px solid var(--line);
+}
+
+.development .task-title {
+  overflow-wrap: anywhere;
+}
+
+.development .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}

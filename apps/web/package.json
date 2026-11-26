@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "vite --mode offline",
+    "dev:development": "vite --mode development",
     "build": "vite build",
     "build:development": "vite build --mode development",
     "lint": "eslint . --max-warnings 0",
@@ -16,6 +17,7 @@
     "verify": "npm run lint && npm run check && npm test && npm run build"
   },
   "dependencies": {
+    "convex": "1.51.0",
     "svelte": "5.55.5"
   },
   "devDependencies": {

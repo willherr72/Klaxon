@@ -2,5 +2,6 @@
 /dist/
 /asset-manifest.json
 /.verification-*/
+/vite.config.mjs.timestamp-*.mjs
 /.env
 /.env.*
